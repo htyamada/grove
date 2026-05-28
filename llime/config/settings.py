@@ -17,7 +17,7 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-sys.path.insert(0, os.path.expanduser('~/prj/hty7'))
+sys.path.insert(0, os.path.expanduser('~/prj/llemon'))
 MEDIAVIEW_LABEL = 'hty7'
 
 from hty7.llemon import djview as _llemon_djview
