@@ -1,8 +1,8 @@
 # mediaview — architecture
 
 Django app for browsing a filesystem media hierarchy via the browser.
-Master copy lives at `~/prj/hty7/mediaview/`; installed into each project
-by adding `~/prj/hty7` to `sys.path` and setting `MEDIAVIEW_LABEL` in
+Master copy lives at `~/prj/grove/mediaview/`; installed into each project
+by adding `~/prj/grove` to `sys.path` and setting `MEDIAVIEW_LABEL` in
 `settings.py`.
 
 ## Config
@@ -30,7 +30,7 @@ correct `[[label.roots]]` section. `roots()` → `{name: Path}`,
 In `settings.py`:
 ```python
 import sys, os
-sys.path.insert(0, os.path.expanduser('~/prj/hty7'))
+sys.path.insert(0, os.path.expanduser('~/prj/grove'))
 MEDIAVIEW_LABEL = 'qat'   # or 'hty7', etc.
 INSTALLED_APPS = [..., 'mediaview']
 ```
