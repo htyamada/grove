@@ -1,0 +1,8 @@
+{% extends 'base/base.html' %}
+{% block content %}
+<ul>
+  {% for page in base_nav %}
+    <li><a href="{{ page.url }}">{{ page.name }}</a></li>
+  {% endfor %}
+</ul>
+{% endblock %}

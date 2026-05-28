@@ -1,0 +1,853 @@
+{% extends 'base/base.html' %}
+{% block extra_head %}
+<style>
+  .mv-breadcrumbs { font-size:0.9em; color:#888; margin-bottom:0.7em; }
+  .mv-breadcrumbs a { color:#888; }
+  .mv-breadcrumbs a:hover { color:#333; }
+  .mv-error { white-space:pre-wrap; font-family:monospace; background:#fff8f8; border:1px solid #fcc; padding:0.8em 1em; color:#900; }
+
+  .dir-grid { display:flex; flex-wrap:wrap; gap:0.6em; margin-bottom:0.8em; }
+  .dir-thumb {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    width:160px; height:160px; background:#1a2233; color:#9ab; text-decoration:none;
+    border:1px solid #345; box-sizing:border-box;
+  }
+  .dir-thumb:hover { background:#223344; color:#cde; border-color:#567; }
+  .dir-thumb.drag-over { background:#334455; border-color:#7ac; color:#cef; }
+  .dir-icon { font-size:2.8em; line-height:1; }
+  .dir-label { font-size:0.78em; margin-top:0.4em; max-width:148px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 0.4em; text-align:center; }
+  .dir-parent .dir-icon { font-size:2.2em; }
+
+  .thumb-grid { display:flex; flex-wrap:wrap; gap:0.6em; }
+  .thumb { display:flex; align-items:center; justify-content:center; width:160px; height:160px; background:#111; color:#bbb; text-decoration:none; position:relative; border:1px solid #aaa; box-sizing:border-box; cursor:pointer; }
+  .thumb img { max-width:100%; max-height:100%; object-fit:contain; display:block; transition:opacity 0.15s; }
+  .thumb:hover img { opacity:0.8; }
+  .thumb.video::after {
+    content:""; position:absolute; left:50%; top:50%; transform:translate(-42%,-50%);
+    width:0; height:0; border-top:14px solid transparent; border-bottom:14px solid transparent;
+    border-left:22px solid rgba(255,255,255,0.9); filter:drop-shadow(0 1px 3px rgba(0,0,0,0.7));
+  }
+  .thumb-fallback { display:none; height:100%; align-items:center; justify-content:center; font-size:0.8em; }
+  .thumb-label { font-size:0.7em; color:#555; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  #desc-overlay {
+    display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.75); z-index:1000; align-items:center; justify-content:center;
+  }
+  #desc-box {
+    background:#fff; border-radius:4px; padding:1.4em 1.8em;
+    max-width:52em; width:90vw; max-height:85vh; overflow-y:auto; position:relative;
+  }
+  #desc-box .close-btn {
+    position:absolute; top:0.5em; right:0.8em; font-size:1.8em; color:#888;
+    background:none; border:none; cursor:pointer; line-height:1;
+  }
+  #desc-box .close-btn:hover { color:#000; }
+  #desc-thumb-wrap {
+    position:relative; flex-shrink:0; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    width:300px; height:300px; box-sizing:border-box; border:1px solid #ccc; background:#111;
+  }
+  #desc-thumb { max-height:100%; max-width:100%; object-fit:contain; display:block; }
+  #desc-thumb-play {
+    position:absolute; top:50%; left:50%; transform:translate(-42%,-50%);
+    width:0; height:0; border-top:20px solid transparent; border-bottom:20px solid transparent;
+    border-left:32px solid rgba(255,255,255,0.85); filter:drop-shadow(0 1px 5px rgba(0,0,0,0.7));
+    pointer-events:none; display:none; z-index:1;
+  }
+  #desc-fname { font-size:0.85em; color:#666; font-style:italic; margin-bottom:0.5em; }
+  #desc-loading { color:#888; font-style:italic; }
+  #desc-noprops { color:#999; font-style:italic; }
+  #desc-table { width:100%; border-collapse:collapse; font-size:0.92em; }
+  #desc-table td { padding:0.28em 0.5em; vertical-align:top; border-bottom:1px solid #eee; }
+  #desc-table td:first-child { font-weight:bold; white-space:nowrap; padding-right:1.2em; width:30%; color:#444; }
+  #desc-table td:last-child { word-break:break-word; white-space:pre-wrap; }
+  .detail-actions { margin-top:0.9em; display:flex; gap:0.5em; align-items:center; }
+  #desc-metadata-btn { padding:0.25em 0.8em; cursor:pointer; font-size:0.9em; }
+  #desc-rename-btn { padding:0.25em 0.8em; cursor:pointer; font-size:0.9em; }
+  #desc-move-btn { padding:0.25em 0.8em; cursor:pointer; font-size:0.9em; }
+  #desc-delete-btn { color:#c00; border-color:#c00; padding:0.25em 0.8em; cursor:pointer; font-size:0.9em; }
+
+  #metadata-overlay {
+    display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.55); z-index:1050; align-items:center; justify-content:center;
+  }
+  #metadata-box {
+    background:#fff; border-radius:4px; padding:1.1em 1.3em;
+    max-width:38em; width:88vw; max-height:78vh; overflow-y:auto; position:relative;
+  }
+  #metadata-box .close-btn {
+    position:absolute; top:0.45em; right:0.7em; font-size:1.6em; color:#888;
+    background:none; border:none; cursor:pointer; line-height:1;
+  }
+  #metadata-box .close-btn:hover { color:#000; }
+  #metadata-title { font-size:1.1em; font-weight:bold; margin:0 2em 0.7em 0; }
+  #metadata-editor {
+    width:100%; min-height:16em; box-sizing:border-box; resize:vertical;
+    font-family:monospace; font-size:0.9em; line-height:1.35; padding:0.55em;
+  }
+  .metadata-actions { display:flex; gap:0.5em; margin-top:0.8em; align-items:center; }
+  #metadata-save-btn { padding:0.25em 0.8em; cursor:pointer; }
+  #metadata-error { color:#900; font-style:italic; margin-top:0.6em; display:none; }
+
+  #move-overlay {
+    display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.55); z-index:1050; align-items:center; justify-content:center;
+  }
+  #move-box {
+    background:#fff; border-radius:4px; padding:1.1em 1.3em;
+    max-width:34em; width:88vw; max-height:78vh; overflow-y:auto; position:relative;
+  }
+  #move-box .close-btn {
+    position:absolute; top:0.45em; right:0.7em; font-size:1.6em; color:#888;
+    background:none; border:none; cursor:pointer; line-height:1;
+  }
+  #move-box .close-btn:hover { color:#000; }
+  #move-title { font-size:1.1em; font-weight:bold; margin:0 2em 0.7em 0; }
+  #move-current { font-size:0.85em; color:#555; word-break:break-word; margin-bottom:0.45em; }
+  #move-status { font-size:0.82em; color:#666; margin-bottom:0.75em; }
+  #move-root-row { display:flex; gap:0.4em; margin-bottom:0.6em; align-items:center; }
+  #move-root-row label { font-size:0.86em; color:#555; }
+  #move-root-select { flex:1; min-width:0; padding:0.25em 0.35em; box-sizing:border-box; }
+  #move-dir-row { display:flex; gap:0.4em; margin-bottom:0.6em; align-items:center; }
+  #move-dir-row label { font-size:0.86em; color:#555; }
+  #move-dir-select { flex:1; min-width:0; padding:0.25em 0.35em; box-sizing:border-box; }
+  #move-path-form { display:flex; gap:0.4em; margin-bottom:0.6em; align-items:center; }
+  #move-path-input { flex:1; min-width:0; padding:0.3em 0.45em; box-sizing:border-box; }
+  #move-breadcrumbs { display:flex; flex-wrap:wrap; align-items:center; gap:0.25em; margin-bottom:0.7em; font-size:0.86em; }
+  .move-crumb {
+    border:0; background:none; color:#357; text-decoration:underline; cursor:pointer;
+    padding:0.1em 0.15em; font:inherit;
+  }
+  .move-crumb:hover { color:#123; }
+  .move-crumb-sep { color:#999; }
+  .move-actions { display:flex; flex-wrap:wrap; gap:0.5em; margin-bottom:0.8em; align-items:center; }
+  #move-select-btn { padding:0.25em 0.8em; cursor:pointer; }
+  #move-select-btn:disabled { cursor:not-allowed; color:#888; }
+  #move-root-btn, #move-parent-btn, #move-refresh-btn { padding:0.25em 0.8em; cursor:pointer; }
+  #move-parent-btn:disabled { cursor:not-allowed; color:#888; }
+  #move-list {
+    display:flex; flex-direction:column; gap:0.35em; max-height:42vh;
+    overflow-y:auto; border-top:1px solid #eee; padding-top:0.55em;
+  }
+  .move-dir {
+    display:flex; align-items:center; justify-content:space-between; gap:0.8em;
+    width:100%; box-sizing:border-box; padding:0.45em 0.55em; text-align:left;
+    background:#f8f8f8; border:1px solid #ddd; cursor:pointer;
+  }
+  .move-dir:hover { background:#eef4fb; border-color:#9bc; }
+  .move-dir-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .move-dir-state { flex-shrink:0; font-size:0.78em; color:#777; }
+  #move-empty, #move-error { color:#888; font-style:italic; }
+  #move-error { color:#900; }
+
+  #img-overlay {
+    display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.92); z-index:1100; align-items:center; justify-content:center;
+  }
+  #img-display { max-width:92vw; max-height:85vh; }
+
+  #vb-overlay {
+    display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.92); z-index:1100; align-items:center; justify-content:center;
+  }
+  #vb-video { max-width:92vw; max-height:85vh; }
+
+  .overlay-close { position:fixed; top:1em; right:1.2em; font-size:2em; color:#fff; background:none; border:none; cursor:pointer; line-height:1; }
+  .overlay-prev { position:fixed; top:50%; left:0.3em; transform:translateY(-50%); font-size:2.5em; color:#fff; background:none; border:none; cursor:pointer; user-select:none; }
+  .overlay-next { position:fixed; top:50%; right:0.3em; transform:translateY(-50%); font-size:2.5em; color:#fff; background:none; border:none; cursor:pointer; user-select:none; }
+</style>
+{% endblock %}
+{% block content %}
+
+<div class="mv-breadcrumbs">
+  <a href="{% url 'mediaview:index' %}">Roots</a>
+  {% for crumb in breadcrumbs %}&nbsp;/&nbsp;<a href="{{ crumb.url }}">{{ crumb.name }}</a>{% endfor %}
+</div>
+
+{% if root_name %}
+<div style="margin-bottom:0.7em;">
+  <button type="button" onclick="mkdirPrompt();">&#x1F4C2; New Folder</button>
+</div>
+{% endif %}
+
+{% if error %}
+<div class="mv-error">{{ error }}</div>
+{% else %}
+
+{% if parent_url or dirs %}
+<div class="dir-grid">
+  {% if parent_url %}
+  <a class="dir-thumb dir-parent" href="{{ parent_url }}"{% if root_name and parent_relpath is not None %} data-dir-relpath="{{ parent_relpath }}"{% endif %}>
+    <span class="dir-icon">&#x2B06;</span>
+    <span class="dir-label">Parent</span>
+  </a>
+  {% endif %}
+  {% for d in dirs %}
+  <a class="dir-thumb" href="{{ d.url }}"{% if root_name %} data-dir-relpath="{{ d.relpath }}"{% endif %}>
+    <span class="dir-icon">&#x1F4C1;</span>
+    <span class="dir-label" title="{{ d.name }}">{{ d.name }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if items %}
+<div class="thumb-grid">
+  {% for item in items %}
+  <div>
+    <a class="thumb {% if item.type == 'video' %}video{% endif %}" href="javascript:void(0);" onclick="descShow({{ forloop.counter0 }})" draggable="true" data-idx="{{ forloop.counter0 }}">
+      <img src="{{ item.thumb_url }}" alt="{{ item.fname }}" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+      <span class="thumb-fallback">{% if item.type == 'video' %}No thumb{% else %}No image{% endif %}</span>
+    </a>
+    <div class="thumb-label" title="{{ item.fname }}">{{ item.fname }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% elif not dirs and not parent_url %}
+<p style="color:#888;">No media files found.</p>
+{% endif %}
+
+<div id="desc-overlay" onclick="if(event.target===this)descHide();">
+  <button class="overlay-prev" onclick="descNext(-1);" aria-label="Previous">&#8249;</button>
+  <button class="overlay-next" onclick="descNext(1);" aria-label="Next">&#8250;</button>
+  <div id="desc-box">
+    <button class="close-btn" onclick="descHide();" aria-label="Close">&times;</button>
+    <div style="display:flex; align-items:flex-start; gap:1.2em;">
+      <div id="desc-thumb-wrap" onclick="descThumbClick();" title="Click to view full size">
+        <img id="desc-thumb" src="" alt="">
+        <div id="desc-thumb-play"></div>
+      </div>
+      <div style="flex:1; min-width:0; padding-right:2em;">
+        <div id="desc-fname"></div>
+        <div id="desc-loading" style="display:none;">Loading info&hellip;</div>
+        <div id="desc-noprops" style="display:none;">No info available.</div>
+        <table id="desc-table" style="display:none;"><tbody id="desc-tbody"></tbody></table>
+        <div class="detail-actions">
+          <button type="button" id="desc-metadata-btn" onclick="metadataOpen();">Metadata</button>
+          <button type="button" id="desc-rename-btn" onclick="renamePrompt();">Rename</button>
+          <button type="button" id="desc-move-btn" onclick="moveOpen();">Move</button>
+          <button type="button" id="desc-delete-btn" onclick="descDelete();">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="metadata-overlay" onclick="if(event.target===this)metadataHide();">
+  <div id="metadata-box">
+    <button class="close-btn" onclick="metadataHide();" aria-label="Close">&times;</button>
+    <div id="metadata-title">Metadata</div>
+    <textarea id="metadata-editor" spellcheck="false"></textarea>
+    <div class="metadata-actions">
+      <button type="button" id="metadata-save-btn" onclick="metadataSave();">Save</button>
+      <button type="button" onclick="metadataHide();">Cancel</button>
+    </div>
+    <div id="metadata-error"></div>
+  </div>
+</div>
+
+<div id="move-overlay" onclick="if(event.target===this)moveHide();">
+  <div id="move-box">
+    <button class="close-btn" onclick="moveHide();" aria-label="Close">&times;</button>
+    <div id="move-title">Move file</div>
+    <div id="move-current"></div>
+    <div id="move-status"></div>
+    <div id="move-root-row">
+      <label for="move-root-select">Root</label>
+      <select id="move-root-select" onchange="moveLoad(this.value, '');"></select>
+    </div>
+    <div id="move-dir-row">
+      <label for="move-dir-select">Folder</label>
+      <select id="move-dir-select" onchange="moveLoadSelectedDir();"></select>
+    </div>
+    <form id="move-path-form" onsubmit="moveLoadFromInput(); return false;">
+      <input id="move-path-input" type="text" autocomplete="off" placeholder="Root name or directory path">
+      <button type="submit">Go</button>
+    </form>
+    <div id="move-breadcrumbs"></div>
+    <div class="move-actions">
+      <button type="button" id="move-root-btn" onclick="moveLoad(_moveRootName, '');">Root</button>
+      <button type="button" id="move-parent-btn" onclick="moveLoadParent();">Parent</button>
+      <button type="button" id="move-refresh-btn" onclick="moveRefresh();">Refresh</button>
+      <button type="button" id="move-select-btn" onclick="moveSelectCurrent();">Move Here</button>
+    </div>
+    <div id="move-error" style="display:none;"></div>
+    <div id="move-empty" style="display:none;">No subdirectories.</div>
+    <div id="move-list"></div>
+  </div>
+</div>
+
+<div id="img-overlay" onclick="if(event.target===this)imgHide();">
+  <button class="overlay-close" onclick="imgHide();" aria-label="Close">&times;</button>
+  <button class="overlay-prev" onclick="imgNext(-1);" aria-label="Previous">&#8249;</button>
+  <img id="img-display" src="" alt="">
+  <button class="overlay-next" onclick="imgNext(1);" aria-label="Next">&#8250;</button>
+</div>
+
+<div id="vb-overlay" onclick="if(event.target===this)vbHide();">
+  <button class="overlay-close" onclick="vbHide();" aria-label="Close">&times;</button>
+  <button class="overlay-prev" onclick="vbNext(-1);" aria-label="Previous">&#8249;</button>
+  <video id="vb-video" controls></video>
+  <button class="overlay-next" onclick="vbNext(1);" aria-label="Next">&#8250;</button>
+</div>
+
+{{ items|json_script:"gallery-items-data" }}
+{{ move_roots|json_script:"move-roots-data" }}
+<script>
+var _rootName = '{{ root_name|escapejs }}';
+var _deleteUrl = '{{ delete_url|escapejs }}';
+var _renameUrl = '{{ rename_url|escapejs }}';
+var _metadataUrl = '{{ metadata_url|escapejs }}';
+var _moveUrl = '{{ move_url|escapejs }}';
+var _mkdirUrl = '{{ mkdir_url|escapejs }}';
+var _dirListUrl = '{{ dir_list_url|escapejs }}';
+var _currentRelpath = '{{ current_relpath|escapejs }}';
+var _items = JSON.parse(document.getElementById('gallery-items-data').textContent);
+var _idx = 0;
+var _item = null;
+var _moveDir = null;
+var _moveRootName = _rootName;
+var _moveLastRelpath = '';
+var _moveRoots = JSON.parse(document.getElementById('move-roots-data').textContent);
+
+function getCookie(name) {
+  var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+  return v ? v.pop() : '';
+}
+
+function row(label, value) {
+  if (value === undefined || value === null || value === '') return;
+  var tr = document.createElement('tr');
+  var td1 = document.createElement('td');
+  var td2 = document.createElement('td');
+  td1.textContent = label;
+  td2.textContent = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  tr.appendChild(td1);
+  tr.appendChild(td2);
+  document.getElementById('desc-tbody').appendChild(tr);
+}
+
+function displayProps(data) {
+  document.getElementById('desc-noprops').style.display = 'none';
+  document.getElementById('desc-table').style.display = '';
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    for (var key in data) {
+      if (Object.prototype.hasOwnProperty.call(data, key)) row(key, data[key]);
+    }
+  }
+}
+
+function metadataHide() {
+  document.getElementById('metadata-overlay').style.display = 'none';
+}
+
+function metadataOpen() {
+  if (!_item || !_metadataUrl) return;
+  document.getElementById('metadata-title').textContent = 'Metadata for "' + _item.fname + '"';
+  document.getElementById('metadata-error').style.display = 'none';
+  var data = _item.has_sidecar && _item.sidecar && typeof _item.sidecar === 'object' ? _item.sidecar : {};
+  document.getElementById('metadata-editor').value = JSON.stringify(data, null, 2);
+  document.getElementById('metadata-overlay').style.display = 'flex';
+  document.getElementById('metadata-editor').focus();
+}
+
+async function metadataSave() {
+  if (!_item || !_metadataUrl) return;
+  var error = document.getElementById('metadata-error');
+  var metadata;
+  error.style.display = 'none';
+  try {
+    metadata = JSON.parse(document.getElementById('metadata-editor').value || '{}');
+  } catch(e) {
+    error.textContent = 'Invalid JSON: ' + e.message;
+    error.style.display = '';
+    return;
+  }
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    error.textContent = 'Metadata must be a JSON object.';
+    error.style.display = '';
+    return;
+  }
+
+  try {
+    var resp = await fetch(_metadataUrl, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+      body: JSON.stringify({root: _rootName, relpath: _item.relpath, metadata: metadata}),
+    });
+    var result = await resp.json();
+    if (result.error) {
+      error.textContent = result.error;
+      error.style.display = '';
+      return;
+    }
+    _item.has_sidecar = true;
+    _item.sidecar = result.metadata;
+    var tbody = document.getElementById('desc-tbody');
+    tbody.innerHTML = '';
+    document.getElementById('desc-table').style.display = 'none';
+    document.getElementById('desc-noprops').style.display = 'none';
+    if (Object.keys(_item.sidecar).length > 0) displayProps(_item.sidecar);
+    else document.getElementById('desc-noprops').style.display = '';
+    metadataHide();
+  } catch(e) {
+    error.textContent = e.message;
+    error.style.display = '';
+  }
+}
+
+async function descShow(idx) {
+  _idx = (idx + _items.length) % _items.length;
+  _item = _items[_idx];
+
+  var thumb = document.getElementById('desc-thumb');
+  thumb.src = _item.large_thumb_url || _item.thumb_url;
+  thumb.alt = _item.fname;
+
+  document.getElementById('desc-thumb-play').style.display = _item.type === 'video' ? 'block' : 'none';
+  document.getElementById('desc-fname').textContent = _item.fname;
+
+  var tbody = document.getElementById('desc-tbody');
+  tbody.innerHTML = '';
+  document.getElementById('desc-table').style.display = 'none';
+  document.getElementById('desc-noprops').style.display = 'none';
+  document.getElementById('desc-loading').style.display = 'none';
+
+  if (_item.has_sidecar && _item.sidecar) {
+    displayProps(_item.sidecar);
+  } else {
+    document.getElementById('desc-loading').style.display = '';
+    try {
+      var resp = await fetch(_item.info_url);
+      var d = await resp.json();
+      document.getElementById('desc-loading').style.display = 'none';
+      if (d.data && Object.keys(d.data).length > 0) {
+        displayProps(d.data);
+      } else {
+        document.getElementById('desc-noprops').style.display = '';
+      }
+    } catch(e) {
+      document.getElementById('desc-loading').style.display = 'none';
+      document.getElementById('desc-noprops').style.display = '';
+    }
+  }
+
+  document.getElementById('desc-overlay').style.display = 'flex';
+}
+
+function descHide() { document.getElementById('desc-overlay').style.display = 'none'; }
+function descNext(delta) { descShow(_idx + delta); }
+
+function descThumbClick() {
+  if (!_item) return;
+  if (_item.type === 'video') vbShow(_idx);
+  else imgShow(_idx);
+}
+
+var _imgIdx = 0;
+function imgShow(idx) {
+  descHide();
+  vbHide();
+  _imgIdx = (idx + _items.length) % _items.length;
+  document.getElementById('img-display').src = _items[_imgIdx].url;
+  document.getElementById('img-overlay').style.display = 'flex';
+}
+function imgHide() { document.getElementById('img-overlay').style.display = 'none'; }
+function imgNext(delta) {
+  var nextIdx = (_imgIdx + delta + _items.length) % _items.length;
+  if (_items[nextIdx].type === 'video') { imgHide(); vbShow(nextIdx); }
+  else { imgShow(nextIdx); }
+}
+
+var _vbIdx = 0;
+function vbShow(idx) {
+  descHide();
+  imgHide();
+  _vbIdx = (idx + _items.length) % _items.length;
+  var video = document.getElementById('vb-video');
+  video.src = _items[_vbIdx].url;
+  video.load();
+  document.getElementById('vb-overlay').style.display = 'flex';
+}
+function vbHide() {
+  var video = document.getElementById('vb-video');
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  document.getElementById('vb-overlay').style.display = 'none';
+}
+function vbNext(delta) {
+  var nextIdx = (_vbIdx + delta + _items.length) % _items.length;
+  if (_items[nextIdx].type === 'image') { vbHide(); imgShow(nextIdx); }
+  else { vbShow(nextIdx); }
+}
+
+async function mkdirPrompt() {
+  var name = prompt('New folder name:');
+  if (!name) return;
+  try {
+    var resp = await fetch(_mkdirUrl, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+      body: JSON.stringify({root: _rootName, relpath: _currentRelpath, name: name}),
+    });
+    var data = await resp.json();
+    if (data.error) { alert('Error: ' + data.error); return; }
+    window.location.reload();
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function descDelete() {
+  if (!_item) return;
+  if (!confirm('Delete "' + _item.fname + '"?\nThis cannot be undone.')) return;
+  try {
+    var resp = await fetch(_deleteUrl, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+      body: JSON.stringify({root: _rootName, relpath: _item.relpath}),
+    });
+    var data = await resp.json();
+    if (data.error) { alert('Delete failed: ' + data.error); return; }
+    descHide();
+    window.location.reload();
+  } catch(e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function renamePrompt() {
+  if (!_item || !_renameUrl) return;
+  var dot = _item.fname.lastIndexOf('.');
+  var baseName = dot > 0 ? _item.fname.slice(0, dot) : _item.fname;
+  var ext = dot > 0 ? _item.fname.slice(dot) : '';
+  if (ext.toLowerCase() === '.jpeg') ext = '.jpg';
+  if (ext.toLowerCase() === '.tif') ext = '.tiff';
+  var name = prompt('Rename file (without extension' + (ext ? ', keeps ' + ext : '') + '):', baseName);
+  if (!name || name === baseName) return;
+  try {
+    var resp = await fetch(_renameUrl, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+      body: JSON.stringify({root: _rootName, relpath: _item.relpath, name: name}),
+    });
+    var data = await resp.json();
+    if (data.error) { alert('Rename failed: ' + data.error); return; }
+    descHide();
+    window.location.reload();
+  } catch(e) {
+    alert('Rename failed: ' + e.message);
+  }
+}
+
+function moveHide() {
+  document.getElementById('move-overlay').style.display = 'none';
+}
+
+function itemParentRelpath(item) {
+  if (!item || !item.relpath) return '';
+  var pos = item.relpath.lastIndexOf('/');
+  return pos === -1 ? '' : item.relpath.slice(0, pos);
+}
+
+async function moveOpen() {
+  if (!_item || _moveRoots.length === 0) return;
+  document.getElementById('move-title').textContent = 'Move "' + _item.fname + '"';
+  moveRenderRootSelect(_rootName);
+  document.getElementById('move-overlay').style.display = 'flex';
+  await moveLoad(_rootName, itemParentRelpath(_item));
+}
+
+function moveRootInfo(rootName) {
+  for (var i = 0; i < _moveRoots.length; i++) {
+    if (_moveRoots[i].name === rootName) return _moveRoots[i];
+  }
+  return null;
+}
+
+function moveRenderRootSelect(rootName) {
+  var select = document.getElementById('move-root-select');
+  select.innerHTML = '';
+  _moveRoots.forEach(function(root) {
+    var option = document.createElement('option');
+    option.value = root.name;
+    option.textContent = root.name;
+    option.selected = root.name === rootName;
+    select.appendChild(option);
+  });
+}
+
+function moveDisplayPath(rootName, relpath) {
+  return relpath ? rootName + '/' + relpath : rootName;
+}
+
+function moveRenderBreadcrumbs(rootName, relpath) {
+  var crumbs = document.getElementById('move-breadcrumbs');
+  crumbs.innerHTML = '';
+
+  function addCrumb(label, path) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'move-crumb';
+    btn.textContent = label;
+    btn.onclick = function() { moveLoad(rootName, path); };
+    crumbs.appendChild(btn);
+  }
+
+  addCrumb(rootName, '');
+  if (!relpath) return;
+  var parts = relpath.split('/');
+  var path = '';
+  parts.forEach(function(part) {
+    var sep = document.createElement('span');
+    sep.className = 'move-crumb-sep';
+    sep.textContent = '/';
+    crumbs.appendChild(sep);
+    path = path ? path + '/' + part : part;
+    addCrumb(part, path);
+  });
+}
+
+function moveRenderDirSelect(data) {
+  var select = document.getElementById('move-dir-select');
+  select.innerHTML = '';
+
+  var current = document.createElement('option');
+  current.value = '';
+  current.textContent = data.dirs && data.dirs.length ? 'Select subdirectory...' : 'No subdirectories';
+  select.appendChild(current);
+
+  if (data.parent_relpath !== null) {
+    var parent = document.createElement('option');
+    parent.value = '__parent__';
+    parent.textContent = '..';
+    select.appendChild(parent);
+  }
+
+  (data.dirs || []).forEach(function(dir) {
+    var option = document.createElement('option');
+    option.value = dir.relpath;
+    option.textContent = dir.name + (dir.writable ? '' : ' (read-only)');
+    select.appendChild(option);
+  });
+}
+
+function moveClearDirSelect() {
+  var select = document.getElementById('move-dir-select');
+  select.innerHTML = '';
+  var option = document.createElement('option');
+  option.value = '';
+  option.textContent = 'Loading...';
+  select.appendChild(option);
+}
+
+function moveLoadSelectedDir() {
+  var select = document.getElementById('move-dir-select');
+  var relpath = select.value;
+  if (!relpath) return;
+  if (relpath === '__parent__') {
+    moveLoadParent();
+    return;
+  }
+  moveLoad(_moveRootName, relpath);
+}
+
+function moveLoadFromInput() {
+  var relpath = document.getElementById('move-path-input').value.trim();
+  relpath = relpath.replace(/^\/+|\/+$/g, '');
+  var rootName = _moveRootName;
+  _moveRoots.forEach(function(root) {
+    if (relpath === root.name) {
+      rootName = root.name;
+      relpath = '';
+    } else if (relpath.indexOf(root.name + '/') === 0) {
+      rootName = root.name;
+      relpath = relpath.slice(root.name.length + 1);
+    }
+  });
+  moveLoad(rootName, relpath);
+}
+
+function moveRefresh() {
+  moveLoad(_moveRootName, _moveDir ? _moveDir.relpath : _moveLastRelpath);
+}
+
+async function moveLoad(rootName, relpath) {
+  var list = document.getElementById('move-list');
+  var error = document.getElementById('move-error');
+  var empty = document.getElementById('move-empty');
+  var selectBtn = document.getElementById('move-select-btn');
+  var parentBtn = document.getElementById('move-parent-btn');
+  var status = document.getElementById('move-status');
+  var rootInfo = moveRootInfo(rootName);
+  if (!rootInfo) return;
+  relpath = relpath || '';
+  _moveRootName = rootName;
+  _moveLastRelpath = relpath;
+  _moveDir = null;
+  moveRenderRootSelect(rootName);
+  list.innerHTML = '';
+  error.style.display = 'none';
+  empty.style.display = 'none';
+  status.textContent = '';
+  selectBtn.disabled = true;
+  parentBtn.disabled = true;
+  document.getElementById('move-current').textContent = 'Loading...';
+  document.getElementById('move-path-input').value = relpath;
+  moveRenderBreadcrumbs(rootName, relpath);
+  moveClearDirSelect();
+
+  try {
+    var url = rootInfo.dir_list_url + '?path=' + encodeURIComponent(relpath);
+    var resp = await fetch(url);
+    var data = await resp.json();
+    if (data.error) {
+      error.textContent = data.error;
+      error.style.display = '';
+      document.getElementById('move-current').textContent = moveDisplayPath(rootName, relpath);
+      status.textContent = 'Unable to open this directory.';
+      return;
+    }
+
+    _moveDir = data;
+    _moveRootName = data.root_name;
+    var sameDirectory = _item && data.root_name === _rootName && data.relpath === itemParentRelpath(_item);
+    document.getElementById('move-current').textContent = data.display_path;
+    document.getElementById('move-path-input').value = data.relpath;
+    moveRenderRootSelect(data.root_name);
+    moveRenderBreadcrumbs(data.root_name, data.relpath);
+    moveRenderDirSelect(data);
+    status.textContent = data.writable ? 'Writable destination' : 'Read-only destination';
+    if (sameDirectory) status.textContent = 'Current file location';
+    selectBtn.disabled = !data.writable || sameDirectory;
+    selectBtn.title = data.writable ? '' : 'This directory is not writable';
+    if (sameDirectory) selectBtn.title = 'This file is already in this directory';
+    parentBtn.disabled = data.parent_relpath === null;
+
+    if (!data.dirs || data.dirs.length === 0) {
+      empty.style.display = '';
+      return;
+    }
+
+    data.dirs.forEach(function(dir) {
+      var btn = document.createElement('button');
+      var name = document.createElement('span');
+      var state = document.createElement('span');
+      btn.type = 'button';
+      btn.className = 'move-dir';
+      name.className = 'move-dir-name';
+      state.className = 'move-dir-state';
+      name.textContent = '\uD83D\uDCC1 ' + dir.name;
+      state.textContent = dir.writable ? 'writable' : 'read-only';
+      btn.title = dir.name;
+      btn.onclick = function() { moveLoad(data.root_name, dir.relpath); };
+      btn.appendChild(name);
+      btn.appendChild(state);
+      list.appendChild(btn);
+    });
+  } catch(e) {
+    error.textContent = e.message;
+    error.style.display = '';
+    document.getElementById('move-current').textContent = '';
+  }
+}
+
+function moveLoadParent() {
+  if (!_moveDir || _moveDir.parent_relpath === null) return;
+  moveLoad(_moveRootName, _moveDir.parent_relpath);
+}
+
+async function moveSelectCurrent() {
+  if (!_item || !_moveDir || !_moveDir.writable) return;
+  if (!confirm('Move "' + _item.fname + '" to "' + _moveDir.display_path + '"?')) return;
+  try {
+    var resp = await fetch(_moveUrl, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+      body: JSON.stringify({root: _rootName, relpath: _item.relpath, dest_root: _moveRootName, dest_dir: _moveDir.relpath}),
+    });
+    var result = await resp.json();
+    if (result.error) { alert('Move failed: ' + result.error); return; }
+    moveHide();
+    descHide();
+    window.location.reload();
+  } catch(ex) {
+    alert('Move failed: ' + ex.message);
+  }
+}
+
+{% if root_name %}
+document.querySelectorAll('.thumb[data-idx]').forEach(function(thumb) {
+  thumb.addEventListener('dragstart', function(e) {
+    e.dataTransfer.setData('text/plain', thumb.getAttribute('data-idx'));
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  thumb.addEventListener('dragend', function() {
+    document.querySelectorAll('.dir-thumb.drag-over').forEach(function(el) { el.classList.remove('drag-over'); });
+  });
+});
+
+document.querySelectorAll('.dir-thumb[data-dir-relpath]').forEach(function(dir) {
+  dir.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    dir.classList.add('drag-over');
+  });
+  dir.addEventListener('dragleave', function(e) {
+    if (!dir.contains(e.relatedTarget)) dir.classList.remove('drag-over');
+  });
+  dir.addEventListener('drop', async function(e) {
+    e.preventDefault();
+    dir.classList.remove('drag-over');
+    var idx = parseInt(e.dataTransfer.getData('text/plain'));
+    if (isNaN(idx) || idx < 0 || idx >= _items.length) return;
+    var item = _items[idx];
+    try {
+      var resp = await fetch(_moveUrl, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+        body: JSON.stringify({root: _rootName, relpath: item.relpath, dest_dir: dir.getAttribute('data-dir-relpath')}),
+      });
+      var result = await resp.json();
+      if (result.error) { alert('Move failed: ' + result.error); return; }
+      window.location.reload();
+    } catch(ex) {
+      alert('Move failed: ' + ex.message);
+    }
+  });
+});
+{% endif %}
+
+document.addEventListener('keydown', function(e) {
+  var metadataOpen = document.getElementById('metadata-overlay').style.display === 'flex';
+  var moveOpen = document.getElementById('move-overlay').style.display === 'flex';
+  var descOpen = document.getElementById('desc-overlay').style.display === 'flex';
+  var imgOpen  = document.getElementById('img-overlay').style.display  === 'flex';
+  var vbOpen   = document.getElementById('vb-overlay').style.display   === 'flex';
+  if (e.key === 'Escape') {
+    if (metadataOpen) metadataHide();
+    else if (moveOpen) moveHide();
+    else if (imgOpen) imgHide();
+    else if (vbOpen) vbHide();
+    else if (descOpen) descHide();
+  }
+  if (metadataOpen) return;
+  if (moveOpen) return;
+  if (descOpen) {
+    if (e.key === 'ArrowLeft')  descNext(-1);
+    if (e.key === 'ArrowRight') descNext(1);
+  }
+  if (imgOpen) {
+    if (e.key === 'ArrowLeft')  imgNext(-1);
+    if (e.key === 'ArrowRight') imgNext(1);
+  }
+  if (vbOpen) {
+    if (e.key === 'ArrowLeft')  vbNext(-1);
+    if (e.key === 'ArrowRight') vbNext(1);
+  }
+});
+</script>
+{% endif %}
+{% endblock %}

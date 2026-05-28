@@ -1,0 +1,31 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}{{ site_name }}: {{ title }}{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'base/css/stylesheet.css' %}">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <div class="site-header">
+    <a href="/zorf/wiki/index.php/Main_Page">
+      <img class="site-header-image" src="/images/zorfwiki.png" alt="ZorfWiki">
+    </a>
+    <div class="site-header-main">
+      <h1>{% block heading %}{{ site_name }}: {{ title }}{% endblock %}</h1>
+      <div class="navbar">
+        <div class="text-left">
+          {% for page in base_nav %}<a href="{{ page.url }}">{{ page.name }}</a>&nbsp;&nbsp;&nbsp;{% endfor %}
+        </div>
+        <div class="text-right">
+          {% for page in nav %}<a href="{{ page.url }}">{{ page.name }}</a>&nbsp;&nbsp;&nbsp;{% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="content">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

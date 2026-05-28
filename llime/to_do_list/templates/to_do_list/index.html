@@ -1,0 +1,262 @@
+{% extends 'base/base.html' %}
+{% block content %}
+<script>
+function updateRepeatInterval(selectId, containerId) {
+  const select = document.getElementById(selectId);
+  const container = document.getElementById(containerId);
+  if (!select || !container) {
+    return;
+  }
+  container.style.display = select.value === 'none' ? 'none' : 'block';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  updateRepeatInterval('new-item-repeat-mode', 'new-repeat-interval-container');
+  updateRepeatInterval('edit-item-repeat-mode', 'edit-repeat-interval-container');
+});
+</script>
+<div class="todo-layout">
+  <aside class="todo-panel todo-categories">
+    <div class="todo-panel-header">
+      <h2>Categories</h2>
+      <a class="todo-button" href="{% url 'to_do_list:index' %}?new_category=1">New Category</a>
+    </div>
+    {% if show_new_category_panel %}
+    <div class="todo-inline-panel">
+      <form action="{% url 'to_do_list:new_category' %}" method="post">
+        {% csrf_token %}
+        <label class="todo-field-label" for="new-category-name">Choose a name</label>
+        <input class="todo-category-name-input" id="new-category-name" maxlength="40" name="name" size="40" type="text" value="{{ new_category_name|default:'' }}">
+        {% if new_category_error %}
+        <p class="todo-form-error">{{ new_category_error }}</p>
+        {% endif %}
+        <div class="todo-form-actions">
+          <button type="submit">Create Category</button>
+          <a class="todo-button" href="{% url 'to_do_list:index' %}">Cancel</a>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+    {% if show_edit_category_panel and editing_category %}
+    <div class="todo-inline-panel">
+      <form action="{% url 'to_do_list:update_category' editing_category.id %}" method="post">
+        {% csrf_token %}
+        <label class="todo-field-label" for="edit-category-name">Edit category name</label>
+        <input class="todo-category-name-input" id="edit-category-name" maxlength="40" name="name" size="40" type="text" value="{{ edit_category_name|default:'' }}">
+        {% if edit_category_error %}
+        <p class="todo-form-error">{{ edit_category_error }}</p>
+        {% endif %}
+        <div class="todo-form-actions">
+          <button type="submit">Save Category</button>
+          <a class="todo-button" href="{% url 'to_do_list:index' %}">Cancel</a>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+    {% if categories or virtual_categories %}
+    <ul class="todo-category-list">
+      {% for virtual_name, virtual_key in virtual_categories.items %}
+      <li>
+        <form action="{% url 'to_do_list:select_virtual_category' virtual_key %}" method="post">
+          {% csrf_token %}
+          <button class="todo-category-button{% if active_virtual_category == virtual_key %} todo-category-button-active{% endif %}" type="submit">{{ virtual_name }}</button>
+        </form>
+      </li>
+      {% endfor %}
+      {% for category in categories %}
+      <li>
+        <div class="todo-category-row">
+          <form action="{% url 'to_do_list:select_category' category.id %}" class="todo-category-select-form" method="post">
+            {% csrf_token %}
+            <button class="todo-category-button{% if category.is_active and not active_virtual_category %} todo-category-button-active{% endif %}{% if category.id in overdue_categories %} todo-category-overdue{% elif category.id in warning_categories %} todo-category-warning{% elif category.id in starred_categories %} todo-category-starred{% endif %}" type="submit">{{ category.name }}</button>
+          </form>
+          <form action="{% url 'to_do_list:index' %}" method="get">
+            <input name="edit_category" type="hidden" value="{{ category.id }}">
+            <button class="todo-button todo-category-edit-button" type="submit">Edit</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p>No categories yet.</p>
+    {% endif %}
+  </aside>
+  <section class="todo-panel todo-panel-items">
+    <div class="todo-panel-header">
+      <h2>Items</h2>
+      <div class="todo-button-group">
+        <a class="todo-button" href="{% url 'to_do_list:index' %}?new_item=1">New Item</a>
+        <form action="{% url 'to_do_list:delete_finished_items' %}" method="post" style="display: inline;">
+          {% csrf_token %}
+          <button class="todo-button" type="submit" onclick="return confirm('Delete all completed items?')">Delete Finished</button>
+        </form>
+      </div>
+    </div>
+    {% if show_new_item_panel %}
+    <div class="todo-inline-panel">
+      <form action="{% url 'to_do_list:new_item' %}" method="post">
+        {% csrf_token %}
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="new-item-title">Item text</label>
+          <input class="todo-item-text-input" id="new-item-title" name="title" size="40" type="text" value="{{ new_item_title|default:'' }}">
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="new-item-due-date">Due</label>
+          <input id="new-item-due-date" name="due_date" type="date" value="{{ new_item_due_date|default:'' }}">
+          <input id="new-item-due-time" name="due_time" type="time" value="{{ new_item_due_time|default:'' }}">
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="new-item-warning-days">Warn N days before due</label>
+          <input class="todo-item-warning-input" id="new-item-warning-days" name="warning_days" type="number" min="1" value="{{ new_item_warning_days|default:'' }}">
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="new-item-repeat-mode">Repeat</label>
+          <select class="todo-item-repeat-select" id="new-item-repeat-mode" name="repeat_mode" onchange="updateRepeatInterval('new-item-repeat-mode', 'new-repeat-interval-container')">
+            <option value="none"{% if new_item_repeat_mode == 'none' %} selected{% endif %}>No repeat</option>
+            <option value="checked"{% if new_item_repeat_mode == 'checked' %} selected{% endif %}>After checked — every</option>
+            <option value="due"{% if new_item_repeat_mode == 'due' %} selected{% endif %}>After due date — every</option>
+          </select>
+          <span id="new-repeat-interval-container" style="display: none;">
+            <input class="todo-item-warning-input" id="new-item-repeat-interval" name="repeat_interval" type="number" min="1" value="{{ new_item_repeat_interval|default:'1' }}">
+            <select class="todo-item-repeat-unit-select" id="new-item-repeat-unit" name="repeat_unit">
+              {% for value, label in repeat_unit_choices %}
+              <option value="{{ value }}"{% if new_item_repeat_unit == value %} selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </span>
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="new-item-priority">Priority</label>
+          <select class="todo-item-priority-select" id="new-item-priority" name="priority">
+            <option value="">-- Select priority --</option>
+            {% for value, label in priority_choices %}
+            <option value="{{ value }}"{% if new_item_priority|stringformat:"s" == value|stringformat:"s" or not new_item_priority and value == 3 %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="new-item-category">Category</label>
+          <select class="todo-item-category-select" id="new-item-category" name="category">
+            <option value="">No category</option>
+            {% for category in categories %}
+            <option value="{{ category.name }}"{% if new_item_category == category.name %} selected{% endif %}>{{ category.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% if new_item_error %}
+        <p class="todo-form-error">{{ new_item_error }}</p>
+        {% endif %}
+        <div class="todo-form-actions">
+          <button type="submit">Create Item</button>
+          <a class="todo-button" href="{% url 'to_do_list:index' %}">Cancel</a>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+    {% if show_edit_item_panel and editing_item %}
+    <div class="todo-inline-panel">
+      <form action="{% url 'to_do_list:update_item' editing_item.id %}" method="post">
+        {% csrf_token %}
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="edit-item-title">Item text</label>
+          <input class="todo-item-text-input" id="edit-item-title" name="title" size="40" type="text" value="{{ edit_item_title|default:'' }}">
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="edit-item-due-date">Due</label>
+          <input id="edit-item-due-date" name="due_date" type="date" value="{{ edit_item_due_date|default:'' }}">
+          <input id="edit-item-due-time" name="due_time" type="time" value="{{ edit_item_due_time|default:'' }}">
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="edit-item-warning-days">Warn N days before due</label>
+          <input class="todo-item-warning-input" id="edit-item-warning-days" name="warning_days" type="number" min="1" value="{{ edit_item_warning_days|default:'' }}">
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="edit-item-repeat-mode">Repeat</label>
+          <select class="todo-item-repeat-select" id="edit-item-repeat-mode" name="repeat_mode" onchange="updateRepeatInterval('edit-item-repeat-mode', 'edit-repeat-interval-container')">
+            <option value="none"{% if edit_item_repeat_mode == 'none' %} selected{% endif %}>No repeat</option>
+            <option value="checked"{% if edit_item_repeat_mode == 'checked' %} selected{% endif %}>After checked — every</option>
+            <option value="due"{% if edit_item_repeat_mode == 'due' %} selected{% endif %}>After due date — every</option>
+          </select>
+          <span id="edit-repeat-interval-container" style="display: none;">
+            <input class="todo-item-warning-input" id="edit-item-repeat-interval" name="repeat_interval" type="number" min="1" value="{{ edit_item_repeat_interval|default:'1' }}">
+            <select class="todo-item-repeat-unit-select" id="edit-item-repeat-unit" name="repeat_unit">
+              {% for value, label in repeat_unit_choices %}
+              <option value="{{ value }}"{% if edit_item_repeat_unit == value %} selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </span>
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="edit-item-priority">Priority</label>
+          <select class="todo-item-priority-select" id="edit-item-priority" name="priority">
+            <option value="">-- Select priority --</option>
+            {% for value, label in priority_choices %}
+            <option value="{{ value }}"{% if edit_item_priority|stringformat:"s" == value|stringformat:"s" %} selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="todo-inline-field">
+          <label class="todo-field-label" for="edit-item-category">Category</label>
+          <select class="todo-item-category-select" id="edit-item-category" name="category">
+            <option value="">No category</option>
+            {% for category in categories %}
+            <option value="{{ category.name }}"{% if edit_item_category == category.name %} selected{% endif %}>{{ category.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <label class="todo-field-label" for="edit-item-note">Note</label>
+        <textarea class="todo-item-note-input" id="edit-item-note" cols="40" name="note" rows="4">{{ edit_item_note|default:'' }}</textarea>
+        {% if edit_item_error %}
+        <p class="todo-form-error">{{ edit_item_error }}</p>
+        {% endif %}
+        <div class="todo-form-actions">
+          <button type="submit">Save Item</button>
+          <a class="todo-button" href="{% url 'to_do_list:index' %}">Cancel</a>
+          <button class="todo-delete-button todo-form-actions-delete" form="delete-item-{{ editing_item.id }}" type="submit" onclick="return confirm('Delete this item?')">Delete Item</button>
+        </div>
+      </form>
+      <form action="{% url 'to_do_list:delete_item' editing_item.id %}" id="delete-item-{{ editing_item.id }}" method="post">
+        {% csrf_token %}
+      </form>
+    </div>
+    {% endif %}
+    {% if items %}
+    <ul class="todo-list">
+      {% for item in items %}
+      <li class="todo-list-item{% if item.finished %} todo-finished{% elif item.overdue %} todo-overdue{% elif item.warning_active %} todo-warning{% endif %}">
+        <div class="todo-list-item-header">
+          <form action="{% url 'to_do_list:toggle_item_finished' item.id %}" class="todo-item-toggle-form" method="post">
+            {% csrf_token %}
+            <label class="todo-item-label">
+              <input name="finished" onchange="this.form.submit()" type="checkbox"{% if item.finished %} checked{% endif %}>
+              <span class="todo-title">{{ item.title }}</span>
+            </label>
+          </form>
+          <span class="todo-priority">{{ item.get_priority_display }}</span>
+        </div>
+        <div class="todo-list-item-meta">
+          <div>{{ item.due_date }} at {{ item.due_time|time:"H:i" }}</div>
+          <div class="todo-item-actions">
+            <form action="{% url 'to_do_list:toggle_item_starred' item.id %}" method="post">
+              {% csrf_token %}
+              <button class="todo-star-button{% if item.overdue %} todo-star-button-overdue{% elif item.warning_active %} todo-star-button-warning{% elif item.starred %} todo-star-button-active{% endif %}" type="submit" aria-label="{% if item.starred %}Unstar item{% else %}Star item{% endif %}">{% if item.overdue or item.warning_active or item.starred %}★{% else %}☆{% endif %}</button>
+            </form>
+            <form action="{% url 'to_do_list:index' %}" method="get">
+              <input name="edit_item" type="hidden" value="{{ item.id }}">
+              <button class="todo-button todo-item-edit-button" type="submit">Edit</button>
+            </form>
+          </div>
+        </div>
+        {% if item.note %}
+        <div>{{ item.note }}</div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p>No items in the active category.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
