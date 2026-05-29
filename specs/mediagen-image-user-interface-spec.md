@@ -185,11 +185,12 @@ if updating both in one request.
 
 ### 5.0 Constructor
 
-Host projects normally instantiate `LLemonMediaViewSet('llemon_image',
-'llemon', base_nav=..., nav=...)` and expose the Image Creator as the
+The deployed Django front ends include `llemon_djview.urls` at `/llemon/`.
+That shared URL module instantiates `LLemonMediaViewSet('llemon_image',
+'llemon', base_nav=..., nav=...)` and exposes the Image Creator as the
 `image_creator` page inside the combined Media app. `LLemonImageGenViewSet`
-remains available for direct reuse, but the deployed thin Django front ends use
-the combined Media app.
+remains available for direct reuse, but host projects should not carry local
+view/URL wrappers for the deployed LLemon UI.
 
 | Parameter | Purpose |
 |-----------|---------|

@@ -12,8 +12,8 @@ Python venv: `~/opt/web` (created by `~/src/hty7/set-up-system/250-python-web.sh
 | App | URL prefix | Purpose |
 |-----|-----------|---------|
 | `base` | `/` | Home page |
-| `LLemon` | `/llemon/` | LLM chat interface with a unified Media app → see [llemon/CLAUDE.md](llemon/CLAUDE.md) |
-| `Image Handler` | `/image_handler/` | Image gallery viewer → see [image_handler/CLAUDE.md](image_handler/CLAUDE.md) |
+| `LLemon` | `/llemon/` | LLM chat interface with a unified Media app |
+| `Image Handler` | `/image_handler/` | Image gallery viewer |
 | `To Do list` | `/to-do-list/` | Standalone task app → see [to-do-list/CLAUDE.md](to-do-list/CLAUDE.md), [../specs/todo-spec.md](../specs/todo-spec.md) and [../specs/todo-impl.md](../specs/todo-impl.md) |
 
 ### LLemon Media App
@@ -37,10 +37,11 @@ reloads in Image Creator).
 
 - `FORCE_SCRIPT_NAME = '/zorf/llime'` — all `reverse()` calls include this prefix
 - Calls `discover.init()` at startup; paths come from `~/etc/llm.conf`
+- `IMHANDLER_VARIANT = 'hty7'` selects `[hty7.imhandler.core]` for the shared Image Handler app
 
 ## Libraries used (installed, not editable)
 
 - `hty7.llemon` — LLM config/service layer; source in `~/src/hty7/python3/lib/hty7/llemon/`
-- `hty7.imhandler` — image scanning, thumbnailing; source in `~/src/hty7/python3/lib/hty7/imhandler/`
+- `hty7.imhandler` — image scanning, thumbnailing, and shared Django views; source in `~/src/hty7/python3/lib/hty7/imhandler/`
 
 **IMPORTANT:** Always edit files in the source tree (`~/src/hty7/python3/lib/hty7/`), never the installed version in site-packages. Changes to either library must be applied to the source tree and the user will reinstall the libraries and restart.

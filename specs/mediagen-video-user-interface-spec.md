@@ -34,11 +34,12 @@ images, end images, and reference images for video models.
 
 ## Routes
 
-Host projects normally instantiate `LLemonMediaViewSet('llemon_image',
-'llemon', base_nav=..., nav=...)` and expose Video Creator as the
+The deployed Django front ends include `llemon_djview.urls` at `/llemon/`.
+That shared URL module instantiates `LLemonMediaViewSet('llemon_image',
+'llemon', base_nav=..., nav=...)` and exposes Video Creator as the
 `video_creator` page inside the combined Media app. `LLemonVideoGenViewSet`
-remains available for direct reuse, but the deployed thin Django front ends use
-the combined Media app.
+remains available for direct reuse, but host projects should not carry local
+view/URL wrappers for the deployed LLemon UI.
 
 | Parameter | Purpose |
 |-----------|---------|

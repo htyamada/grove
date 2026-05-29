@@ -100,8 +100,11 @@ main(_data_dir, _appconfig)
 
 ### 2.2 Django (`LLemonViewSet`)
 
-Host projects instantiate `LLemonViewSet('llemon_persona', 'llemon_persona',
-base_nav=..., nav=...)`.
+The deployed Django front ends include `llemon_djview.persona_urls` at
+`/llemon/persona/`. The shared `llemon_djview.views` module instantiates
+`LLemonViewSet('llemon_persona', 'llemon_persona', base_nav=..., nav=...)`.
+Host projects should configure the shared app and URL modules instead of
+carrying local persona view/URL wrappers.
 
 | Parameter | Purpose |
 |-----------|---------|
@@ -111,11 +114,10 @@ base_nav=..., nav=...)`.
 The section-specific right-side links (type entries, Models, Services) are
 appended after any items supplied via `nav`.
 
-`LLemonViewSet` does not call `discover.init()`.  The host Django project
-is responsible for calling it at application startup (e.g. in
-`AppConfig.ready()` or the WSGI/ASGI entry point), passing a `data_dir`
-that is already among the installed description directories so that the
-full `description_dirs` list from the conf file is used.
+`LLemonViewSet` does not call `discover.init()`. The host Django project
+loads LLemon settings at application startup through
+`llemon_djview.django_settings(<variant>)`, which initializes the configured
+variant and returns the Django settings required by the shared views.
 
 All `discover.*` discovery calls within `LLemonViewSet` use the standard
 discovery functions with no special arguments. CWD is never added to the
