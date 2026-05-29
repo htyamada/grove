@@ -1,0 +1,55 @@
+{% extends 'image_handler/base.html' %}
+{% block content %}
+<style>
+  .sem-form {
+    display: flex; flex-wrap: wrap; gap: 0.6em; align-items: center;
+    margin-bottom: 1em;
+  }
+  .sem-form input[type="search"] {
+    min-width: 18em; max-width: 100%; padding: 0.35em 0.5em;
+  }
+  .sem-form input[type="number"] { width: 5em; padding: 0.35em 0.4em; }
+  .sem-form button { padding: 0.35em 0.8em; }
+  .sem-summary { color: #666; font-size: 0.9em; margin-bottom: 1em; }
+  .sem-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .sem-card { text-decoration: none; color: inherit; }
+  .sem-card img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: #eee; }
+  .sem-card:hover img { opacity: 0.9; }
+  .sem-name { font-size: 0.82em; margin-top: 0.35em; word-break: break-word; }
+  .sem-meta { color: #777; font-size: 0.78em; }
+  .sem-empty { color: #777; font-style: italic; }
+</style>
+
+<form method="get" action="{% url 'image_handler:semantic_search' %}" class="sem-form">
+  <input type="search" name="q" value="{{ query }}" placeholder="Search all embedded images with CLIP" aria-label="Semantic search query">
+  <label>results <input type="number" name="n" min="1" max="200" value="{{ limit }}"></label>
+  <button type="submit">Search</button>
+</form>
+
+<div class="sem-summary">
+  {% if query %}
+    First {{ results|length }} result{{ results|length|pluralize }} from {{ candidate_count }} embedded image{{ candidate_count|pluralize }}.
+  {% else %}
+    Enter a query to search CLIP embeddings across the whole library.
+  {% endif %}
+</div>
+
+{% if query and candidate_count == 0 %}
+  <p class="sem-empty">No CLIP embeddings found yet. Run the embedder first.</p>
+{% elif query and not results %}
+  <p class="sem-empty">No matches found.</p>
+{% elif results %}
+  <div class="sem-grid">
+    {% for img in results %}
+    <a class="sem-card" href="{{ img.image_url }}">
+      <img src="{{ img.thumb_url }}" alt="{{ img.name }}" loading="lazy">
+      <div class="sem-name">{{ img.name }}</div>
+      <div class="sem-meta">
+        {{ img.similarity }}
+        {% if img.width and img.height %}&nbsp;&middot;&nbsp;{{ img.width }}&times;{{ img.height }}{% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+{% endif %}
+{% endblock %}

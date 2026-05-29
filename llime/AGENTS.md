@@ -39,9 +39,9 @@ reloads in Image Creator).
 - Calls `discover.init()` at startup; paths come from `~/etc/llm.conf`
 - `IMHANDLER_VARIANT = 'hty7'` selects `[hty7.imhandler.core]` for the shared Image Handler app
 
-## Libraries used (installed, not editable)
+## Libraries used
 
 - `hty7.llemon` — LLM config/service layer; source in `~/src/hty7/python3/lib/hty7/llemon/`
-- `hty7.imhandler` — image scanning, thumbnailing, and shared Django views; source in `~/src/hty7/python3/lib/hty7/imhandler/`
+- `imhandler` — image scanning, thumbnailing, and shared Django views; local source in `~/prj/grove/lib/imhandler/`
 
-**IMPORTANT:** Always edit files in the source tree (`~/src/hty7/python3/lib/hty7/`), never the installed version in site-packages. Changes to either library must be applied to the source tree and the user will reinstall the libraries and restart.
+**IMPORTANT:** Edit `imhandler` in this repo. It is loaded directly from `~/prj/grove/lib`, not from an installed site-packages copy.

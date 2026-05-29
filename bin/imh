@@ -1,0 +1,23 @@
+#!/home/yamada/opt/genai/bin/python3
+
+import sys
+from pathlib import Path
+
+_root    = Path(__file__).resolve().parents[1]
+_lib     = str(_root / 'lib')
+_conf    = str(_root / 'etc' / 'imhandler.conf')
+_variant = 'qat' if ('-q' in sys.argv or '--qat' in sys.argv) else 'hty7'
+
+if _lib not in sys.path:
+    sys.path.insert(0, _lib)
+
+from hty7.config import AppConfig, ConfigError as _ConfigError
+from imhandler.cli import main
+
+try:
+    _appconfig = AppConfig(_conf, _variant)
+except (_ConfigError, ValueError) as _e:
+    print(f"Configuration error: {_e}", file=sys.stderr)
+    sys.exit(1)
+
+main('imh', _appconfig)

@@ -1,0 +1,214 @@
+{% extends 'image_handler/base.html' %}
+{% block content %}
+<style>
+  .cd-back { margin-bottom: 1em; font-size: 0.9em; }
+  .cd-back a { color: #06c; text-decoration: none; }
+  .cd-back a:hover { text-decoration: underline; }
+
+  .cd-table { border-collapse: collapse; }
+  .cd-table th, .cd-table td { padding: 0.5em 0.9em; text-align: left; vertical-align: middle; border-bottom: 1px solid #e0e0e0; white-space: nowrap; }
+  .cd-table th { font-size: 0.85em; color: #555; font-weight: normal; }
+  .cd-table th.num, .cd-table td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: monospace; }
+  .cd-table td.file { white-space: normal; word-break: break-all; }
+  .cd-table tr:last-child td { border-bottom: none; }
+  .cd-table tr.is-marked td { background: #fff0f0; }
+
+  .cd-thumb { width: 120px; height: 120px; object-fit: cover; display: block; cursor: pointer; }
+  .cd-thumb:hover { opacity: 0.85; }
+
+  .tier-0 { color: #1a7a1a; font-weight: bold; }
+  .tier-1 { color: #b07000; }
+  .tier-2 { color: #b00000; }
+
+  .mark-btn {
+    font-size: 0.8em; padding: 0.2em 0.6em; cursor: pointer;
+    border: 1px solid #aaa; border-radius: 3px; background: #f5f5f5;
+  }
+  .mark-btn.marked { background: #fcc; border-color: #c00; color: #900; font-weight: bold; }
+  .mark-btn:hover { background: #e8e8e8; }
+  .mark-btn.marked:hover { background: #faa; }
+
+  /* ── deletion bar ── */
+  #del-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: #222; color: #eee; font-size: 0.9em;
+    padding: 0.5em 1.2em; display: flex; align-items: center; gap: 1.2em;
+    z-index: 50;
+  }
+  #del-bar a, #del-bar button {
+    color: #adf; background: none; border: none; cursor: pointer;
+    font-size: inherit; padding: 0; text-decoration: underline;
+  }
+  #del-bar button { color: #f99; }
+  #del-bar .spacer { flex: 1; }
+
+  /* pad page so content isn't hidden under bar */
+  body { padding-bottom: 3em; }
+
+  /* ── lightbox ── */
+  #lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 100; justify-content: center; align-items: center; }
+  #lightbox.open { display: flex; }
+  #lb-img { max-width: 90vw; max-height: 90vh; object-fit: contain; display: block; }
+  #lb-close { position: fixed; top: 0.6em; right: 0.8em; color: #fff; font-size: 1.8em; cursor: pointer; line-height: 1; user-select: none; z-index: 101; }
+  #lb-prev, #lb-next { position: fixed; top: 50%; transform: translateY(-50%); color: #fff; font-size: 2.5em; cursor: pointer; user-select: none; padding: 0 0.3em; z-index: 101; }
+  #lb-prev { left: 0.2em; }
+  #lb-next { right: 0.2em; }
+  #lb-prev:hover, #lb-next:hover { color: #adf; }
+  #lb-info { position: fixed; bottom: 2.5em; left: 50%; transform: translateX(-50%); color: #ccc; font-size: 0.9em; white-space: nowrap; }
+  #lb-spinner { position: absolute; color: #888; font-size: 0.9em; }
+</style>
+
+<div class="cd-back"><a href="{{ back_url }}">&larr; Back to clusters</a></div>
+
+<table class="cd-table">
+  <thead>
+    <tr>
+      <th></th>
+      <th></th>
+      <th>File</th>
+      <th class="num">Dimensions</th>
+      <th class="num">Laplacian</th>
+      <th class="num">HF power</th>
+      <th class="num">Blocking</th>
+      <th class="num">Sharpness cons.</th>
+      <th class="num">Tier</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in members %}
+    <tr class="{% if m.marked %}is-marked{% endif %}" data-path="{{ m.path }}">
+      <td>
+        <img class="cd-thumb" src="{{ m.thumb_url }}" alt="{{ m.name }}"
+             data-idx="{{ forloop.counter0 }}" loading="lazy">
+      </td>
+      <td>
+        <button class="mark-btn {% if m.marked %}marked{% endif %}"
+                data-path="{{ m.path }}">
+          {% if m.marked %}Unmark{% else %}Mark{% endif %}
+        </button>
+      </td>
+      <td class="file">{{ m.name }}</td>
+      <td class="num">
+        {% if m.width and m.height %}{{ m.width }}&times;{{ m.height }}{% else %}&mdash;{% endif %}
+      </td>
+      <td class="num">
+        {% if m.laplacian_score is not None %}{{ m.laplacian_score|floatformat:6 }}{% else %}&mdash;{% endif %}
+      </td>
+      <td class="num">
+        {% if m.hf_power_ratio is not None %}{{ m.hf_power_ratio|floatformat:4 }}{% else %}&mdash;{% endif %}
+      </td>
+      <td class="num">
+        {% if m.blocking_score is not None %}{{ m.blocking_score|floatformat:4 }}{% else %}&mdash;{% endif %}
+      </td>
+      <td class="num">
+        {% if m.sharpness_consistency is not None %}{{ m.sharpness_consistency|floatformat:4 }}{% else %}&mdash;{% endif %}
+      </td>
+      <td class="num tier-{{ m.quality_tier }}">
+        {% if m.quality_tier is not None %}{{ m.quality_tier }}{% else %}&mdash;{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div id="del-bar">
+  <span id="del-count">{{ deletion_count }} file{{ deletion_count|pluralize }} marked for deletion</span>
+  <span class="spacer"></span>
+  <a href="{% url 'image_handler:deletion_list_download' %}">Download list</a>
+  <form method="post" action="{% url 'image_handler:deletion_list_clear' %}" style="display:inline">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <button type="submit">Clear list</button>
+  </form>
+</div>
+
+<div id="lightbox">
+  <span id="lb-close" title="Close (Esc)">&#x2715;</span>
+  <span id="lb-prev" title="Previous (&#x2190;)">&#x276E;</span>
+  <img id="lb-img" src="" alt="">
+  <span id="lb-spinner">loading&hellip;</span>
+  <span id="lb-next" title="Next (&#x2192;)">&#x276F;</span>
+  <div id="lb-info"></div>
+</div>
+
+{{ members|json_script:"member-data" }}
+<script>
+const MEMBERS = JSON.parse(document.getElementById('member-data').textContent);
+const MARK_URL = "{% url 'image_handler:mark_toggle' %}";
+const CSRF = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+// ── mark/unmark ──
+document.querySelectorAll('.mark-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const path = btn.dataset.path;
+    fetch(MARK_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': CSRF},
+      body: 'path=' + encodeURIComponent(path),
+    })
+    .then(r => r.json())
+    .then(data => {
+      const row = btn.closest('tr');
+      if (data.marked) {
+        btn.textContent = 'Unmark';
+        btn.classList.add('marked');
+        row.classList.add('is-marked');
+      } else {
+        btn.textContent = 'Mark';
+        btn.classList.remove('marked');
+        row.classList.remove('is-marked');
+      }
+      document.getElementById('del-count').textContent =
+        data.count + ' file' + (data.count === 1 ? '' : 's') + ' marked for deletion';
+    });
+  });
+});
+
+// ── lightbox ──
+const lb        = document.getElementById('lightbox');
+const lbImg     = document.getElementById('lb-img');
+const lbInfo    = document.getElementById('lb-info');
+const lbSpinner = document.getElementById('lb-spinner');
+let lbIdx = 0;
+
+function lbOpen(idx) {
+  lbIdx = idx;
+  lb.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  lbLoad();
+}
+function lbLoad() {
+  const m = MEMBERS[lbIdx];
+  lbSpinner.style.display = '';
+  lbImg.style.display = 'none';
+  lbInfo.textContent = m.name + '  (' + (lbIdx + 1) + ' / ' + MEMBERS.length + ')';
+  const i = new Image();
+  i.onload = () => { lbImg.src = i.src; lbImg.style.display = ''; lbSpinner.style.display = 'none'; };
+  i.onerror = () => { lbSpinner.textContent = 'load error'; };
+  i.src = m.image_url;
+}
+function lbClose() {
+  lb.classList.remove('open');
+  document.body.style.overflow = '';
+  lbImg.src = '';
+}
+function lbNav(delta) {
+  lbIdx = ((lbIdx + delta) + MEMBERS.length) % MEMBERS.length;
+  lbLoad();
+}
+
+document.getElementById('lb-close').addEventListener('click', lbClose);
+document.getElementById('lb-prev').addEventListener('click', () => lbNav(-1));
+document.getElementById('lb-next').addEventListener('click', () => lbNav(1));
+lb.addEventListener('click', e => { if (e.target === lb) lbClose(); });
+document.addEventListener('keydown', e => {
+  if (!lb.classList.contains('open')) return;
+  if (e.key === 'Escape')     lbClose();
+  if (e.key === 'ArrowLeft')  lbNav(-1);
+  if (e.key === 'ArrowRight') lbNav(1);
+});
+document.querySelectorAll('.cd-thumb').forEach(el => {
+  el.addEventListener('click', () => lbOpen(parseInt(el.dataset.idx)));
+});
+</script>
+{% endblock %}

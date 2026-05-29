@@ -57,7 +57,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'llemon_djview',
-    'hty7.imhandler.djview',
+    'imhandler.djview',
     'base',
     'to_do_list',
     'mediaview',

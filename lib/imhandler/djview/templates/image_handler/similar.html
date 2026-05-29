@@ -1,0 +1,169 @@
+{% extends 'image_handler/base.html' %}
+{% block content %}
+<style>
+  .sim-back { margin-bottom: 0.8em; font-size: 0.9em; }
+  .sim-back a { color: #06c; text-decoration: none; }
+  .sim-back a:hover { text-decoration: underline; }
+
+  .sim-controls { display: flex; align-items: center; gap: 1.5em; margin-bottom: 1em; font-size: 0.9em; flex-wrap: wrap; }
+
+  .sim-main { display: flex; gap: 2em; align-items: flex-start; margin-bottom: 1.5em; flex-wrap: wrap; }
+  .sim-panel { flex: 1 1 0; min-width: 0; }
+  .sim-panel img { max-width: 100%; max-height: 70vh; object-fit: contain; display: block; cursor: zoom-in; }
+  .sim-panel .fname { font-size: 0.85em; color: #555; margin-top: 0.4em; word-break: break-all; }
+  .sim-panel .fdims { font-size: 0.8em; color: #777; font-variant-numeric: tabular-nums; }
+  .sim-panel .fscore { font-size: 0.8em; color: #888; }
+  .sim-panel-label { font-size: 0.8em; color: #999; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3em; }
+
+  .mark-btn {
+    font-size: 0.85em; padding: 0.3em 0.8em; cursor: pointer;
+    border: 1px solid #aaa; border-radius: 3px; background: #f5f5f5; margin-top: 0.6em;
+  }
+  .mark-btn.marked { background: #fcc; border-color: #c00; color: #900; font-weight: bold; }
+  .mark-btn:hover { background: #e8e8e8; }
+  .mark-btn.marked:hover { background: #faa; }
+
+  .sim-neighbors { margin-top: 0.5em; }
+  .sim-neighbors h3 { font-size: 0.9em; font-weight: normal; color: #555; margin: 0 0 0.6em; }
+  .sim-grid { display: flex; gap: 10px; flex-wrap: wrap; }
+  .sim-thumb { width: 140px; cursor: pointer; text-decoration: none; color: inherit; }
+  .sim-thumb img { width: 140px; height: 140px; object-fit: cover; display: block; border: 2px solid transparent; }
+  .sim-thumb:hover img { border-color: #06c; opacity: 0.9; }
+  .sim-thumb .sname { font-size: 0.72em; color: #444; margin-top: 0.2em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sim-thumb .sscore { font-size: 0.7em; color: #888; }
+
+  .no-emb { color: #888; font-style: italic; font-size: 0.9em; }
+
+  /* deletion bar */
+  #del-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: #222; color: #eee; font-size: 0.9em;
+    padding: 0.5em 1.2em; display: flex; align-items: center; gap: 1.2em;
+    z-index: 50;
+  }
+  #del-bar a, #del-bar button {
+    color: #adf; background: none; border: none; cursor: pointer;
+    font-size: inherit; padding: 0; text-decoration: underline;
+  }
+  #del-bar button { color: #f99; }
+  #del-bar .spacer { flex: 1; }
+  body { padding-bottom: 3em; }
+
+  /* lightbox */
+  #lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 100; justify-content: center; align-items: center; }
+  #lightbox.open { display: flex; }
+  #lb-img { max-width: 90vw; max-height: 90vh; object-fit: contain; display: block; }
+  #lb-close { position: fixed; top: 0.6em; right: 0.8em; color: #fff; font-size: 1.8em; cursor: pointer; line-height: 1; user-select: none; z-index: 101; }
+</style>
+
+<div class="sim-back"><a href="{{ browse_url }}">&larr; Back to directory</a></div>
+
+<div class="sim-controls">
+  <span>
+    Model:
+    {% if model == 'clip' %}<strong>CLIP</strong>{% else %}<a href="{{ clip_url }}">CLIP</a>{% endif %}
+    &nbsp;|&nbsp;
+    {% if model == 'sscd' %}<strong>SSCD</strong>{% else %}<a href="{{ sscd_url }}">SSCD</a>{% endif %}
+  </span>
+</div>
+
+<div class="sim-main">
+  <div class="sim-panel">
+    <div class="sim-panel-label">Focus</div>
+    <img class="lb-trigger" src="{{ image_url }}" alt="{{ name }}" data-src="{{ image_url }}" title="Click to enlarge">
+    <div class="fname">{{ name }}</div>
+    {% if focal_width and focal_height %}<div class="fdims">{{ focal_width }}&times;{{ focal_height }}</div>{% endif %}
+    <button class="mark-btn {% if marked %}marked{% endif %}" data-path="{{ path }}">
+      {% if marked %}Unmark{% else %}Mark{% endif %}
+    </button>
+  </div>
+
+  {% if closest %}
+  <div class="sim-panel">
+    <div class="sim-panel-label">Closest &mdash; <a href="{{ closest.similar_url }}">focus here</a></div>
+    <img class="lb-trigger" src="{{ closest.image_url }}" alt="{{ closest.name }}" data-src="{{ closest.image_url }}" title="Click to enlarge">
+    <div class="fname">{{ closest.name }}</div>
+    {% if closest.width and closest.height %}<div class="fdims">{{ closest.width }}&times;{{ closest.height }}</div>{% endif %}
+    <div class="fscore">{{ closest.similarity }}</div>
+    <button class="mark-btn {% if closest.marked %}marked{% endif %}" data-path="{{ closest.path }}">
+      {% if closest.marked %}Unmark{% else %}Mark{% endif %}
+    </button>
+  </div>
+  {% endif %}
+</div>
+
+{% if no_embedding %}
+  <p class="no-emb">No {{ model|upper }} embedding found for this image — run the embedder first.</p>
+{% elif neighbors %}
+  <div class="sim-neighbors">
+    <h3>More similar ({{ model|upper }})</h3>
+    <div class="sim-grid">
+      {% for nb in neighbors %}
+      <a class="sim-thumb" href="{{ nb.similar_url }}">
+        <img src="{{ nb.thumb_url }}" alt="{{ nb.name }}" loading="lazy">
+        <div class="sname" title="{{ nb.name }}">{{ nb.name }}</div>
+        <div class="sscore">{{ nb.similarity }}</div>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+{% elif not closest and not no_embedding %}
+  <p class="no-emb">No other images with {{ model|upper }} embeddings found in this directory.</p>
+{% endif %}
+
+<div id="del-bar">
+  <span id="del-count">{{ deletion_count }} file{{ deletion_count|pluralize }} marked for deletion</span>
+  <span class="spacer"></span>
+  <a href="{% url 'image_handler:deletion_list_download' %}">Download list</a>
+  <form method="post" action="{% url 'image_handler:deletion_list_clear' %}" style="display:inline">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ request.path }}?path={{ path|urlencode }}&model={{ model }}">
+    <button type="submit">Clear list</button>
+  </form>
+</div>
+
+<div id="lightbox">
+  <span id="lb-close" title="Close (Esc)">&#x2715;</span>
+  <img id="lb-img" src="" alt="">
+</div>
+
+<script>
+const MARK_URL = "{% url 'image_handler:mark_toggle' %}";
+const CSRF = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+// mark/unmark buttons
+document.querySelectorAll('.mark-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    fetch(MARK_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': CSRF},
+      body: 'path=' + encodeURIComponent(btn.dataset.path),
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.marked) {
+        btn.textContent = 'Unmark';
+        btn.classList.add('marked');
+      } else {
+        btn.textContent = 'Mark';
+        btn.classList.remove('marked');
+      }
+      document.getElementById('del-count').textContent =
+        data.count + ' file' + (data.count === 1 ? '' : 's') + ' marked for deletion';
+    });
+  });
+});
+
+// lightbox
+const lb    = document.getElementById('lightbox');
+const lbImg = document.getElementById('lb-img');
+function lbOpen(src) { lbImg.src = src; lb.classList.add('open'); document.body.style.overflow = 'hidden'; }
+function lbClose()   { lb.classList.remove('open'); document.body.style.overflow = ''; lbImg.src = ''; }
+document.querySelectorAll('.lb-trigger').forEach(img => {
+  img.addEventListener('click', () => lbOpen(img.dataset.src));
+});
+document.getElementById('lb-close').addEventListener('click', lbClose);
+lb.addEventListener('click', e => { if (e.target === lb) lbClose(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && lb.classList.contains('open')) lbClose(); });
+</script>
+{% endblock %}

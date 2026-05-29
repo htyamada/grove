@@ -1,0 +1,45 @@
+{% extends 'image_handler/base.html' %}
+{% block content %}
+<form method="get">
+  <input type="hidden" name="model" value="{{ model }}">
+  Model:
+  {% if model == 'clip' %}<strong>CLIP</strong>{% else %}<a href="{{ clip_url }}">CLIP</a>{% endif %}
+  &nbsp;|&nbsp;
+  {% if model == 'sscd' %}<strong>SSCD</strong>{% else %}<a href="{{ sscd_url }}">SSCD</a>{% endif %}
+  &nbsp;&nbsp;
+  Threshold: <input type="number" name="threshold" value="{{ threshold }}" min="0" max="1" step="0.01" style="width:5em">
+  <button type="submit">Run</button>
+</form>
+<p>
+  {% if num_clusters == 0 %}
+    No duplicate clusters found.
+  {% else %}
+    {{ num_clusters }} cluster{{ num_clusters|pluralize }} found.
+  {% endif %}
+</p>
+
+{% if clusters %}
+<ul>
+  {% for cluster in clusters %}
+  <li>
+    <a href="{% url 'image_handler:cluster_detail' cluster.id %}?model={{ model }}&threshold={{ threshold }}">
+      Cluster {{ cluster.id }} &mdash; {{ cluster.members|length }} image{{ cluster.members|length|pluralize }}
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if large_clusters %}
+<h3>Large clusters</h3>
+<ul>
+  {% for cluster in large_clusters %}
+  <li>
+    <a href="{% url 'image_handler:cluster_detail' cluster.id %}?model={{ model }}&threshold={{ threshold }}">
+      Cluster {{ cluster.id }} &mdash; {{ cluster.members|length }} image{{ cluster.members|length|pluralize }}
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

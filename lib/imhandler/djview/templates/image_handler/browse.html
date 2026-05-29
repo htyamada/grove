@@ -1,0 +1,279 @@
+{% extends 'image_handler/base.html' %}
+
+{% block content %}
+<style>
+  /* ── breadcrumb ── */
+  .img-breadcrumb { margin-bottom: 1em; font-size: 0.95em; }
+  .img-breadcrumb a { color: #06c; text-decoration: none; }
+  .img-breadcrumb a:hover { text-decoration: underline; }
+  .img-breadcrumb .sep { color: #aaa; margin: 0 0.3em; }
+  .img-breadcrumb .current { font-weight: bold; }
+
+  /* ── directory list ── */
+  #dir-list { list-style: none; margin: 0; padding: 0; }
+  #dir-list li { padding: 0.15em 0; }
+  .dir-item { text-decoration: none; color: #06c; }
+  .dir-item:hover { text-decoration: underline; }
+  .dir-count { color: #888; font-size: 0.88em; margin-left: 0.5em; }
+
+  /* ── toolbar ── */
+  .img-toolbar { display: flex; align-items: center; gap: 1em; margin-bottom: 0.8em; font-size: 0.9em; }
+  .img-toolbar .spacer { flex: 1; }
+  .cache-warn { background: #fff3cd; border: 1px solid #e0aa00; padding: 0.4em 0.8em; margin-bottom: 0.8em; font-size: 0.88em; }
+
+  /* ── embed panel ── */
+  #embed-panel { margin-bottom: 1em; font-size: 0.9em; }
+  #embed-btn {
+    padding: 0.3em 0.9em; font-size: 0.9em; cursor: pointer;
+    background: #06c; color: #fff; border: none; border-radius: 3px;
+  }
+  #embed-btn:hover:not(:disabled) { background: #04a; }
+  #embed-btn:disabled { background: #aaa; cursor: default; }
+  #embed-status { display: inline; margin-left: 0.7em; color: #555; }
+  #embed-log {
+    display: none; margin-top: 0.5em;
+    background: #1a1a1a; color: #ddd; font-family: monospace; font-size: 0.8em;
+    padding: 0.5em 0.7em; border-radius: 3px; white-space: pre-wrap;
+    max-height: 12em; overflow-y: auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { display: inline-block; width: 0.8em; height: 0.8em; border: 2px solid #ccc; border-top-color: #06c; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 0.3em; }
+  /* ── thumbnail grid ── */
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px; }
+  .thumb-item { cursor: pointer; overflow: hidden; background: #eee; aspect-ratio: 1; position: relative; }
+  .thumb-item img { width: 100%; height: 100%; object-fit: cover; display: block; transition: opacity 0.15s; }
+  .thumb-item:hover img { opacity: 0.85; }
+  .thumb-item .name-overlay {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    background: rgba(0,0,0,0.5); color: #fff; font-size: 0.72em;
+    padding: 0.2em 0.4em; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; opacity: 0; transition: opacity 0.15s;
+  }
+  .thumb-item:hover .name-overlay { opacity: 1; }
+  {% if similarity_mode %}.thumb-item.has-similar { outline: 3px solid #4c4; outline-offset: -3px; }{% endif %}
+
+  /* ── lightbox ── */
+  #lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.92); z-index: 100; justify-content: center; align-items: center; }
+  #lightbox.open { display: flex; }
+  #lb-img { max-width: 90vw; max-height: 90vh; object-fit: contain; display: block; }
+  #lb-close { position: fixed; top: 0.6em; right: 0.8em; color: #fff; font-size: 1.8em; cursor: pointer; line-height: 1; user-select: none; z-index: 101; }
+  #lb-prev, #lb-next { position: fixed; top: 50%; transform: translateY(-50%); color: #fff; font-size: 2.5em; cursor: pointer; user-select: none; padding: 0 0.3em; z-index: 101; }
+  #lb-prev { left: 0.2em; }
+  #lb-next { right: 0.2em; }
+  #lb-prev:hover, #lb-next:hover { color: #adf; }
+  #lb-info { position: fixed; bottom: 0.6em; left: 50%; transform: translateX(-50%); color: #ccc; font-size: 0.9em; white-space: nowrap; }
+  #lb-spinner { position: absolute; color: #888; font-size: 0.9em; }
+</style>
+
+{# breadcrumb #}
+<div class="img-breadcrumb">
+  {% for crumb in breadcrumb %}
+    {% if not forloop.last %}
+      <a href="{{ crumb.url }}">{{ crumb.name }}</a><span class="sep">/</span>
+    {% else %}
+      <span class="current">{{ crumb.name }}</span>
+    {% endif %}
+  {% endfor %}
+</div>
+
+{% if embed_stream_url %}
+<div id="embed-panel">
+  <button id="embed-btn">Embed</button>
+  <button id="embed-stop" style="display:none">Stop</button>
+  <span id="embed-status"></span>
+  <pre id="embed-log"></pre>
+</div>
+<script>
+(function () {
+  const btn     = document.getElementById('embed-btn');
+  const stopBtn = document.getElementById('embed-stop');
+  const status  = document.getElementById('embed-status');
+  const log     = document.getElementById('embed-log');
+  let es = null;
+  let done = false;
+
+  function finish(msg, color) {
+    if (es) { es.close(); es = null; }
+    btn.disabled = false;
+    stopBtn.style.display = 'none';
+    stopBtn.disabled = false;
+    status.innerHTML = msg;
+    status.style.color = color || '';
+  }
+
+  btn.addEventListener('click', function () {
+    done = false;
+    btn.disabled = true;
+    stopBtn.style.display = '';
+    stopBtn.disabled = false;
+    log.textContent = '';
+    log.style.display = 'block';
+    status.innerHTML = '<span class="spinner"></span>0%';
+    status.style.color = '';
+    es = new EventSource("{{ embed_stream_url|escapejs }}");
+    es.onmessage = function (e) {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'start' || msg.type === 'output') {
+        log.textContent += msg.message + '\n';
+        log.scrollTop = log.scrollHeight;
+      } else if (msg.type === 'progress') {
+        status.innerHTML = '<span class="spinner"></span>' + msg.pct + '%' + (msg.dir ? ' — ' + msg.dir : '');
+      } else if (msg.type === 'done') {
+        done = true;
+        finish('&#10003; ' + msg.processed + ' embedded, ' + msg.skipped + ' skipped.', '#080');
+      } else if (msg.type === 'error') {
+        done = true;
+        log.textContent += 'Error: ' + msg.message + '\n';
+        log.scrollTop = log.scrollHeight;
+        finish('Failed.', '#c00');
+      }
+    };
+    es.onerror = function () {
+      if (!done) finish('Connection lost.', '#c00');
+    };
+  });
+
+  stopBtn.addEventListener('click', function () {
+    stopBtn.disabled = true;
+    status.innerHTML = 'Stopping…';
+    if (es) { es.close(); es = null; }
+    const cancelUrl = "{% url 'image_handler:embed_cancel' %}";
+    const albumParam = new URLSearchParams(new URL("{{ embed_stream_url|escapejs }}", location).search).get('album') || '.';
+    fetch(cancelUrl, {
+      method: 'POST',
+      body: new URLSearchParams({album: albumParam}),
+    }).finally(function () {
+      btn.disabled = false;
+      stopBtn.style.display = 'none';
+      status.innerHTML = 'Stopped.';
+      status.style.color = '';
+    });
+  });
+})();
+</script>
+{% endif %}
+
+{% if children is not None %}
+  {# ── directory listing ── #}
+  {% if children %}
+  <ul id="dir-list">
+    {% for d in children %}
+    <li>
+      <a class="dir-item" href="{{ d.url }}">{{ d.name }}</a>
+      <span class="dir-count">{{ d.count }} image{{ d.count|pluralize }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>Empty directory.</p>
+  {% endif %}
+
+{% else %}
+  {# ── image grid ── #}
+  {% if cache_missing %}
+  <div class="cache-warn"><strong>cache_dir</strong> is not configured — thumbnails cannot be generated. Set it in <code>etc/imhandler.conf</code>.</div>
+  {% endif %}
+
+  <div class="img-toolbar">
+    <span>{{ images|length }} image{{ images|length|pluralize }}</span>
+    <span class="spacer"></span>
+    {% if images %}
+    <label>sort:
+      <select id="sort-select">
+        <option value="name"  {% if sort_key == "name"  %}selected{% endif %}>name</option>
+        <option value="mtime" {% if sort_key == "mtime" %}selected{% endif %}>date</option>
+        <option value="size"  {% if sort_key == "size"  %}selected{% endif %}>size</option>
+      </select>
+    </label>
+    {% endif %}
+  </div>
+
+  {% if images %}
+  <div id="grid">
+    {% for img in images %}
+    <div class="thumb-item{% if similarity_mode and img.has_similar %} has-similar{% endif %}" data-idx="{{ forloop.counter0 }}">
+      <img src="{{ img.thumb_url }}" alt="{{ img.name }}" loading="lazy">
+      <div class="name-overlay">{{ img.name }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p>No images here.</p>
+  {% endif %}
+
+  <div id="lightbox">
+    <span id="lb-close" title="Close (Esc)">&#x2715;</span>
+    <span id="lb-prev" title="Previous (&#x2190;)">&#x276E;</span>
+    <img id="lb-img" src="" alt="">
+    <span id="lb-spinner">loading&hellip;</span>
+    <span id="lb-next" title="Next (&#x2192;)">&#x276F;</span>
+    <div id="lb-info"></div>
+  </div>
+
+  {{ images|json_script:"image-data" }}
+  <script>
+  const IMAGES = JSON.parse(document.getElementById('image-data').textContent);
+  const SIMILARITY_MODE = {{ similarity_mode|yesno:"true,false" }};
+
+  const sortSelect = document.getElementById('sort-select');
+  if (sortSelect) {
+    sortSelect.addEventListener('change', () => {
+      const url = new URL(location.href);
+      url.searchParams.set('sort', sortSelect.value);
+      location.href = url.toString();
+    });
+  }
+
+  const lb        = document.getElementById('lightbox');
+  const lbImg     = document.getElementById('lb-img');
+  const lbInfo    = document.getElementById('lb-info');
+  const lbSpinner = document.getElementById('lb-spinner');
+  let lbIdx = 0;
+
+  function lbOpen(idx) {
+    lbIdx = ((idx % IMAGES.length) + IMAGES.length) % IMAGES.length;
+    lb.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    lbLoad();
+  }
+  function lbLoad() {
+    const img = IMAGES[lbIdx];
+    lbSpinner.style.display = '';
+    lbImg.style.display = 'none';
+    lbInfo.textContent = img.name + '  (' + (lbIdx + 1) + ' / ' + IMAGES.length + ')';
+    const i = new Image();
+    i.onload = () => { lbImg.src = i.src; lbImg.style.display = ''; lbSpinner.style.display = 'none'; };
+    i.onerror = () => { lbSpinner.textContent = 'load error'; };
+    i.src = img.image_url;
+  }
+  function lbClose() {
+    lb.classList.remove('open');
+    document.body.style.overflow = '';
+    lbImg.src = '';
+  }
+
+  document.getElementById('lb-close').addEventListener('click', lbClose);
+  document.getElementById('lb-prev').addEventListener('click', () => { lbIdx = ((lbIdx - 1 + IMAGES.length) % IMAGES.length); lbLoad(); });
+  document.getElementById('lb-next').addEventListener('click', () => { lbIdx = ((lbIdx + 1) % IMAGES.length); lbLoad(); });
+  lb.addEventListener('click', e => { if (e.target === lb) lbClose(); });
+  document.addEventListener('keydown', e => {
+    if (!lb.classList.contains('open')) return;
+    if (e.key === 'Escape')     lbClose();
+    if (e.key === 'ArrowLeft')  { lbIdx = ((lbIdx - 1 + IMAGES.length) % IMAGES.length); lbLoad(); }
+    if (e.key === 'ArrowRight') { lbIdx = ((lbIdx + 1) % IMAGES.length); lbLoad(); }
+  });
+  document.querySelectorAll('.thumb-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = parseInt(el.dataset.idx);
+      const img = IMAGES[idx];
+      if (SIMILARITY_MODE && img.has_similar) {
+        window.location.href = img.similar_url;
+      } else {
+        lbOpen(idx);
+      }
+    });
+  });
+  </script>
+{% endif %}
+
+{% endblock %}

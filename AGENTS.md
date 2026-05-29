@@ -2,14 +2,17 @@
 
 ## Project Structure & Module Organization
 
-This repository contains the `llime` Django project and shared local libraries.
-Application code for the web project lives under `llime/`: project settings are
-in `llime/config/`, Django apps are in directories such as `base/`, `llemon/`,
-and `to_do_list/`. Project specs are consolidated in root `specs/`, including
-To Do, mediaview, and LLemon frontend/media specs. Reusable shared code lives
-under `lib/`; currently `lib/mediaview/` is a standalone Django app, and
-`lib/llemon_djview/` contains the shared LLemon Django views and templates. The
-active consumers of `lib/mediaview` and `lib/llemon_djview` are `llime` and
+This repository contains the `llime` Django project, shared local libraries,
+and the imhandler command project. Application code for the web project lives
+under `llime/`: project settings are in `llime/config/`, Django apps are in
+directories such as `base/` and `to_do_list/`. Project specs are consolidated
+in root `specs/`, including To Do, mediaview, imhandler, and LLemon frontend/media specs.
+Reusable shared code lives under `lib/`; currently `lib/mediaview/` is a
+standalone Django app, `lib/llemon_djview/` contains the shared LLemon Django
+views and templates, and `lib/imhandler/` contains the local imhandler
+library and Django view app. The imhandler CLI lives at `bin/imh`, and its
+config lives under `imhandler/`.
+The active consumers of these shared Django apps are `llime` and
 `../qat/knip`.
 
 Templates are stored per app in `templates/`, and static assets are under each
@@ -20,8 +23,9 @@ app’s `static/` directory. Tests, where present, use each app’s `tests.py`.
 - `cd llime && ./manage.py check` validates Django settings, app loading, URL
   configuration, and template discovery.
 - `cd llime && ./start-server` starts the local Django development server.
-- `python3 -m py_compile lib/mediaview/*.py lib/llemon_djview/*.py` checks the
-  shared Django packages for Python syntax errors.
+- `python3 -m py_compile lib/mediaview/*.py lib/llemon_djview/*.py lib/imhandler/*.py lib/imhandler/cli/*.py lib/imhandler/djview/*.py bin/imh` checks the
+  shared Python packages for syntax errors.
+- `python3 -m unittest discover -s tests` runs the repository-level unit tests.
 - `cd llime && ./manage.py test` runs Django tests for apps that define them.
 
 ## Coding Style & Naming Conventions
@@ -37,7 +41,7 @@ pattern.
 
 Run `./manage.py check` after settings, URL, template, or app-loading changes.
 Run focused Django tests with `./manage.py test app_name` when changing app
-behavior. For `mediaview`, also run the `py_compile` command above and manually
+behavior. For shared libraries, also run the `py_compile` command above and manually
 verify browse, thumbnail, metadata, move, delete, and sidecar handling when those
 flows are touched.
 

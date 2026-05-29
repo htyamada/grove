@@ -22,7 +22,7 @@ urlpatterns = [
     path('', include('base.urls')),
     path('llemon/', include('llemon_djview.urls')),
     path('llemon/persona/', include('llemon_djview.persona_urls')),
-    path('image_handler/', include('hty7.imhandler.djview.urls')),
+    path('image_handler/', include('imhandler.djview.urls')),
     path('to-do-list/', include('to_do_list.urls')),
     path('mediaview/', include('mediaview.urls', namespace='mediaview')),
 ]
