@@ -19,6 +19,10 @@ cache_dir: str = ''
 _DEFAULT_CONF = str(Path(__file__).resolve().parents[2] / 'etc' / 'imhandler.conf')
 
 
+def _config_str(value: object) -> str:
+    return str(value).strip()
+
+
 def init(ac: AppConfig) -> None:
     """Set module globals from AppConfig (variant already selected)."""
     global image_roots, image_root_names, cache_dir
@@ -34,11 +38,12 @@ def init(ac: AppConfig) -> None:
     names: list[str] = []
     for item in items:
         if isinstance(item, str):
-            roots.append(item)
-            names.append(Path(item).expanduser().name)
+            p = _config_str(item)
+            roots.append(p)
+            names.append(Path(p).expanduser().name)
         elif isinstance(item, dict):
-            p = str(item.get('path', ''))
-            n = str(item.get('name', '') or Path(p).expanduser().name)
+            p = _config_str(item.get('path', ''))
+            n = _config_str(item.get('name', '') or Path(p).expanduser().name)
             roots.append(p)
             names.append(n)
     image_roots = roots

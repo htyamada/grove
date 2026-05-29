@@ -23,6 +23,32 @@ class ImhandlerAppConfigTests(unittest.TestCase):
         appconfig_cls.assert_called_once_with(str(expected_conf), 'hty7')
         init_mock.assert_called_once_with(fake_appconfig)
 
+    def test_init_strips_whitespace_from_image_root_tables(self) -> None:
+        ac = mock.Mock()
+        ac.get.side_effect = lambda _project, _layer, key: {
+            'image_root': [
+                {'path': '  /srv/images  ', 'name': '  Images  '},
+            ],
+            'cache_dir': '',
+        }[key]
+
+        appconfig.init(ac)
+
+        self.assertEqual(appconfig.image_roots, ['/srv/images'])
+        self.assertEqual(appconfig.image_root_names, ['Images'])
+
+    def test_init_strips_whitespace_from_image_root_strings(self) -> None:
+        ac = mock.Mock()
+        ac.get.side_effect = lambda _project, _layer, key: {
+            'image_root': ['  /srv/images  '],
+            'cache_dir': '',
+        }[key]
+
+        appconfig.init(ac)
+
+        self.assertEqual(appconfig.image_roots, ['/srv/images'])
+        self.assertEqual(appconfig.image_root_names, ['images'])
+
 
 if __name__ == '__main__':
     unittest.main()
