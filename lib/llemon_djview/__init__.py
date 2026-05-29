@@ -1,7 +1,4 @@
-"""llemon_djview - Django view logic for the LLemon chat interface.
-
-Each app instantiates LLemonViewSet with its own template prefix and URL namespace.
-"""
+"""llemon_djview - reusable Django views and URLs for the LLemon interface."""
 
 import json
 import logging

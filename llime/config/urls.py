@@ -20,8 +20,8 @@ from django.urls import include, path
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('', include('base.urls')),
-    path('llemon/', include('llemon.urls')),
-    path('llemon/persona/', include('llemon.persona_urls')),
+    path('llemon/', include('llemon_djview.urls')),
+    path('llemon/persona/', include('llemon_djview.persona_urls')),
     path('image_handler/', include('image_handler.urls')),
     path('to-do-list/', include('to_do_list.urls')),
     path('mediaview/', include('mediaview.urls', namespace='mediaview')),

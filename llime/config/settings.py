@@ -58,7 +58,6 @@ INSTALLED_APPS = [
     'llemon_djview',
     'hty7.imhandler.djview',
     'base',
-    'llemon',
     'image_handler',
     'to_do_list',
     'mediaview',

@@ -18,7 +18,7 @@ _nav = []
 
 _TEMPLATE = 'mediaview/browse.html'
 _APP = 'mediaview'
-_STEM_SIDECAR_SUFFIXES = frozenset({'.aae', '.xmp'})
+_STEM_SIDECAR_SUFFIXES = frozenset({'.aae', '.json', '.xmp'})
 _RENAME_IMAGE_SUFFIXES = frozenset({'.png', '.jpg', '.gif', '.tiff'})
 _RENAME_SUFFIX_ALIASES = {
     '.jpeg': '.jpg',
@@ -83,6 +83,10 @@ def _associated_sidecars(path: Path) -> list[Path]:
     return sorted(sidecars, key=lambda p: p.name.lower())
 
 
+def _json_sidecar_path(path: Path) -> Path:
+    return path.with_suffix('.json')
+
+
 def _renamed_sidecar_path(sidecar: Path, old_path: Path, new_path: Path) -> Path:
     if sidecar.name.startswith(old_path.name + '.'):
         suffix = sidecar.name[len(old_path.name):]
@@ -108,7 +112,7 @@ def _item_for_file(root_name, root, entry):
     except OSError:
         thumb_version = ''
 
-    sidecar_path = entry.parent / (entry.name + '.json')
+    sidecar_path = _json_sidecar_path(entry)
     sidecar = None
     if sidecar_path.exists():
         try:
@@ -273,7 +277,7 @@ def info(request, root_name, subpath):
     if not target.is_file():
         raise Http404
 
-    sidecar_path = target.parent / (target.name + '.json')
+    sidecar_path = _json_sidecar_path(target)
     if sidecar_path.exists():
         try:
             data = json.loads(sidecar_path.read_text(encoding='utf-8'))
@@ -389,7 +393,7 @@ def save_metadata(request):
     if not os.access(target.parent, os.W_OK | os.X_OK):
         return JsonResponse({'error': 'Directory is not writable'}, status=400)
 
-    sidecar_path = target.parent / (target.name + '.json')
+    sidecar_path = _json_sidecar_path(target)
     try:
         sidecar_path.write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
