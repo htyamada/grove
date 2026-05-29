@@ -1,8 +1,0 @@
-{% extends 'base/base.html' %}
-{% block content %}
-<ul>
-  <li><a href="{% url 'llemon_persona:index' %}">LLemon Persona</a></li>
-  <li><a href="{% url 'llemon:media' %}">LLemon Media</a></li>
-</ul>
-{% if specs_url %}<p><a href="{{ specs_url }}">Specs</a></p>{% endif %}
-{% endblock %}
