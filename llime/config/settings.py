@@ -19,6 +19,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, os.path.expanduser('~/prj/grove/lib'))
 MEDIAVIEW_LABEL = 'hty7'
+IMHANDLER_VARIANT = 'hty7'
 
 import llemon_djview as _llemon_djview
 globals().update(_llemon_djview.django_settings('hty7'))
@@ -58,7 +59,6 @@ INSTALLED_APPS = [
     'llemon_djview',
     'hty7.imhandler.djview',
     'base',
-    'image_handler',
     'to_do_list',
     'mediaview',
 ]
