@@ -1,0 +1,78 @@
+{% extends 'base/base.html' %}
+{% block content %}
+<style>
+  .index-columns { display: grid; grid-template-columns: max-content minmax(14em, 20em); gap: 1.2em; align-items: start; }
+  .setup-status, .select-table { border-collapse: collapse; margin: 0.6em 0; }
+  .setup-status th, .setup-status td, .select-table th, .select-table td { padding: 0.15em 0.8em 0.15em 0; text-align: left; vertical-align: top; }
+  .setup-status th, .select-table th { font-weight: bold; }
+  .quick-start-group { margin: 0.8em 0 1.2em; }
+  .quick-start-group h3 { margin: 0 0 0.3em; font-size: 1em; }
+  .quick-start-group ul { margin: 0; padding-left: 1.3em; }
+  .invalid-row { color: #b00000; font-weight: bold; }
+  .invalid-note { color: #b00000; font-size: 0.9em; font-weight: normal; }
+  @media (max-width: 760px) {
+    .index-columns { display: block; }
+  }
+</style>
+
+<div class="index-columns">
+  <div>
+    {% if error %}
+    <div class="error-banner" id="error-banner">{{ error }} <span class="dismiss" onclick="document.getElementById('error-banner').style.display='none'">×</span></div>
+    <style>.error-banner{color:#c00;border:1px solid #c00;border-radius:3px;padding:0.4em 0.8em;margin:0.5em 0;display:inline-block}.error-banner .dismiss{cursor:pointer;font-weight:bold;margin-left:0.5em}</style>
+    {% endif %}
+
+    <h2>Parameters</h2>
+    <table class="setup-status">
+      {% for row in status_rows %}
+      <tr>
+        <th>{% if row.url %}<a href="{{ row.url }}">{{ row.field }}</a>{% else %}{{ row.field }}{% endif %}</th>
+        <td>{{ row.value }}</td>
+        <td>{{ row.title }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+
+    {% if type_rows %}
+    <h2>Select type</h2>
+    <table class="select-table">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Title</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for type in type_rows %}
+        <tr class="{% if type.invalid %}invalid-row{% endif %}">
+          <td>{% if type.url %}<a href="{{ type.url }}">{{ type.name }}</a>{% else %}{{ type.name }}{% endif %}</td>
+          <td class="select-title">{{ type.title }}</td>
+          {% if type.invalid %}<td class="invalid-note">{{ type.error }}</td>{% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>No types found on search path.</p>
+    {% endif %}
+  </div>
+
+  {% if macro_groups %}
+  <aside>
+    <h2>Quick start</h2>
+    {% for group in macro_groups %}
+    <section class="quick-start-group">
+      <h3>{% if group.type %}{{ group.title }}{% else %}Other{% endif %}</h3>
+      <ul>
+        {% for macro in group.macros %}
+        <li class="{% if macro.invalid %}invalid-row{% endif %}">
+          {% if macro.url %}<a href="{{ macro.url }}">{{ macro.display }}</a>{% else %}{{ macro.display }} <span class="invalid-note">{{ macro.error }}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endfor %}
+  </aside>
+  {% endif %}
+</div>
+{% endblock %}

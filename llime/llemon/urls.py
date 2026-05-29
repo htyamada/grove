@@ -1,5 +1,5 @@
 from . import views
-from hty7.llemon.djview.media import media_urlpatterns
+from llemon_djview.media import media_urlpatterns
 
 app_name = 'llemon'
 

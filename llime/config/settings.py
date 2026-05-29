@@ -17,10 +17,10 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-sys.path.insert(0, os.path.expanduser('~/prj/grove'))
+sys.path.insert(0, os.path.expanduser('~/prj/grove/lib'))
 MEDIAVIEW_LABEL = 'hty7'
 
-from hty7.llemon import djview as _llemon_djview
+import llemon_djview as _llemon_djview
 globals().update(_llemon_djview.django_settings('hty7'))
 
 SITE_NAME = 'Zorf Llime'
@@ -55,7 +55,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'hty7.llemon.djview',
+    'llemon_djview',
     'hty7.imhandler.djview',
     'base',
     'llemon',

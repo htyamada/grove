@@ -14,7 +14,7 @@ Python venv: `~/opt/web` (created by `~/src/hty7/set-up-system/250-python-web.sh
 | `base` | `/` | Home page |
 | `LLemon` | `/llemon/` | LLM chat interface with a unified Media app → see [llemon/CLAUDE.md](llemon/CLAUDE.md) |
 | `Image Handler` | `/image_handler/` | Image gallery viewer → see [image_handler/CLAUDE.md](image_handler/CLAUDE.md) |
-| `To Do list` | `/to-do-list/` | Standalone task app → see [to-do-list/CLAUDE.md](to-do-list/CLAUDE.md), [specs/todo-spec.md](specs/todo-spec.md) and [specs/todo-impl.md](specs/todo-impl.md) |
+| `To Do list` | `/to-do-list/` | Standalone task app → see [to-do-list/CLAUDE.md](to-do-list/CLAUDE.md), [../specs/todo-spec.md](../specs/todo-spec.md) and [../specs/todo-impl.md](../specs/todo-impl.md) |
 
 ### LLemon Media App
 

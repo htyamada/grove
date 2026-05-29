@@ -1,0 +1,1256 @@
+"""llemon_djview.imagegen - Django view logic for LLemon image generation.
+
+Each app instantiates LLemonImageGenViewSet with its own template prefix and URL namespace.
+"""
+
+import base64
+import json
+import logging
+import mimetypes
+import os
+import queue
+import re
+import threading
+from datetime import datetime, timezone
+from typing import Any
+
+from django.conf import settings  # type: ignore[import-untyped]
+from django.http import FileResponse, Http404, JsonResponse, StreamingHttpResponse  # type: ignore[import-untyped]
+from django.shortcuts import render  # type: ignore[import-untyped]
+from django.urls import reverse  # type: ignore[import-untyped]
+from django.views.decorators.csrf import csrf_exempt  # type: ignore[import-untyped]
+from django.views.decorators.http import require_POST  # type: ignore[import-untyped]
+
+from hty7.llemon.mediagen.gallery import CategoryStore, sanitize_metadata_data_urls
+from hty7.llemon.mediagen.imagegen import (
+    aspect_ratios,
+    default_aspect_ratio,
+    default_image_model,
+    default_image_size,
+    default_system_prompt,
+    get_model_note,
+    get_model_tag_states,
+    get_notes_load_errors,
+    get_notes_slot,
+    get_reverse_tags,
+    get_tags,
+    set_model_note,
+    image_sizes,
+    image_generation_summary_lines,
+    list_image_models_with_metadata,
+    make_imagegen_backend,
+    model_display,
+    model_quirk_labels,
+    normalize_provider_api,
+    provider_config as _provider_config,
+    PROVIDERS,
+    write_image_metadata,
+)
+from hty7.llemon.mediagen.imagegen.gallery import (
+    LARGE_THUMB_SIZE,
+    delete_image_asset,
+    ensure_thumbnail,
+    image_as_data_url,
+    move_image_asset,
+    read_sidecar as read_image_sidecar,
+    save_operation_images,
+    save_uploaded_images,
+    write_operation_sidecar,
+)
+from hty7.llemon.mediagen.imagegen.venice import DEFAULT_EDIT_MODEL, EDIT_ASPECT_RATIOS
+from hty7.llemon.mediagen.videogen.gallery import (
+    VIDEO_EXTS,
+    delete_video_asset,
+    move_video_asset,
+    video_thumb_name,
+)
+from .media_utils import ensure_media_thumbnail, is_video
+from .base_viewset import MediaGenViewSetBase
+
+logger = logging.getLogger(__name__)
+
+
+_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
+_MEDIA_EXTS = _IMAGE_EXTS | VIDEO_EXTS
+
+
+def _sanitize_image_metadata(value: Any) -> Any:
+    return sanitize_metadata_data_urls(value)
+
+
+class LLemonImageGenViewSet(MediaGenViewSetBase):
+    """Django views for LLemon image generation, bound to a specific app namespace."""
+
+    def __init__(self, template_prefix: str, url_namespace: str, *, base_nav=None,
+                 nav=None, nav_suffix=None):
+        super().__init__(
+            template_prefix, url_namespace,
+            base_nav=base_nav, nav=nav, nav_suffix=nav_suffix,
+        )
+        self.gallery             = csrf_exempt(self.gallery)
+        self.large_thumbnail     = self._large_thumbnail
+        self.generate            = csrf_exempt(require_POST(self._generate))
+        self.model_note          = csrf_exempt(self._model_note)
+        self.delete_image        = csrf_exempt(require_POST(self._delete_image))
+        self.models_json         = self._models_json
+        self.upscale             = csrf_exempt(require_POST(self._upscale))
+        self.edit_image          = csrf_exempt(require_POST(self._edit_image))
+        self.uploads_image_file        = self._uploads_image_file
+        self.uploads_thumbnail         = self._uploads_thumbnail
+        self.uploads_large_thumbnail   = self._uploads_large_thumbnail
+        self.delete_uploads_image = csrf_exempt(require_POST(self._delete_uploads_image))
+        self.upscale_uploads     = csrf_exempt(require_POST(self._upscale_uploads))
+        self.edit_uploads_image  = csrf_exempt(require_POST(self._edit_uploads_image))
+        self.upload_uploads      = csrf_exempt(require_POST(self._upload_uploads))
+        self.archive_image_file        = self._archive_image_file
+        self.archive_thumbnail         = self._archive_thumbnail
+        self.archive_large_thumbnail   = self._archive_large_thumbnail
+        self.delete_archive_image = csrf_exempt(require_POST(self._delete_archive_image))
+        self.upscale_archive     = csrf_exempt(require_POST(self._upscale_archive))
+        self.edit_archive_image  = csrf_exempt(require_POST(self._edit_archive_image))
+        self.move_to_archive     = csrf_exempt(require_POST(self._move_to_archive))
+        self.move_to_gallery     = csrf_exempt(require_POST(self._move_to_gallery))
+
+    def _media_dir(self):
+        return getattr(settings, 'LLEMON_IMAGEGEN_MEDIA_DIR', '')
+
+    @staticmethod
+    def _safe_image_name(filename: str) -> str:
+        fname = filename.strip()
+        if not fname or '/' in fname or fname.startswith('.'):
+            raise ValueError('invalid filename')
+        if os.path.splitext(fname)[1].lower() not in _IMAGE_EXTS:
+            raise ValueError('unsupported image format')
+        return fname
+
+    @staticmethod
+    def _safe_filename(filename: str) -> str:
+        fname = filename.strip()
+        if not fname or '/' in fname or fname.startswith('.'):
+            raise ValueError('invalid filename')
+        if os.path.splitext(fname)[1].lower() not in _MEDIA_EXTS:
+            raise ValueError('unsupported media format')
+        return fname
+
+    def _log_dir(self):
+        return getattr(settings, 'LLEMON_IMAGEGEN_LOG_DIR', None)
+
+    def _source_dirs_json_url(self) -> str:
+        return ''
+
+    def _uploads_picker_items(self) -> list[dict]:
+        """Return a compact list of uploaded images for the creator image picker."""
+        uploads_dir = self._uploads_dir()
+        if not uploads_dir or not os.path.isdir(uploads_dir):
+            return []
+        items = []
+        thumb_dir = self._uploads_thumb_dir()
+        for fname in sorted(os.listdir(uploads_dir), reverse=True):
+            if os.path.splitext(fname)[1].lower() not in _MEDIA_EXTS:
+                continue
+            has_thumb = bool(thumb_dir) and os.path.isfile(os.path.join(thumb_dir, fname))
+            try:
+                url = self._u('uploads_image_file', fname)
+                thumb_url = self._u('uploads_thumbnail', fname) if has_thumb else url
+            except Exception:
+                continue
+            items.append({
+                'fname':     fname,
+                'url':       url,
+                'thumb_url': thumb_url,
+            })
+        return items
+
+    # ------------------------------------------------------------------ #
+
+    def image(self, request):
+        def _safe_url(name: str) -> str | None:
+            try:
+                return self._u(name)
+            except Exception:
+                return None
+
+        pages = [
+            {'name': 'Image creator', 'url': self._u('image_creator')},
+            {'name': 'Gallery', 'url': self._u('gallery')},
+        ]
+        uploads_url = _safe_url('uploads')
+        if uploads_url:
+            pages.append({'name': 'Uploads', 'url': uploads_url})
+        archive_url = _safe_url('archive')
+        if archive_url:
+            pages.append({'name': 'Archive', 'url': archive_url})
+        return render(request, self._t('index.html'), self._ctx(
+            'LLemon Image', pages, {'pages': pages},
+        ))
+
+    def image_creator(self, request):
+        provider_param = request.GET.get('provider', '').strip() or None
+        try:
+            provider, api = normalize_provider_api(provider_param)
+            raw_models = list_image_models_with_metadata(provider, api)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        except Exception as e:
+            logger.exception('could not list image generation models')
+            return JsonResponse({'error': f'could not list image generation models: {e}'},
+                                status=502)
+        model_options = []
+        model_descriptions: dict[str, str] = {}
+        model_quirks: dict[str, list[str]] = {}
+        model_system_prompts: dict[str, str] = {}
+        for m in raw_models:
+            mid  = m['id']
+            name = m['name']
+            model_options.append({
+                'id':      mid,
+                'display': f'{name} ({mid})' if name else mid,
+            })
+            model_descriptions[mid] = m['description']
+            quirks = model_quirk_labels(mid, provider, api)
+            if quirks:
+                model_quirks[mid] = quirks
+            system_prompt = default_system_prompt(mid, provider, api)
+            if system_prompt is not None:
+                model_system_prompts[mid] = system_prompt
+        model_tag_states = self._model_tag_states(
+            provider, [opt['id'] for opt in model_options],
+        )
+
+        nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
+               {'name': 'Gallery', 'url': self._u('gallery')}]
+        try:
+            nav.append({'name': 'Uploads', 'url': self._u('uploads')})
+        except Exception:
+            pass
+        try:
+            nav.append({'name': 'Archive', 'url': self._u('archive')})
+        except Exception:
+            pass
+        notes_load_errors = get_notes_load_errors()
+        def _safe_url(name: str) -> str | None:
+            try:
+                return self._u(name)
+            except Exception:
+                return None
+        return render(request, self._t('image.html'), self._ctx(
+            'LLemon Image Creator', nav, {
+                'providers':          PROVIDERS,
+                'provider':           provider,
+                'api':                api,
+                'aspect_ratios':      aspect_ratios(provider, api),
+                'image_sizes':        image_sizes(provider, api),
+                'default_aspect_ratio': default_aspect_ratio(provider, api),
+                'default_image_size': default_image_size(provider, api),
+                'default_model':      default_image_model(provider, api),
+                'model_options':      model_options,
+                'model_tag_states':   model_tag_states,
+                'model_descriptions': model_descriptions,
+                'model_quirks':       model_quirks,
+                'model_system_prompts': model_system_prompts,
+                'provider_config':    _provider_config(provider, api),
+                'available_tags':      [] if notes_load_errors else get_tags(),
+                'reverse_tags':        [] if notes_load_errors else get_reverse_tags(),
+                'notes_load_errors':   notes_load_errors,
+                'active_notes_slot':   get_notes_slot(),
+                'generate_url':            self._u('generate'),
+                'image_file_url':          self._u('image_file', 'PLACEHOLDER'),
+                'large_thumbnail_file_url': self._u('large_thumbnail', 'PLACEHOLDER'),
+                'model_note_url':          self._u('model_note'),
+                'models_json_url':    self._u('models_json'),
+                'upscale_url':              _safe_url('upscale_uploads'),
+                'edit_image_url':           _safe_url('edit_uploads_image'),
+                'picker_images':            self._uploads_picker_items(),
+                'source_dirs_json_url':     self._source_dirs_json_url(),
+                'edit_models':              ['firered-image-edit', 'qwen-edit', 'grok-imagine-edit', 'flux-2-max-edit'],
+                'default_edit_model':       DEFAULT_EDIT_MODEL,
+                'edit_aspect_ratios':       [''] + list(EDIT_ASPECT_RATIOS),
+            },
+        ))
+
+    def _find_sidecar(self, media_dir: str, fname: str) -> 'dict | None':
+        return read_image_sidecar(media_dir, fname, _sanitize_image_metadata)
+
+    def gallery(self, request):
+        gallery_dir = self._gallery_dir()
+        categories, category_ids_by_file, active_category, category_filter = self._process_categories(request)
+        items = []
+        if gallery_dir and os.path.isdir(gallery_dir):
+            for fname in sorted(os.listdir(gallery_dir), reverse=True):
+                if os.path.splitext(fname)[1].lower() not in _MEDIA_EXTS:
+                    continue
+                if active_category == 'none' and category_ids_by_file.get(fname):
+                    continue
+                if active_category != 'none' and category_filter is not None and fname not in category_filter:
+                    continue
+                has_thumb = self._ensure_thumbnail(fname)
+                has_large_thumb = self._ensure_large_thumbnail(fname)
+                items.append({
+                    'fname':           fname,
+                    'type':            'video' if is_video(fname) else 'image',
+                    'url':             self._u('image_file', fname),
+                    'thumb_url':       self._u('thumbnail', fname),
+                    'large_thumb_url': self._u('large_thumbnail', fname),
+                    'sidecar':         self._find_sidecar(gallery_dir, fname),
+                    'category_ids':    sorted(category_ids_by_file.get(fname, [])),
+                })
+        def _safe_url(name: str) -> str | None:
+            try:
+                return self._u(name)
+            except Exception:
+                return None
+
+        nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
+               {'name': 'Gallery', 'url': self._u('gallery')}]
+        uploads_url = _safe_url('uploads')
+        if uploads_url:
+            nav.append({'name': 'Uploads', 'url': uploads_url})
+        archive_url = _safe_url('archive')
+        if archive_url:
+            nav.append({'name': 'Archive', 'url': archive_url})
+        return render(request, self._t('gallery.html'), self._ctx(
+            'LLemon Image Gallery', nav, {
+                'images':              items,
+                'generate_url':        self._u('image_creator'),
+                'video_generate_url':  _safe_url('video_creator'),
+                'delete_image_url':    self._u('delete_image'),
+                'move_to_archive_url': _safe_url('move_to_archive'),
+                'category_enabled':    True,
+                'categories':          categories,
+                'active_category':     active_category,
+            },
+        ))
+
+    def uploads(self, request):
+        uploads_dir = self._uploads_dir()
+        items = []
+        if uploads_dir and os.path.isdir(uploads_dir):
+            for fname in sorted(os.listdir(uploads_dir), reverse=True):
+                if os.path.splitext(fname)[1].lower() not in _MEDIA_EXTS:
+                    continue
+                has_thumb = self._ensure_uploads_thumbnail(fname)
+                has_large_thumb = self._ensure_uploads_large_thumbnail(fname)
+                items.append({
+                    'fname':           fname,
+                    'type':            'video' if is_video(fname) else 'image',
+                    'url':             self._u('uploads_image_file', fname),
+                    'thumb_url':       self._u('uploads_thumbnail', fname),
+                    'large_thumb_url': self._u('uploads_large_thumbnail', fname),
+                    'sidecar':         self._find_sidecar(uploads_dir, fname),
+                })
+
+        def _safe_url(name: str) -> str | None:
+            try:
+                return self._u(name)
+            except Exception:
+                return None
+
+        nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
+               {'name': 'Gallery', 'url': self._u('gallery')}]
+        uploads_url = _safe_url('uploads')
+        if uploads_url:
+            nav.append({'name': 'Uploads', 'url': uploads_url})
+        archive_url = _safe_url('archive')
+        if archive_url:
+            nav.append({'name': 'Archive', 'url': archive_url})
+
+        return render(request, self._t('uploads.html'), self._ctx(
+            'LLemon Image Uploads', nav, {
+                'images':            items,
+                'upload_url':        _safe_url('upload_uploads'),
+                'video_generate_url': _safe_url('video_creator'),
+                'delete_image_url':  self._u('delete_uploads_image'),
+            },
+        ))
+
+    def archive(self, request):
+        archive_dir = self._archive_dir()
+        items = []
+        if archive_dir and os.path.isdir(archive_dir):
+            for fname in sorted(os.listdir(archive_dir), reverse=True):
+                if os.path.splitext(fname)[1].lower() not in _MEDIA_EXTS:
+                    continue
+                has_thumb = self._ensure_archive_thumbnail(fname)
+                has_large_thumb = self._ensure_archive_large_thumbnail(fname)
+                items.append({
+                    'fname':           fname,
+                    'type':            'video' if is_video(fname) else 'image',
+                    'url':             self._u('archive_image_file', fname),
+                    'thumb_url':       self._u('archive_thumbnail', fname),
+                    'large_thumb_url': self._u('archive_large_thumbnail', fname),
+                    'sidecar':         self._find_sidecar(archive_dir, fname),
+                })
+
+        def _safe_url(name: str) -> str | None:
+            try:
+                return self._u(name)
+            except Exception:
+                return None
+
+        nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
+               {'name': 'Gallery', 'url': self._u('gallery')}]
+        uploads_url = _safe_url('uploads')
+        if uploads_url:
+            nav.append({'name': 'Uploads', 'url': uploads_url})
+        archive_url = _safe_url('archive')
+        if archive_url:
+            nav.append({'name': 'Archive', 'url': archive_url})
+
+        return render(request, self._t('archive.html'), self._ctx(
+            'LLemon Image Archive', nav, {
+                'images':             items,
+                'video_generate_url': _safe_url('video_creator'),
+                'delete_image_url':   self._u('delete_archive_image'),
+                'move_to_gallery_url': _safe_url('move_to_gallery'),
+                'empty':              'No archived images yet.',
+            },
+        ))
+
+    def _generate_result(
+        self,
+        prompt: str,
+        model: str,
+        aspect_ratio: str,
+        image_size: str,
+        temperature: float | None,
+        temperature_force: float | None,
+        system: str | None,
+        system_force: str | None,
+        provider: str,
+        api: str,
+        extra_params: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        gallery_dir = self._gallery_dir()
+        try:
+            backend_cls = make_imagegen_backend(provider, api)
+            backend = backend_cls(model=model, log_dir=self._log_dir())
+        except Exception as e:
+            logger.exception('could not create imagegen backend')
+            return {'error': str(e)}, 500
+
+        try:
+            result = backend.generate(
+                prompt,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                temperature=temperature,
+                temperature_force=temperature_force,
+                system=system,
+                system_force=system_force,
+                **(extra_params or {}),
+            )
+        finally:
+            backend.shutdown()
+
+        if result.get('error'):
+            err = result['error']
+            status = 400 if err.get('type') == 'unsupported_temperature' else 502
+            return {'error': err['message']}, status
+
+        images = result.get('images', [])
+        if not images:
+            return {'error': 'no images returned'}, 502
+
+        try:
+            files, desc_file = save_operation_images(
+                backend_cls.write_images,
+                images,
+                gallery_dir,
+                datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S'),
+            )
+        except Exception as e:
+            logger.exception('could not write images')
+            return {'error': f'could not write image: {e}'}, 500
+
+        usage = result.get('usage') or {}
+        cost  = usage.get('cost')
+        for _fname in files:
+            self._ensure_large_thumbnail(_fname)
+        actual_model = result.get('model') or model
+        metadata_system = system if system is not None else result.get('system')
+        metadata_system_force = (
+            system_force if system_force is not None else result.get('system_force')
+        )
+        if metadata_system_force is not None:
+            metadata_system = None
+
+        try:
+            write_image_metadata(
+                desc_file,
+                model=actual_model,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                cost=cost,
+                files=files,
+                prompt=prompt,
+                system=metadata_system,
+                system_force=metadata_system_force,
+                temperature=temperature,
+                temperature_force=temperature_force,
+                provider=provider,
+                api=api,
+                extra_params=_sanitize_image_metadata(extra_params) or None,
+            )
+        except OSError as e:
+            logger.warning('could not write metadata file: %s', e)
+
+        summary = image_generation_summary_lines(
+            provider=provider,
+            model=model_display(actual_model, provider, api),
+            aspect_ratio=aspect_ratio,
+            image_size=image_size,
+            cost=cost,
+            file=files[0] if files else '',
+            prompt=prompt,
+        )
+
+        return {
+            'files':         files,
+            'cost':          cost,
+            'model':         actual_model,
+            'model_display': model_display(actual_model),
+            'summary':       summary,
+        }, 200
+
+    def _generate_stream(
+        self,
+        prompt: str,
+        model: str,
+        aspect_ratio: str,
+        image_size: str,
+        temperature: float | None,
+        temperature_force: float | None,
+        system: str | None,
+        system_force: str | None,
+        provider: str,
+        api: str,
+        extra_params: dict[str, Any] | None = None,
+    ):
+        q: queue.Queue[dict[str, Any]] = queue.Queue()
+
+        def _worker() -> None:
+            try:
+                payload, status = self._generate_result(
+                    prompt, model, aspect_ratio, image_size, temperature,
+                    temperature_force, system, system_force, provider, api,
+                    extra_params,
+                )
+                q.put({'event': 'done', 'status': status, **payload})
+            except Exception as e:
+                logger.exception('image generation stream failed')
+                q.put({'event': 'done', 'status': 500, 'error': str(e)})
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        while True:
+            event = q.get()
+            yield json.dumps(event, default=str) + '\n'
+            if event.get('event') == 'done':
+                break
+        t.join(timeout=1.0)
+
+    def _generate(self, request):
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+
+        prompt       = (data.get('prompt') or '').strip()
+        provider_param = (data.get('provider') or '').strip() or None
+        try:
+            provider, api = normalize_provider_api(provider_param)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+
+        model        = (data.get('model') or default_image_model(provider, api)).strip()
+        aspect_ratio = data.get('aspect_ratio', default_aspect_ratio(provider, api))
+        image_size   = data.get('image_size', default_image_size(provider, api))
+        raw_temperature = data.get('temperature')
+        raw_temperature_force = data.get('temperature_force')
+        raw_system = data.get('system')
+        raw_system_force = data.get('system_force')
+        if raw_temperature in (None, ''):
+            temperature = None
+        else:
+            try:
+                temperature = float(raw_temperature)
+            except (TypeError, ValueError):
+                return JsonResponse({'error': 'invalid temperature'}, status=400)
+            if temperature < 0.0 or temperature > 2.0:
+                return JsonResponse({'error': 'invalid temperature'}, status=400)
+        if raw_temperature_force in (None, ''):
+            temperature_force = None
+        else:
+            try:
+                temperature_force = float(raw_temperature_force)
+            except (TypeError, ValueError):
+                return JsonResponse({'error': 'invalid temperature_force'}, status=400)
+            if temperature_force < 0.0 or temperature_force > 2.0:
+                return JsonResponse({'error': 'invalid temperature_force'}, status=400)
+        if temperature is not None and temperature_force is not None:
+            return JsonResponse({
+                'error': 'temperature and temperature_force are mutually exclusive',
+            }, status=400)
+        system = raw_system.strip() if isinstance(raw_system, str) else None
+        system_force = (
+            raw_system_force.strip() if isinstance(raw_system_force, str) else None
+        )
+        if system == '':
+            system = None
+        if system_force == '':
+            system_force = None
+        if system is not None and system_force is not None:
+            return JsonResponse({
+                'error': 'system and system_force are mutually exclusive',
+            }, status=400)
+
+        if not prompt:
+            return JsonResponse({'error': 'prompt is required'}, status=400)
+        if aspect_ratio not in aspect_ratios(provider, api):
+            return JsonResponse({'error': 'invalid aspect_ratio'}, status=400)
+        if image_size not in image_sizes(provider, api):
+            return JsonResponse({'error': 'invalid image_size'}, status=400)
+
+        extra_params: dict[str, Any] = {}
+        if provider == 'venice':
+            np_val = data.get('negative_prompt')
+            if isinstance(np_val, str) and np_val.strip():
+                extra_params['negative_prompt'] = np_val.strip()
+            sp_val = data.get('style_preset')
+            if isinstance(sp_val, str) and sp_val.strip():
+                extra_params['style_preset'] = sp_val.strip()
+            steps_val = data.get('steps')
+            if steps_val not in (None, ''):
+                try:
+                    extra_params['steps'] = int(steps_val)
+                except (TypeError, ValueError):
+                    return JsonResponse({'error': 'invalid steps'}, status=400)
+            cfg_val = data.get('cfg_scale')
+            if cfg_val not in (None, ''):
+                try:
+                    cfg_scale = float(cfg_val)
+                except (TypeError, ValueError):
+                    return JsonResponse({'error': 'invalid cfg_scale'}, status=400)
+                if not (1.0 <= cfg_scale <= 20.0):
+                    return JsonResponse({'error': 'cfg_scale must be between 1.0 and 20.0'}, status=400)
+                extra_params['cfg_scale'] = cfg_scale
+            seed_val = data.get('seed')
+            if seed_val not in (None, ''):
+                try:
+                    extra_params['seed'] = int(seed_val)
+                except (TypeError, ValueError):
+                    return JsonResponse({'error': 'invalid seed'}, status=400)
+            hw_val = data.get('hide_watermark')
+            if hw_val is not None:
+                extra_params['hide_watermark'] = bool(hw_val)
+            fmt_val = data.get('output_format')
+            if isinstance(fmt_val, str) and fmt_val.strip():
+                extra_params['output_format'] = fmt_val.strip()
+
+        if not self._media_dir():
+            return JsonResponse({'error': 'media_dir not configured'}, status=500)
+
+        if data.get('stream'):
+            resp = StreamingHttpResponse(
+                self._generate_stream(
+                    prompt, model, aspect_ratio, image_size, temperature,
+                    temperature_force, system, system_force, provider, api,
+                    extra_params or None,
+                ),
+                content_type='application/x-ndjson',
+            )
+            resp['Cache-Control'] = 'no-cache'
+            resp['X-Accel-Buffering'] = 'no'
+            return resp
+
+        payload, status = self._generate_result(
+            prompt, model, aspect_ratio, image_size, temperature,
+            temperature_force, system, system_force, provider, api,
+            extra_params or None,
+        )
+        return JsonResponse(payload, status=status)
+
+    def _models_json(self, request):
+        provider_param = request.GET.get('provider', '').strip() or None
+        try:
+            provider, api = normalize_provider_api(provider_param)
+            raw_models = list_image_models_with_metadata(provider, api)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        except Exception as e:
+            logger.exception('could not list image generation models for provider %s',
+                             provider_param)
+            return JsonResponse({'error': f'could not list models: {e}'}, status=502)
+        model_options = []
+        model_descriptions: dict[str, str] = {}
+        model_quirks: dict[str, list[str]] = {}
+        model_system_prompts: dict[str, str] = {}
+        for m in raw_models:
+            mid  = m['id']
+            name = m['name']
+            model_options.append({
+                'id':      mid,
+                'display': f'{name} ({mid})' if name else mid,
+            })
+            model_descriptions[mid] = m['description']
+            quirks = model_quirk_labels(mid, provider, api)
+            if quirks:
+                model_quirks[mid] = quirks
+            system_prompt = default_system_prompt(mid, provider, api)
+            if system_prompt is not None:
+                model_system_prompts[mid] = system_prompt
+        model_tag_states = self._model_tag_states(
+            provider, [opt['id'] for opt in model_options],
+        )
+        return JsonResponse({
+            'provider':             provider,
+            'api':                  api,
+            'model_options':        model_options,
+            'model_tag_states':     model_tag_states,
+            'model_descriptions':   model_descriptions,
+            'model_quirks':         model_quirks,
+            'model_system_prompts': model_system_prompts,
+            'aspect_ratios':        aspect_ratios(provider, api),
+            'image_sizes':          image_sizes(provider, api),
+            'default_model':        default_image_model(provider, api),
+            'default_aspect_ratio': default_aspect_ratio(provider, api),
+            'default_image_size':   default_image_size(provider, api),
+            'provider_config':      _provider_config(provider, api),
+        })
+
+    def _model_tag_states(self, provider: str, model_ids: list[str]) -> dict[str, dict[str, bool]]:
+        try:
+            return get_model_tag_states(provider, model_ids)
+        except Exception:
+            logger.exception('could not load image model tag states')
+            return {}
+
+    def _model_note(self, request):
+        if request.method == 'GET':
+            provider = request.GET.get('provider', '').strip()
+            model_id = request.GET.get('model', '').strip()
+            if not provider or not model_id:
+                return JsonResponse({'error': 'provider and model are required'}, status=400)
+            try:
+                notes, tags = get_model_note(provider, model_id)
+            except Exception as e:
+                return JsonResponse({'error': str(e)}, status=500)
+            return JsonResponse({'notes': notes, 'tags': tags})
+
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+        provider = (data.get('provider') or '').strip()
+        model_id = (data.get('model') or '').strip()
+        notes    = data.get('notes', '')
+        raw_tags = data.get('tags', {})
+        submitted = (
+            {k: bool(v) for k, v in raw_tags.items() if isinstance(k, str)}
+            if isinstance(raw_tags, dict) else {}
+        )
+        if not provider or not model_id:
+            return JsonResponse({'error': 'provider and model are required'}, status=400)
+        try:
+            set_model_note(provider, model_id, notes, submitted)
+            _notes, tags = get_model_note(provider, model_id)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+        return JsonResponse({'ok': True, 'tags': tags})
+
+    def _do_delete_image(self, request, media_dir: str, thumb_dir: str, large_thumb_dir: str = ''):
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+
+        try:
+            filename = self._safe_filename(str(data.get('filename') or ''))
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+
+        if not media_dir:
+            return JsonResponse({'error': 'media_dir not configured'}, status=500)
+
+        ext = os.path.splitext(filename)[1].lower()
+        try:
+            if ext in VIDEO_EXTS:
+                delete_video_asset(media_dir, filename, thumb_dir, large_thumb_dir)
+            else:
+                delete_image_asset(media_dir, filename, thumb_dir, large_thumb_dir)
+        except FileNotFoundError:
+            return JsonResponse({'error': 'file not found'}, status=404)
+        except ValueError:
+            return JsonResponse({'error': 'invalid filename'}, status=400)
+
+        return JsonResponse({'deleted': filename})
+
+    def _delete_image(self, request):
+        return self._do_delete_image(request, self._gallery_dir(), self._thumb_dir(),
+                                     self._large_thumb_dir())
+
+    def _delete_uploads_image(self, request):
+        return self._do_delete_image(request, self._uploads_dir(), self._uploads_thumb_dir(),
+                                     self._uploads_large_thumb_dir())
+
+    def _upload_uploads(self, request):
+        uploads_dir = self._uploads_dir()
+        if not uploads_dir:
+            return JsonResponse({'error': 'media_dir not configured'}, status=500)
+
+        files = request.FILES.getlist('images')
+        if not files:
+            return JsonResponse({'error': 'no files uploaded'}, status=400)
+
+        try:
+            saved, errors = save_uploaded_images(files, uploads_dir)
+        except OSError as e:
+            return JsonResponse({'error': f'could not create uploads directory: {e}'}, status=500)
+
+        return JsonResponse({'files': saved, 'errors': errors})
+
+    # ------------------------------------------------------------------ #
+    # Venice upscale / edit                                              #
+    # ------------------------------------------------------------------ #
+
+    def _read_image_as_data_url(
+        self, filename: str, source_dir: 'str | None' = None,
+    ) -> 'tuple[str, str | None]':
+        """Return (data_url, error_message).  error_message is None on success."""
+        dir_ = source_dir if source_dir is not None else self._gallery_dir()
+        if not dir_:
+            return '', 'media_dir not configured'
+        try:
+            filename = self._safe_image_name(filename)
+        except ValueError as e:
+            return '', str(e)
+        try:
+            return image_as_data_url(dir_, filename), None
+        except FileNotFoundError:
+            return '', 'file not found'
+        except ValueError as e:
+            return '', str(e)
+        except OSError as e:
+            return '', str(e)
+
+    def _save_operation_result(
+        self,
+        result: dict[str, Any],
+        media_dir: str,
+        stem: str,
+        sidecar: dict[str, Any],
+    ) -> 'tuple[dict[str, Any], int]':
+        images = result.get('images', [])
+        if not images:
+            return {'error': 'no image returned'}, 502
+
+        from hty7.llemon.mediagen.imagegen.venice import LLemonVeniceImageGen
+        try:
+            files, desc = save_operation_images(
+                LLemonVeniceImageGen.write_images, images, media_dir, stem,
+            )
+        except Exception as e:
+            logger.exception('could not write operation result images')
+            return {'error': f'could not write image: {e}'}, 500
+
+        sidecar = _sanitize_image_metadata(sidecar)
+        sidecar['files'] = files
+        sidecar['timestamp'] = datetime.now(timezone.utc).isoformat()
+        try:
+            write_operation_sidecar(desc, sidecar)
+        except OSError as e:
+            logger.warning('could not write operation metadata: %s', e)
+
+        return {'file': files[0], 'files': files}, 200
+
+    def _upscale_result(
+        self,
+        data_url: str,
+        source_filename: str,
+        media_dir: str,
+        kwargs: dict[str, Any],
+    ) -> 'tuple[dict[str, Any], int]':
+        from hty7.llemon.mediagen.imagegen.venice import LLemonVeniceImageGen
+        backend = LLemonVeniceImageGen(model='upscale', log_dir=self._log_dir())
+        try:
+            result = backend.upscale(data_url, **kwargs)
+        finally:
+            backend.shutdown()
+        if result.get('error'):
+            err = result['error']
+            return {'error': err['message']}, 502
+        stem = os.path.splitext(source_filename)[0] + '_upscaled'
+        sidecar: dict[str, Any] = {
+            'operation': 'upscale',
+            'source':    source_filename,
+            **{k: v for k, v in kwargs.items()},
+        }
+        return self._save_operation_result(result, media_dir, stem, sidecar)
+
+    def _upscale_stream(self, data_url: str, source_filename: str,
+                        media_dir: str, kwargs: dict[str, Any]):
+        q: queue.Queue[dict[str, Any]] = queue.Queue()
+
+        def _worker() -> None:
+            try:
+                payload, status = self._upscale_result(data_url, source_filename,
+                                                       media_dir, kwargs)
+                q.put({'event': 'done', 'status': status, **payload})
+            except Exception as e:
+                logger.exception('upscale stream failed')
+                q.put({'event': 'done', 'status': 500, 'error': str(e)})
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        while True:
+            event = q.get()
+            yield json.dumps(event, default=str) + '\n'
+            if event.get('event') == 'done':
+                break
+        t.join(timeout=1.0)
+
+    def _do_upscale(self, request, source_dir: str, result_dir: 'str | None' = None):
+        result_dir = result_dir if result_dir is not None else source_dir
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+
+        filename = str(data.get('filename') or '')
+        data_url, err = self._read_image_as_data_url(filename, source_dir=source_dir)
+        if err:
+            return JsonResponse({'error': err}, status=400 if err != 'media_dir not configured' else 500)
+        if not result_dir:
+            return JsonResponse({'error': 'media_dir not configured'}, status=500)
+
+        kwargs: dict[str, Any] = {}
+        scale = data.get('scale')
+        if scale is not None:
+            try:
+                kwargs['scale'] = int(scale)
+            except (TypeError, ValueError):
+                return JsonResponse({'error': 'invalid scale'}, status=400)
+        enhance = data.get('enhance')
+        if enhance is not None:
+            kwargs['enhance'] = bool(enhance)
+        ep = data.get('enhance_prompt')
+        if isinstance(ep, str) and ep.strip():
+            kwargs['enhance_prompt'] = ep.strip()
+        ec = data.get('enhance_creativity')
+        if ec is not None:
+            try:
+                kwargs['enhance_creativity'] = float(ec)
+            except (TypeError, ValueError):
+                return JsonResponse({'error': 'invalid enhance_creativity'}, status=400)
+        rep = data.get('replication')
+        if rep is not None:
+            try:
+                kwargs['replication'] = float(rep)
+            except (TypeError, ValueError):
+                return JsonResponse({'error': 'invalid replication'}, status=400)
+
+        if data.get('stream'):
+            resp = StreamingHttpResponse(
+                self._upscale_stream(data_url, filename, result_dir, kwargs),
+                content_type='application/x-ndjson',
+            )
+            resp['Cache-Control'] = 'no-cache'
+            resp['X-Accel-Buffering'] = 'no'
+            return resp
+
+        payload, status = self._upscale_result(data_url, filename, result_dir, kwargs)
+        return JsonResponse(payload, status=status)
+
+    def _upscale(self, request):
+        return self._do_upscale(request, self._gallery_dir())
+
+    def _upscale_uploads(self, request):
+        return self._do_upscale(request, self._uploads_dir(), self._gallery_dir())
+
+    def _upscale_archive(self, request):
+        return self._do_upscale(request, self._archive_dir(), self._gallery_dir())
+
+    def _edit_result(
+        self,
+        data_url: str,
+        source_filename: str,
+        media_dir: str,
+        prompt: str,
+        edit_model: str,
+        aspect_ratio: str | None,
+        safe_mode: bool | None,
+    ) -> 'tuple[dict[str, Any], int]':
+        from hty7.llemon.mediagen.imagegen.venice import LLemonVeniceImageGen
+        backend = LLemonVeniceImageGen(model=edit_model, log_dir=self._log_dir())
+        try:
+            result = backend.edit(
+                data_url, prompt, model=edit_model,
+                aspect_ratio=aspect_ratio, safe_mode=safe_mode,
+            )
+        finally:
+            backend.shutdown()
+        if result.get('error'):
+            err = result['error']
+            return {'error': err['message']}, 502
+        stem = os.path.splitext(source_filename)[0] + '_edit'
+        sidecar: dict[str, Any] = {
+            'operation':    'edit',
+            'source':       source_filename,
+            'prompt':       prompt,
+            'model':        edit_model,
+        }
+        if aspect_ratio:
+            sidecar['aspect_ratio'] = aspect_ratio
+        return self._save_operation_result(result, media_dir, stem, sidecar)
+
+    def _edit_stream(self, data_url: str, source_filename: str, media_dir: str,
+                     prompt: str, edit_model: str, aspect_ratio: 'str | None',
+                     safe_mode: 'bool | None'):
+        q: queue.Queue[dict[str, Any]] = queue.Queue()
+
+        def _worker() -> None:
+            try:
+                payload, status = self._edit_result(data_url, source_filename, media_dir,
+                                                    prompt, edit_model, aspect_ratio, safe_mode)
+                q.put({'event': 'done', 'status': status, **payload})
+            except Exception as e:
+                logger.exception('edit stream failed')
+                q.put({'event': 'done', 'status': 500, 'error': str(e)})
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        while True:
+            event = q.get()
+            yield json.dumps(event, default=str) + '\n'
+            if event.get('event') == 'done':
+                break
+        t.join(timeout=1.0)
+
+    def _do_edit_image(self, request, source_dir: str, result_dir: 'str | None' = None):
+        result_dir = result_dir if result_dir is not None else source_dir
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+
+        filename = str(data.get('filename') or '')
+        data_url, err = self._read_image_as_data_url(filename, source_dir=source_dir)
+        if err:
+            return JsonResponse({'error': err}, status=400 if err != 'media_dir not configured' else 500)
+
+        prompt = (data.get('prompt') or '').strip()
+        if not prompt:
+            return JsonResponse({'error': 'prompt is required'}, status=400)
+
+        from hty7.llemon.mediagen.imagegen.venice import DEFAULT_EDIT_MODEL, EDIT_ASPECT_RATIOS
+        edit_model   = (data.get('model') or DEFAULT_EDIT_MODEL).strip()
+        aspect_ratio = (data.get('aspect_ratio') or '').strip() or None
+        if aspect_ratio and aspect_ratio not in EDIT_ASPECT_RATIOS:
+            return JsonResponse({'error': 'invalid aspect_ratio'}, status=400)
+        safe_mode_raw = data.get('safe_mode')
+        safe_mode: bool | None = bool(safe_mode_raw) if safe_mode_raw is not None else None
+
+        if not result_dir:
+            return JsonResponse({'error': 'media_dir not configured'}, status=500)
+
+        if data.get('stream'):
+            resp = StreamingHttpResponse(
+                self._edit_stream(data_url, filename, result_dir, prompt,
+                                  edit_model, aspect_ratio, safe_mode),
+                content_type='application/x-ndjson',
+            )
+            resp['Cache-Control'] = 'no-cache'
+            resp['X-Accel-Buffering'] = 'no'
+            return resp
+
+        payload, status = self._edit_result(data_url, filename, result_dir,
+                                            prompt, edit_model, aspect_ratio, safe_mode)
+        return JsonResponse(payload, status=status)
+
+    def _edit_image(self, request):
+        return self._do_edit_image(request, self._gallery_dir())
+
+    def _edit_uploads_image(self, request):
+        return self._do_edit_image(request, self._uploads_dir(), self._gallery_dir())
+
+    def _edit_archive_image(self, request):
+        return self._do_edit_image(request, self._archive_dir(), self._gallery_dir())
+
+    def image_file(self, request, filename):
+        try:
+            filename = self._safe_filename(filename)
+        except ValueError:
+            raise Http404
+        path = os.path.join(self._gallery_dir(), filename)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(filename)
+        return FileResponse(open(path, 'rb'),
+                            content_type=mime or 'application/octet-stream')
+
+    def thumbnail(self, request, filename):
+        if '/' in filename or filename.startswith('.'):
+            raise Http404
+        if not self._ensure_thumbnail(filename):
+            raise Http404
+        # For videos, the thumbnail has a different name
+        thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
+        path = os.path.join(self._thumb_dir(), thumb_filename)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'),
+                            content_type=mime or 'application/octet-stream')
+
+    def _uploads_image_file(self, request, filename):
+        try:
+            filename = self._safe_filename(filename)
+        except ValueError:
+            raise Http404
+        path = os.path.join(self._uploads_dir(), filename)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(filename)
+        return FileResponse(open(path, 'rb'),
+                            content_type=mime or 'application/octet-stream')
+
+    def _uploads_thumbnail(self, request, filename):
+        if '/' in filename or filename.startswith('.'):
+            raise Http404
+        if not self._ensure_uploads_thumbnail(filename):
+            raise Http404
+        thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
+        path = os.path.join(self._uploads_thumb_dir(), thumb_filename)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'),
+                            content_type=mime or 'application/octet-stream')
+
+    def _archive_image_file(self, request, filename):
+        try:
+            filename = self._safe_filename(filename)
+        except ValueError:
+            raise Http404
+        path = os.path.join(self._archive_dir(), filename)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(filename)
+        return FileResponse(open(path, 'rb'),
+                            content_type=mime or 'application/octet-stream')
+
+    def _archive_thumbnail(self, request, filename):
+        if '/' in filename or filename.startswith('.'):
+            raise Http404
+        if not self._ensure_archive_thumbnail(filename):
+            raise Http404
+        thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
+        path = os.path.join(self._archive_thumb_dir(), thumb_filename)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'),
+                            content_type=mime or 'application/octet-stream')
+
+    def _large_thumbnail(self, request, filename):
+        if '/' in filename or filename.startswith('.'):
+            raise Http404
+        if not self._ensure_large_thumbnail(filename):
+            raise Http404
+        # For videos, the thumbnail has a different name
+        thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
+        path = os.path.join(self._large_thumb_dir(), thumb_filename)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'),
+                            content_type=mime or 'application/octet-stream')
+
+    def _uploads_large_thumbnail(self, request, filename):
+        if '/' in filename or filename.startswith('.'):
+            raise Http404
+        if not self._ensure_uploads_large_thumbnail(filename):
+            raise Http404
+        thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
+        path = os.path.join(self._uploads_large_thumb_dir(), thumb_filename)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'),
+                            content_type=mime or 'application/octet-stream')
+
+    def _archive_large_thumbnail(self, request, filename):
+        if '/' in filename or filename.startswith('.'):
+            raise Http404
+        if not self._ensure_archive_large_thumbnail(filename):
+            raise Http404
+        thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
+        path = os.path.join(self._archive_large_thumb_dir(), thumb_filename)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'),
+                            content_type=mime or 'application/octet-stream')
+
+    def _delete_archive_image(self, request):
+        return self._do_delete_image(request, self._archive_dir(), self._archive_thumb_dir(),
+                                     self._archive_large_thumb_dir())
+
+    def _do_move_image(
+        self, request,
+        src_dir: str, dst_dir: str,
+        src_thumb_dir: str, dst_thumb_dir: str,
+        src_large_thumb_dir: str = '', dst_large_thumb_dir: str = '',
+    ):
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+
+        try:
+            filename = self._safe_filename(str(data.get('filename') or ''))
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        if not src_dir or not dst_dir:
+            return JsonResponse({'error': 'media_dir not configured'}, status=500)
+
+        ext = os.path.splitext(filename)[1].lower()
+        try:
+            if ext in VIDEO_EXTS:
+                dst_fname = move_video_asset(
+                    src_dir, dst_dir, filename,
+                    src_thumb_dir, dst_thumb_dir,
+                    src_large_thumb_dir, dst_large_thumb_dir,
+                )
+            else:
+                dst_fname = move_image_asset(
+                    src_dir, dst_dir, filename,
+                    src_thumb_dir, dst_thumb_dir,
+                    src_large_thumb_dir, dst_large_thumb_dir,
+                )
+        except FileNotFoundError:
+            return JsonResponse({'error': 'file not found'}, status=404)
+        except ValueError:
+            return JsonResponse({'error': 'invalid filename'}, status=400)
+        except OSError as e:
+            return JsonResponse({'error': str(e)}, status=500)
+
+        return JsonResponse({'moved': dst_fname})
+
+    def _move_to_archive(self, request):
+        return self._do_move_image(
+            request,
+            src_dir=self._gallery_dir(), dst_dir=self._archive_dir(),
+            src_thumb_dir=self._thumb_dir(), dst_thumb_dir=self._archive_thumb_dir(),
+            src_large_thumb_dir=self._large_thumb_dir(),
+            dst_large_thumb_dir=self._archive_large_thumb_dir(),
+        )
+
+    def _move_to_gallery(self, request):
+        return self._do_move_image(
+            request,
+            src_dir=self._archive_dir(), dst_dir=self._gallery_dir(),
+            src_thumb_dir=self._archive_thumb_dir(), dst_thumb_dir=self._thumb_dir(),
+            src_large_thumb_dir=self._archive_large_thumb_dir(),
+            dst_large_thumb_dir=self._large_thumb_dir(),
+        )

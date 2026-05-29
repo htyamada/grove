@@ -1,7 +1,7 @@
 from django.urls import reverse_lazy
 from base.lib.tools import nav as base_nav, specs_nav_item
-from hty7.llemon.djview import LLemonViewSet
-from hty7.llemon.djview.media import LLemonMediaViewSet, bind_llemon_views
+from llemon_djview import LLemonViewSet
+from llemon_djview.media import LLemonMediaViewSet, bind_llemon_views
 
 _llemon_nav = [
     {'name': 'LLemon Persona', 'url': reverse_lazy('llemon_persona:index')},

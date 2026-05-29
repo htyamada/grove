@@ -1,0 +1,734 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ page_title }}</title>
+  <link rel="stylesheet" href="{% static 'base/css/stylesheet.css' %}">
+  <script>
+    const URL_STREAM = "{% url 'llemon_persona:stream' %}";
+    const URL_RENDER = "{% url 'llemon_persona:render_markdown' %}";
+    const URL_EDIT = "{% url 'llemon_persona:edit_history' %}";
+    const URL_SET_NAME = "{% url 'llemon_persona:set_history_name' %}";
+    const URL_SET_TITLE = "{% url 'llemon_persona:set_history_title' %}";
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; padding: 0; display: flex; flex-direction: column; }
+
+    #top-bar { flex: 0 0 auto; }
+
+    #layout {
+      flex: 1 1 auto;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 0 1em;
+    }
+
+    #history {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      padding: 0.5em 0;
+      border-top: 1px solid #ccc;
+    }
+
+    .msg { margin: 0.75em 0; white-space: normal; }
+    .msg-label { font-weight: bold; font-size: 0.85em; margin-bottom: 0.2em; color: #555; }
+    .msg.user { background: #f0f0f0; border: 1px solid #d8d8d8; border-radius: 3px; padding: 0.4em 0.6em; color: #333; }
+    .msg.assistant { color: #005; padding: 0.4em 0; }
+    .msg.editing { cursor: default; outline: none; }
+    .editable .msg { cursor: pointer; }
+    .editable .msg:hover { outline: 1px dashed #bbb; }
+    .resubmit-only .msg.user { cursor: pointer; }
+    .resubmit-only .msg.user:hover { outline: 1px dashed #bbb; }
+
+    /* markdown content inside message blocks */
+    .msg p { margin: 0.4em 0; }
+    .msg p:first-child { margin-top: 0; }
+    .msg p:last-child { margin-bottom: 0; }
+    .msg pre { background: #f4f4f4; border: 1px solid #ddd; border-radius: 3px; padding: 0.5em; overflow-x: auto; }
+    .msg code { background: #f4f4f4; padding: 0.1em 0.3em; border-radius: 2px; font-family: monospace; }
+    .msg pre code { background: none; padding: 0; }
+    .msg ul, .msg ol { margin: 0.4em 0; padding-left: 1.5em; }
+    .msg table { border-collapse: collapse; margin: 0.5em 0; }
+    .msg th, .msg td { border: 1px solid #ccc; padding: 0.3em 0.6em; }
+    .download-link { display: inline-block; margin: 0.3em 0 0.6em; font-size: 0.9em; }
+
+    .edit-area { width: 100%; min-height: 8em; font-family: monospace; font-size: 1em; resize: vertical; }
+    .edit-buttons { margin-top: 0.3em; display: flex; gap: 0.4em; }
+
+    #bottom-bar {
+      flex: 0 0 auto;
+      padding: 0.5em 0;
+    }
+
+    #state-line {
+      position: fixed;
+      left: calc(50% + 400px + 1em);
+      max-width: calc(50vw - 400px - 2em);
+      font-family: monospace;
+      font-weight: bold;
+      font-size: 0.9em;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    #status {
+      position: fixed;
+      right: calc(50% + 400px + 1em);
+      bottom: 1em;
+      max-width: calc(50vw - 400px - 2em);
+      color: #888;
+      font-size: 0.9em;
+    }
+    #status.error { color: #c00; }
+    #status.error .dismiss { cursor: pointer; font-weight: bold; margin-left: 0.4em; }
+
+    #input-area { display: flex; gap: 0.5em; }
+    #input-area textarea { flex: 1; font-family: monospace; height: 4em; resize: vertical; }
+
+    #enc-badge { font-family: monospace; font-weight: bold; font-size: 0.8em; margin-left: 0.6em; vertical-align: middle; }
+
+    #session-name-bar { padding: 0.3em 0 0.2em; font-size: 0.9em; color: #555; display: flex; align-items: center; gap: 0.4em; flex-wrap: wrap; }
+    #session-name-bar label { white-space: nowrap; }
+    #session-name-input, #session-title-input { font-family: inherit; font-size: 1em; border: 1px solid transparent; background: transparent; color: inherit; padding: 0.1em 0.3em; border-radius: 2px; min-width: 0; }
+    #session-name-input { flex: 1; }
+    #session-title-input { flex: 1; }
+    #session-name-input:focus, #session-title-input:focus { border-color: #aaa; background: #fff; outline: none; }
+    #session-name-input::placeholder, #session-title-input::placeholder { color: #aaa; font-style: italic; }
+    .history-unsaved { font-weight: bold; }
+    #download-llmac { margin-right: 1em; }
+    #token-counter { margin-left: auto; font-family: monospace; font-size: 0.85em; color: #999; white-space: nowrap; }
+    #token-counter.yellow { color: #a80; font-weight: bold; }
+    #token-counter.red    { color: #c00; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div id="top-bar">
+    <h1>{{ site_name }}: {{ page_title }}<span id="enc-badge">{% if e2ee %} E2EE{% elif tee %} TEE{% endif %}</span></h1>
+    <div class="navbar">
+        <div class="text-left">
+          {% for item in base_nav %}<a href="{{ item.url }}">{{ item.name }}</a>&nbsp;&nbsp;{% endfor %}
+        </div>
+        <div class="text-right">
+          {% for item in nav %}<a href="{{ item.url }}">{{ item.name }}</a>&nbsp;&nbsp;{% endfor %}
+          <button type="button" id="download-llmac">Download .llmac</button>
+          <a href="{% url 'llemon_persona:system' %}?config={{ config_fname|urlencode }}{% if service_name %}&amp;service={{ service_name|urlencode }}{% endif %}{% if provider_name %}&amp;provider={{ provider_name|urlencode }}&amp;model={{ model_name|urlencode }}{% endif %}">System prompt</a>
+        </div>
+      </div>
+  </div>
+  <div id="layout">
+    <div id="session-name-bar">
+      {% if write_history %}
+      <label for="session-name-input">Session name:</label>
+      <input type="text" id="session-name-input" value="{{ session_name }}" placeholder="(auto-generated from first message)">
+      <label for="session-title-input">Title:</label>
+      <input type="text" id="session-title-input" value="{{ session_title }}" placeholder="(display in page title)">
+      {% else %}
+      <span class="history-unsaved">History not saved</span>
+      {% endif %}
+      <span id="token-counter"></span>
+    </div>
+    <div id="history">
+      {% for msg in history %}
+      <div class="msg-label">{% if msg.role == 'user' %}{{ user_tag }}{% else %}{{ assistant_tag }}{% endif %}</div>
+      <div class="msg {{ msg.role }}" data-index="{{ forloop.counter0 }}" data-turn-id="{{ msg.turn_id }}" data-raw="{{ msg.content }}">{% if msg.html %}{{ msg.html|safe }}{% else %}{{ msg.content }}{% endif %}</div>
+      {% endfor %}
+    </div>
+
+    <div id="bottom-bar">
+      <div id="input-area">
+        <textarea id="input" placeholder="Type a message..."></textarea>
+        <button id="send">Send</button>
+      </div>
+    </div>
+  </div>
+  <div id="state-line"></div>
+  <div id="status"></div>
+
+  <script>
+    document.getElementById('state-line').style.top =
+      document.getElementById('history').getBoundingClientRect().top + 'px';
+  </script>
+
+  {{ config_fname|json_script:"config-data" }}
+  {{ config_id|json_script:"config-id-data" }}
+  {{ history_fname|json_script:"history-data" }}
+  {{ history_macro_name|json_script:"history-macro-data" }}
+  {{ service_name|json_script:"service-data" }}
+  {{ provider_name|json_script:"provider-data" }}
+  {{ model_name|json_script:"model-data" }}
+  {{ type_id|json_script:"type-data" }}
+  {{ page_title|json_script:"page-title-data" }}
+  {{ user_tag|json_script:"user-tag-data" }}
+  {{ assistant_tag|json_script:"assistant-tag-data" }}
+  {{ edit_responses|json_script:"edit-responses-data" }}
+  {{ write_history|json_script:"write-history-data" }}
+  {{ history|length|json_script:"msg-count-data" }}
+  {{ start_message|json_script:"start-message-data" }}
+  {{ start_fname|json_script:"start-fname-data" }}
+  {{ start_macro_name|json_script:"start-macro-data" }}
+  {{ initial_state|json_script:"initial-state-data" }}
+  {{ debug_state|json_script:"debug-state-data" }}
+  {{ temperature_override|json_script:"temperature-override-data" }}
+  {{ write_history_override|json_script:"write-history-override-data" }}
+  {{ debug_override|json_script:"debug-override-data" }}
+  {{ download_field|json_script:"download-field-data" }}
+  {{ initial_history_data|json_script:"initial-history-data" }}
+  {{ initial_history_summary|json_script:"initial-history-summary-data" }}
+  {{ history_mtime|json_script:"history-mtime-data" }}
+  {{ session_title|json_script:"session-title-data" }}
+
+  <script>
+    const configFname = JSON.parse(document.getElementById('config-data').textContent);
+    const configId = JSON.parse(document.getElementById('config-id-data').textContent);
+    let historyFname = JSON.parse(document.getElementById('history-data').textContent);
+    const historyMacroName = JSON.parse(document.getElementById('history-macro-data').textContent);
+    const serviceName = JSON.parse(document.getElementById('service-data').textContent);
+    const providerName = JSON.parse(document.getElementById('provider-data').textContent);
+    const modelName = JSON.parse(document.getElementById('model-data').textContent);
+    const typeId = JSON.parse(document.getElementById('type-data').textContent);
+    const pageTitle = JSON.parse(document.getElementById('page-title-data').textContent);
+    const userTag = JSON.parse(document.getElementById('user-tag-data').textContent);
+    const assistantTag = JSON.parse(document.getElementById('assistant-tag-data').textContent);
+
+    const historyEl = document.getElementById('history');
+    const inputEl = document.getElementById('input');
+    const sendBtn = document.getElementById('send');
+    const statusEl = document.getElementById('status');
+    const stateEl = document.getElementById('state-line');
+
+    function updateTokenCounter(summary) {
+      const el = document.getElementById('token-counter');
+      if (!el) return;
+      el.classList.remove('yellow', 'red');
+      if (!summary) { el.textContent = ''; return; }
+      const parts = [];
+      if (summary.context_status_text) parts.push(summary.context_status_text);
+      if (summary.cost_status_text) parts.push(summary.cost_status_text);
+      el.textContent = parts.join(' | ');
+      if (summary.context_warning === 'red') el.classList.add('red');
+      else if (summary.context_warning === 'yellow') el.classList.add('yellow');
+    }
+
+    function showError(msg) {
+      statusEl.className = 'error';
+      statusEl.textContent = msg + ' ';
+      const x = document.createElement('span');
+      x.className = 'dismiss';
+      x.textContent = '×';
+      x.onclick = () => { statusEl.textContent = ''; statusEl.className = ''; };
+      statusEl.appendChild(x);
+    }
+    function clearStatus(msg) {
+      statusEl.textContent = msg || '';
+      statusEl.className = '';
+    }
+    const encBadge = document.getElementById('enc-badge');
+
+    let msgCount = JSON.parse(document.getElementById('msg-count-data').textContent);
+    let editing = false;
+    let streaming = false;
+    let currentState = JSON.parse(document.getElementById('initial-state-data').textContent);
+    const writeHistory = JSON.parse(document.getElementById('write-history-data').textContent);
+    const debugState = JSON.parse(document.getElementById('debug-state-data').textContent);
+    const startFname = JSON.parse(document.getElementById('start-fname-data').textContent) || null;
+    const startMacroName = JSON.parse(document.getElementById('start-macro-data').textContent) || startFname;
+    const temperatureOverride = JSON.parse(document.getElementById('temperature-override-data').textContent);
+    const writeHistoryOverride = JSON.parse(document.getElementById('write-history-override-data').textContent);
+    const debugOverride = JSON.parse(document.getElementById('debug-override-data').textContent);
+    const downloadField = JSON.parse(document.getElementById('download-field-data').textContent);
+    let currentHistory = JSON.parse(document.getElementById('initial-history-data').textContent);
+    let currentHistorySummary = JSON.parse(document.getElementById('initial-history-summary-data').textContent);
+    let lastMtime = JSON.parse(document.getElementById('history-mtime-data').textContent);
+
+    function removeDownloadLink(msgDiv) {
+      const next = msgDiv.nextElementSibling;
+      if (next && next.classList.contains('download-link')) next.remove();
+    }
+
+    function downloadFilename(field) {
+      const ext = field === 'code' ? 'txt' : 'json';
+      return `${field || 'download'}.${ext}`;
+    }
+
+    function addDownloadLink(msgDiv, download) {
+      if (!download || !download.field || !download.content) return;
+      removeDownloadLink(msgDiv);
+      const blob = new Blob([download.content], { type: 'text/plain;charset=utf-8' });
+      const link = document.createElement('a');
+      link.className = 'download-link';
+      link.href = URL.createObjectURL(blob);
+      link.download = downloadFilename(download.field);
+      link.textContent = `Download ${download.field}`;
+      msgDiv.insertAdjacentElement('afterend', link);
+    }
+
+    function currentDownloadPayload() {
+      if (!downloadField || !currentState || !(downloadField in currentState)) return null;
+      const value = currentState[downloadField];
+      if (value === null || value === undefined || value === '') return null;
+      if (Array.isArray(value) && value.length === 0) return null;
+      if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return null;
+      return {
+        field: downloadField,
+        content: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
+      };
+    }
+
+    function renderState(state, debug) {
+      if (debug && state && Object.keys(state).length > 0) {
+        stateEl.textContent = Object.entries(state)
+          .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+          .join('\n');
+      } else {
+        stateEl.textContent = '';
+      }
+    }
+
+    function upsertHistoryTurn(turn) {
+      if (!turn || !turn.id || !Array.isArray(currentHistory)) return;
+      const idx = currentHistory.findIndex(item => item && item.id === turn.id);
+      if (idx >= 0) currentHistory[idx] = turn;
+      else currentHistory.push(turn);
+    }
+
+    renderState(currentState, debugState);
+    updateTokenCounter(currentHistorySummary);
+
+    function macroNamePart(value) {
+      return String(value || 'session')
+        .replace(/\.[^.]+(?:\.json)?$/, '')
+        .replace(/[^A-Za-z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        || 'session';
+    }
+
+    function buildLlmacContent() {
+      const historyInit = writeHistory && historyFname;
+      const initCommand = (
+        historyInit
+          ? `/init history ${historyMacroName || historyFname}`
+          : (startMacroName ? `/init start ${startMacroName}` : '/init new')
+      );
+      const lines = [
+        `/macro id ${macroNamePart(configFname)}-${macroNamePart(serviceName)}`,
+        `/macro title ${pageTitle}`,
+        `set type ${typeId}`,
+        `set config ${configId || configFname}`,
+      ];
+      if (historyInit) {
+        lines.push('# Warning: if this session has no user-entered text, the history file may be deleted when the chat exits.');
+      }
+      lines.push(
+        initCommand,
+        `set service ${serviceName}`,
+        '/start',
+        '',
+      );
+      return lines.join('\n');
+    }
+
+    function downloadLlmac() {
+      const blob = new Blob([buildLlmacContent()], { type: 'text/plain;charset=utf-8' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      link.href = url;
+      link.download = `${macroNamePart(configFname)}-${macroNamePart(serviceName)}.llmac`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function scrollToBottom() {
+      historyEl.scrollTop = historyEl.scrollHeight;
+    }
+
+    async function appendMsg(role, text) {
+      const idx = msgCount++;
+      const label = document.createElement('div');
+      label.className = 'msg-label';
+      label.textContent = role === 'user' ? userTag : assistantTag;
+      historyEl.appendChild(label);
+      const div = document.createElement('div');
+      div.className = 'msg ' + role;
+      div.dataset.index = idx;
+      div.dataset.raw = text;
+      historyEl.appendChild(div);
+      try { div.innerHTML = await renderMarkdown(text); }
+      catch (_) { div.textContent = text; }
+      scrollToBottom();
+      return div;
+    }
+
+    function removeMsgsAfter(idx) {
+      Array.from(historyEl.querySelectorAll('.msg')).forEach(div => {
+        if (parseInt(div.dataset.index) > idx) {
+          div.previousElementSibling.remove();
+          div.remove();
+        }
+      });
+      msgCount = idx + 1;
+    }
+
+    async function renderMarkdown(text) {
+      const resp = await fetch(URL_RENDER, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      return (await resp.json()).html;
+    }
+
+    async function editHistoryEntry(turnId, role, content, truncate) {
+      try {
+        const resp = await fetch(URL_EDIT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history: historyFname, turn_id: turnId, role, content, truncate, history_data: currentHistory }),
+        });
+        const data = await resp.json();
+        if (data.error) { showError('Error: ' + data.error); return false; }
+        if (data.history_data) currentHistory = data.history_data;
+        return true;
+      } catch (e) {
+        showError('Error: ' + e.message);
+        return false;
+      }
+    }
+
+    async function doStream(message, aiDiv, generatedStart = false) {
+      let accumulated = '';
+      let finished = false;
+      let success = false;
+      let newTurnId = null;
+      let lastError = null;
+      streaming = true;
+      try {
+        const resp = await fetch(URL_STREAM, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: configFname, history: historyFname, service: serviceName, provider: providerName, model: modelName, message, state: currentState, history_data: currentHistory, last_mtime: lastMtime, start: startFname, generated_start: generatedStart, temperature: temperatureOverride, write_history: writeHistoryOverride, debug: debugOverride }),
+        });
+        if (!resp.ok) {
+          lastError = 'server returned ' + resp.status;
+          showError('Error: ' + lastError);
+        } else {
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              const ev = JSON.parse(line.slice(6));
+              if (ev.chunk) {
+                accumulated += ev.chunk;
+                aiDiv.textContent = accumulated;
+                aiDiv.dataset.raw = accumulated;
+                scrollToBottom();
+              } else if (ev.done) {
+                historyFname = ev.history_fname;
+                if (ev.history_data) currentHistory = ev.history_data;
+                if (ev.turn) upsertHistoryTurn(ev.turn);
+                if (ev.file_mtime) lastMtime = ev.file_mtime;
+                if (ev.conflict) showError('Warning: history file was modified externally.');
+                if (ev.error) {
+                  lastError = ev.error;
+                  showError('Error: ' + lastError);
+                }
+                if ('state' in ev) {
+                  currentState = ev.state;
+                  renderState(ev.state, ev.debug);
+                }
+                if (ev.download) addDownloadLink(aiDiv, ev.download);
+                if ('e2ee' in ev || 'tee' in ev) {
+                  encBadge.textContent = ev.e2ee ? ' E2EE' : (ev.tee ? ' TEE' : '');
+                }
+                if (ev.turn_id) newTurnId = ev.turn_id;
+                if (ev.summary) currentHistorySummary = ev.summary;
+                updateTokenCounter(currentHistorySummary);
+                if (!ev.conflict && !ev.error) clearStatus();
+                finished = true;
+                success = !ev.error;
+              } else if (ev.error) {
+                lastError = ev.error;
+                aiDiv.textContent = 'Error: ' + lastError;
+                aiDiv.dataset.raw = aiDiv.textContent;
+                scrollToBottom();
+                showError('Error: ' + lastError);
+                finished = true;
+              }
+            }
+          }
+          if (!finished) {
+            lastError = 'stream ended unexpectedly';
+            showError('Error: ' + lastError);
+          }
+        }
+      } catch (e) {
+        lastError = e.message;
+        console.error('Stream fetch error:', e, { url: URL_STREAM, service: serviceName });
+        showError('Error: ' + lastError);
+      } finally {
+        streaming = false;
+      }
+      if (success && accumulated) {
+        try { aiDiv.innerHTML = await renderMarkdown(accumulated); scrollToBottom(); } catch (_) {}
+        if (!aiDiv.nextElementSibling || !aiDiv.nextElementSibling.classList.contains('download-link')) {
+          addDownloadLink(aiDiv, currentDownloadPayload());
+        }
+      }
+      return { ok: success, turnId: newTurnId, error: lastError };
+    }
+
+    async function send(generatedStart = false) {
+      const message = inputEl.value.trim();
+      if (!message || editing || streaming) return;
+      inputEl.value = '';
+      sendBtn.disabled = true;
+
+      const MAX_RETRIES = 3;
+      let ok = false;
+      for (let attempt = 0; attempt < MAX_RETRIES && !ok; attempt++) {
+        if (attempt > 0) {
+          await new Promise(r => setTimeout(r, Math.pow(2, attempt - 1) * 1000));
+          statusEl.textContent = `Retrying (${attempt}/${MAX_RETRIES})…`;
+        } else {
+          statusEl.textContent = 'Sending...';
+        }
+        const preSendMsgCount = msgCount;
+        const userDiv = await appendMsg('user', message);
+        const aiDiv = await appendMsg('assistant', '');
+        const { ok: streamOk, turnId, error: streamError } = await doStream(message, aiDiv, generatedStart);
+        ok = streamOk;
+        if (ok && turnId) {
+          userDiv.dataset.turnId = turnId;
+          aiDiv.dataset.turnId = turnId;
+        }
+        if (!ok && attempt + 1 < MAX_RETRIES) {
+          console.warn(`Stream attempt ${attempt + 1}/${MAX_RETRIES} failed (service: ${serviceName}): ${streamError}`);
+          removeMsgsAfter(preSendMsgCount - 1);
+        } else if (!ok) {
+          console.warn(`Stream attempt ${attempt + 1}/${MAX_RETRIES} failed (service: ${serviceName}): ${streamError}`);
+        }
+      }
+
+      if (!ok) console.error(`All ${MAX_RETRIES} stream attempts failed (service: ${serviceName}).`);
+      sendBtn.disabled = false;
+      if (!ok) inputEl.value = message;
+      inputEl.focus();
+    }
+
+    function startEdit(msgDiv, allowSave) {
+      if (editing || streaming) return;
+      const turnId = msgDiv.dataset.turnId || null;
+      if (!turnId) return;
+      editing = true;
+
+      const idx = parseInt(msgDiv.dataset.index);
+      const role = msgDiv.classList.contains('user') ? 'user' : 'assistant';
+      const rawText = msgDiv.dataset.raw;
+      const savedHTML = msgDiv.innerHTML;
+
+      msgDiv.classList.add('editing');
+      msgDiv.innerHTML = '';
+
+      const ta = document.createElement('textarea');
+      ta.className = 'edit-area';
+      ta.value = rawText;
+
+      const btnRow = document.createElement('div');
+      btnRow.className = 'edit-buttons';
+
+      function cancelEdit() {
+        msgDiv.innerHTML = savedHTML;
+        msgDiv.classList.remove('editing');
+        editing = false;
+      }
+
+      async function saveEdit() {
+        const newText = ta.value.trim();
+        if (!newText) return;
+        if (!await editHistoryEntry(turnId, role, newText, false)) return;
+        msgDiv.dataset.raw = newText;
+        msgDiv.classList.remove('editing');
+        editing = false;
+        try { msgDiv.innerHTML = await renderMarkdown(newText); }
+        catch (_) { msgDiv.textContent = newText; }
+      }
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', cancelEdit);
+
+      if (allowSave) {
+        const saveBtn = document.createElement('button');
+        saveBtn.textContent = 'Save';
+        saveBtn.addEventListener('click', saveEdit);
+        btnRow.appendChild(saveBtn);
+      }
+
+      if (role === 'user') {
+        const resubBtn = document.createElement('button');
+        resubBtn.textContent = 'Truncate & Resubmit';
+        resubBtn.addEventListener('click', async () => {
+          const newText = ta.value.trim();
+          if (!newText) return;
+
+          // Truncate history file before this user message
+          if (!await editHistoryEntry(turnId, role, newText, true)) return;
+
+          // Update user div in place, remove subsequent messages
+          msgDiv.dataset.raw = newText;
+          try { msgDiv.innerHTML = await renderMarkdown(newText); }
+          catch (_) { msgDiv.textContent = newText; }
+          msgDiv.classList.remove('editing');
+          removeMsgsAfter(idx);
+          editing = false;
+
+          // Stream new response
+          sendBtn.disabled = true;
+          statusEl.textContent = 'Sending...';
+          const aiDiv = await appendMsg('assistant', '');
+          const { turnId: newTurnId } = await doStream(newText, aiDiv);
+          if (newTurnId) {
+            msgDiv.dataset.turnId = newTurnId;
+            aiDiv.dataset.turnId = newTurnId;
+          }
+          sendBtn.disabled = false;
+          inputEl.focus();
+        });
+        btnRow.appendChild(resubBtn);
+      }
+
+      btnRow.appendChild(cancelBtn);
+
+      msgDiv.appendChild(ta);
+      msgDiv.appendChild(btnRow);
+      // Auto-fit height to content, capped at 60% of the viewport
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.6) + 'px';
+      ta.focus();
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+        if (e.key === 'Enter' && e.ctrlKey && allowSave) { e.preventDefault(); saveEdit(); }
+      });
+    }
+
+    const editResponsesEnabled = JSON.parse(document.getElementById('edit-responses-data').textContent);
+    const layoutEl = document.getElementById('layout');
+    if (editResponsesEnabled) {
+      layoutEl.classList.add('editable');
+    } else {
+      layoutEl.classList.add('resubmit-only');
+    }
+    historyEl.addEventListener('click', e => {
+      const msgDiv = e.target.closest('.msg');
+      if (!msgDiv || msgDiv.classList.contains('editing')) return;
+      if (!editResponsesEnabled && !msgDiv.classList.contains('user')) return;
+      startEdit(msgDiv, editResponsesEnabled);
+    });
+
+    sendBtn.addEventListener('click', send);
+    document.getElementById('download-llmac').addEventListener('click', downloadLlmac);
+    inputEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+
+    const sessionNameEl = document.getElementById('session-name-input');
+    const sessionTitleEl = document.getElementById('session-title-input');
+    let sessionNameSaveTimer = null;
+    let sessionTitleSaveTimer = null;
+    async function saveSessionName() {
+      if (!sessionNameEl) return;
+      const name = sessionNameEl.value.trim();
+      try {
+        await fetch(URL_SET_NAME, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history: historyFname, name }),
+        });
+      } catch (_) {}
+    }
+    async function saveSessionTitle() {
+      if (!sessionTitleEl) return;
+      const title = sessionTitleEl.value.trim();
+      try {
+        await fetch(URL_SET_TITLE, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history: historyFname, title }),
+        });
+      } catch (_) {}
+    }
+    function updatePageTitle() {
+      const title = sessionTitleEl && sessionTitleEl.value.trim() ? sessionTitleEl.value.trim() : (sessionNameEl && sessionNameEl.value.trim() ? sessionNameEl.value.trim() : '');
+      const newTitle = title ? `LLemon Persona — Running ${title}` : 'LLemon Persona — Running session';
+      document.title = newTitle;
+      const allTitles = document.querySelectorAll('title');
+      allTitles.forEach((el) => {
+        el.textContent = newTitle;
+      });
+      const h1 = document.querySelector('h1');
+      if (h1) {
+        const encBadge = h1.querySelector('#enc-badge');
+        const siteName = h1.textContent.split(':')[0].trim();
+        if (encBadge) {
+          h1.textContent = `${siteName}: ${newTitle}`;
+          h1.appendChild(encBadge);
+        } else {
+          h1.textContent = `${siteName}: ${newTitle}`;
+        }
+      }
+    }
+    if (sessionNameEl) {
+      sessionNameEl.addEventListener('change', () => {
+        clearTimeout(sessionNameSaveTimer);
+        saveSessionName();
+        updatePageTitle();
+      });
+      sessionNameEl.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); sessionNameEl.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); sessionNameEl.blur(); }
+      });
+      sessionNameEl.addEventListener('input', () => {
+        clearTimeout(sessionNameSaveTimer);
+        sessionNameSaveTimer = setTimeout(saveSessionName, 1000);
+        updatePageTitle();
+      });
+    }
+    if (sessionTitleEl) {
+      sessionTitleEl.addEventListener('change', () => {
+        clearTimeout(sessionTitleSaveTimer);
+        saveSessionTitle();
+      });
+      sessionTitleEl.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); sessionTitleEl.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); sessionTitleEl.blur(); }
+      });
+      sessionTitleEl.addEventListener('input', () => {
+        clearTimeout(sessionTitleSaveTimer);
+        sessionTitleSaveTimer = setTimeout(saveSessionTitle, 1000);
+        updatePageTitle();
+      });
+    }
+
+    inputEl.focus();
+    scrollToBottom();
+
+    const startMessage = JSON.parse(document.getElementById('start-message-data').textContent);
+    if (startMessage && msgCount === 0) {
+      setTimeout(() => { inputEl.value = startMessage; send(true); }, 0);
+    }
+  </script>
+</body>
+</html>

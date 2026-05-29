@@ -1,0 +1,1343 @@
+{% extends 'base/base.html' %}
+{% block extra_head %}
+<style>
+  .page-layout { display:flex; align-items:stretch; }
+  .page-left { flex:1; min-width:0; padding-right:1.5em; border-right:2px solid #ccc; display:flex; align-items:stretch; gap:1.2em; }
+  .page-left-main { flex:1; min-width:0; }
+  .model-filter-column { width:8.5em; flex-shrink:0; padding-top:calc(300px + 2.4em); }
+  .page-right { width:27em; flex-shrink:0; padding-left:1.5em; display:flex; flex-direction:column; }
+  .top-section { display:flex; align-items:flex-start; height:300px; gap:1.2em; overflow:hidden; }
+  .top-section.has-video #placeholder-msg { display:none; }
+  #placeholder-msg { color:#bbb; font-style:italic; align-self:center; margin:auto; }
+  #result-thumb-wrap {
+    display:none; position:relative; flex-shrink:0; cursor:pointer;
+    align-items:center; justify-content:center;
+    width:300px; height:300px; background:#111;
+  }
+  #result-thumb { max-height:100%; max-width:100%; object-fit:contain; display:block; }
+  #result-thumb-play {
+    position:absolute; top:50%; left:50%; transform:translate(-42%,-50%);
+    width:0; height:0; border-top:20px solid transparent; border-bottom:20px solid transparent;
+    border-left:32px solid rgba(255,255,255,0.85); filter:drop-shadow(0 1px 5px rgba(0,0,0,0.7));
+    pointer-events:none;
+  }
+  #result-vb-overlay {
+    display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.92); z-index:1100;
+    align-items:center; justify-content:center;
+  }
+  #result-vb-video { max-width:92vw; max-height:85vh; }
+  #result-info { display:none; font-size:0.9em; line-height:1.7; color:#333; align-self:flex-start; flex:1; }
+  #result-info .info-label { font-weight:bold; }
+  .separator { border:none; border-top:2px solid #ccc; margin:0.8em 0; }
+  .videogen-form label { display:inline-block; width:8em; font-weight:bold; }
+  .videogen-form input, .videogen-form select { font-size:1em; }
+  .videogen-form textarea { width:100%; max-width:60em; height:6em; font-size:1em; box-sizing:border-box; }
+  .videogen-form .row { margin:0.5em 0; }
+  #provider-row { display:flex; align-items:center; gap:0.6em; flex-wrap:wrap; }
+  #provider-row > label:first-child { flex:0 0 8em; }
+  #provider-row .option-group label { width:auto; margin:0; }
+  #provider-row .option-group { display:inline-flex; align-items:center; gap:0.3em; }
+  #model-row { display:flex; align-items:center; gap:0.6em; flex-wrap:wrap; }
+  #model-row > label:first-child { flex:0 0 8em; }
+  #video-options-row { display:flex; align-items:center; gap:0.7em; flex-wrap:wrap; }
+  #video-options-row > label:first-child { flex:0 0 8em; }
+  #video-options-row .option-group label { width:auto; margin:0; }
+  #video-options-row .option-group { display:inline-flex; align-items:center; gap:0.3em; }
+  #video-options-row input[type=text], #video-options-row input:not([type]) { width:7em; }
+  #model-filter-tags { display:flex; flex-direction:column; align-items:flex-start; gap:0.3em; font-size:0.9em; }
+  #model-filter-tags label { width:auto; font-weight:normal; display:inline-flex; align-items:center; gap:0.25em; margin:0; }
+  .tag-column-title { font-weight:bold; margin-bottom:0.35em; font-size:0.9em; }
+  #model-filter-clear { margin-top:0.2em; padding:0.15em 0.5em; font-size:0.9em; cursor:pointer; }
+  .form-buttons { margin-top:0.8em; display:flex; gap:0.6em; align-items:center; position:relative; padding-left:8em; }
+  .form-buttons button { padding:0.4em 1.2em; font-size:1em; cursor:pointer; }
+  #reset-btn { position:absolute; left:0; }
+  #status, .status { color:#555; font-style:italic; }
+  .notes-error {
+    margin:0.4em 0 0.2em;
+    padding:0.5em 0.7em;
+    border:1px solid #c55;
+    background:#fff2f2;
+    color:#900;
+    font-size:0.9em;
+    line-height:1.4;
+    white-space:pre-wrap;
+  }
+  .page-right label { font-weight:bold; display:block; margin-bottom:0.25em; }
+  #notes-section { flex-shrink:0; display:flex; flex-direction:column; }
+  #notes-tags-column { margin-top:0.55em; }
+  #notes-text-column { min-width:0; }
+  #notes-tags { column-count:3; column-gap:0.8em; margin:0.25em 0 0.1em; }
+  #notes-tags label { font-weight:normal; display:flex; align-items:center; gap:0.35em; cursor:pointer; margin-bottom:0.15em; font-size:0.9em; min-width:0; break-inside:avoid; }
+  #notes-tags input[type=checkbox] { pointer-events:none; }
+  #notes-tags input[type=checkbox]:indeterminate { opacity:0.45; }
+  #notes-tags-legend { font-size:0.78em; color:#999; margin:0.1em 0 0.25em; }
+  #model-notes { height:5em; width:100%; font-size:1em; box-sizing:border-box; margin-top:0.25em; resize:vertical; }
+  #notes-status { display:block; font-style:italic; color:#555; font-size:0.85em; margin-top:0.3em; flex-shrink:0; }
+  #description-section { margin-top:0.8em; flex-shrink:0; display:flex; flex-direction:column; }
+  #description-section:has(#model-description:empty) { display:none; }
+  #model-description {
+    min-height:6em; max-height:14em; overflow-y:auto; white-space:pre-wrap; word-break:break-word;
+    border:1px solid #ddd; padding:0.4em 0.5em; background:#fafafa;
+    font-size:0.85em; color:#444; line-height:1.5;
+  }
+  #uploads-section { margin-top:0.8em; flex:1; min-height:0; display:flex; flex-direction:column; }
+  #uploads-section .section-heading { font-weight:bold; margin-bottom:0.25em; }
+  .asset-list { flex:1; min-height:0; overflow:auto; border:1px solid #ddd; padding:0.45em; background:#fafafa; }
+  .asset-list label { display:block; font-weight:normal; font-size:0.9em; margin:0.18em 0; }
+  .image-btn-row { display:flex; align-items:center; gap:0.5em; }
+  .image-btn-label { font-style:italic; color:#555; font-size:0.9em; }
+  .ref-thumb-list { display:flex; align-items:flex-start; gap:0.3em; flex-wrap:wrap; font-style:normal; }
+  .ref-thumb-item { display:flex; flex-direction:column; align-items:center; gap:0.1em; color:#333; font-size:0.78em; line-height:1.1; }
+  .ref-thumb-item img { width:34px; height:34px; object-fit:cover; border:1px solid #bbb; border-radius:2px; background:#eee; display:block; }
+  .image-btn-clear { cursor:pointer; font-size:0.85em; padding:0.1em 0.4em; }
+  .image-select-row { display:flex; align-items:center; gap:0.5em; margin:0.4em 0; }
+  .image-select-label { width:6em; font-weight:bold; font-size:0.9em; flex-shrink:0; }
+#image-picker { position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:1000; display:flex; align-items:center; justify-content:center; }
+  #image-picker-box { background:#fff; border-radius:6px; padding:1em 1.2em; display:flex; flex-direction:column; max-width:80vw; max-height:80vh; min-width:20em; }
+  #image-picker-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:0.7em; gap:1em; }
+  #image-picker-grid { overflow-y:auto; display:flex; flex-wrap:wrap; gap:0.5em; align-content:flex-start; }
+  .image-thumb-wrap { cursor:pointer; display:inline-block; }
+  .image-thumb { width:120px; height:120px; object-fit:cover; border:3px solid transparent; border-radius:3px; display:block; }
+  .image-thumb-wrap.selected .image-thumb { border-color:#0077cc; }
+  #image-picker-tabs { display:flex; gap:0.3em; }
+  .picker-tab { padding:0.2em 0.7em; font-size:0.85em; cursor:pointer; background:#eee; border:1px solid #ccc; border-radius:3px; }
+  .picker-tab.active { background:#0077cc; color:#fff; border-color:#0077cc; }
+  .sd-pick-dir { cursor:pointer; padding:0.3em 0.6em; background:#f0f4ff; border:1px solid #c0c8e0; border-radius:3px; font-size:0.85em; white-space:nowrap; max-width:160px; overflow:hidden; text-overflow:ellipsis; }
+  .sd-pick-dir:hover { background:#dde5ff; }
+  .sd-pick-nav { cursor:pointer; color:#0077cc; text-decoration:underline; }
+  .sd-pick-nav:hover { color:#004a8c; }
+  .image-picker-grid-inner { display:flex; flex-wrap:wrap; gap:0.5em; align-content:flex-start; }
+  .spinner {
+    display:inline-block; width:0.85em; height:0.85em;
+    border:2px solid #ccc; border-top-color:#555; border-radius:50%;
+    animation:spin 0.7s linear infinite; vertical-align:middle; margin-right:0.4em;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-layout">
+  <div class="page-left">
+    <div class="page-left-main">
+      <div class="top-section" id="top-section">
+        <span id="placeholder-msg">No video yet.</span>
+        <div id="result-thumb-wrap" title="Click to play video">
+          <img id="result-thumb" src="" alt="">
+          <div id="result-thumb-play"></div>
+        </div>
+        <div id="result-info"></div>
+      </div>
+
+      <hr class="separator">
+
+      <form class="videogen-form" id="videogen-form" onsubmit="return false;">
+        <div class="row">
+          <label for="prompt">Prompt</label><br>
+          <textarea id="prompt" placeholder="Describe the video..."></textarea>
+        </div>
+      <div class="row" id="provider-row">
+        <label for="provider">Provider</label>
+        <select id="provider">
+          {% for p in providers %}<option value="{{ p }}"{% if p == provider %} selected{% endif %}>{{ p }}</option>{% endfor %}
+        </select>
+        <span class="option-group venice-option" style="display:none;">
+          <label for="model_type_filter">Type</label>
+          <select id="model_type_filter">
+            <option value="all">All</option>
+            <option value="text-to-video">Text to Video</option>
+            <option value="image-to-video">Image to Video</option>
+            <option value="reference-to-video">Reference to Video</option>
+            <option value="video-to-video">Video to Video</option>
+            <option value="transition">Transition</option>
+            <option value="other">Other</option>
+          </select>
+        </span>
+      </div>
+      <div class="row" id="model-row">
+        <label for="model">Model</label>
+        <select id="model">
+          {% for m in model_options %}<option value="{{ m.id }}">{{ m.display }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="row" id="video-options-row">
+        <label for="duration">Duration</label>
+        <select id="duration">
+          <option value="{{ default_duration|escape }}">{{ default_duration }}</option>
+        </select>
+        <span class="option-group venice-option" id="resolution-group" style="display:none;">
+          <label for="resolution">Resolution</label>
+          <select id="resolution">
+            <option value="">Default</option>
+          </select>
+        </span>
+        <span class="option-group" id="aspect-ratio-group" style="display:none;">
+          <label for="aspect_ratio">Aspect ratio</label>
+          <select id="aspect_ratio">
+            <option value="">Default</option>
+          </select>
+        </span>
+        <span class="option-group" id="audio-group" style="display:none;">
+          <label for="audio">Audio</label>
+          <select id="audio">
+            <option value="">Default</option>
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </span>
+      </div>
+      <div class="form-buttons">
+        <button type="submit" id="generate-btn">Generate</button>
+        <button type="button" id="reset-btn">Reset</button>
+        <span id="status"></span>
+      </div>
+      </form>
+    </div>
+    {% if available_tags %}
+    <div class="model-filter-column">
+      <div class="tag-column-title">Filter</div>
+      <span id="model-filter-tags">
+        {% for tag in available_tags %}<label><input type="checkbox" name="model_filter_tag" value="{{ tag }}"{% if tag in reverse_tags %} checked{% endif %}> {{ tag }}</label>{% endfor %}
+        <button type="button" id="model-filter-clear">Reset filters</button>
+      </span>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="page-right">
+    <div id="notes-section">
+      <label>Model notes</label>
+      <span id="notes-status" class="status"></span>
+      <textarea id="model-notes" placeholder="Notes for this model..."></textarea>
+      {% if notes_load_errors %}
+      <div class="notes-error">{% for msg in notes_load_errors %}Could not load notes tags: {{ msg }}{% if not forloop.last %}
+{% endif %}{% endfor %}</div>
+      {% endif %}
+      {% if available_tags %}
+      <div id="notes-tags-column">
+        <div id="notes-tags-legend">- not tested &nbsp; ✓ yes &nbsp; ☐ no</div>
+        <div id="notes-tags">
+          {% for tag in available_tags %}<label><input type="checkbox" name="note_tag" value="{{ tag }}" aria-checked="mixed"> {{ tag }}</label>{% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    <div id="description-section">
+      <label>Model description</label>
+      <div id="model-description"></div>
+    </div>
+    <div id="uploads-section">
+      <div id="negative-prompt-row" style="display:none; margin-bottom:0.5em;">
+        <label for="negative_prompt">Negative prompt</label>
+        <input id="negative_prompt" style="width:100%; box-sizing:border-box; font-size:1em;">
+      </div>
+      <div id="cfg-scale-row" style="display:none; margin-bottom:0.5em;">
+        <label for="cfg_scale">CFG scale</label>
+        <input id="cfg_scale" type="number" step="any" style="width:100%; box-sizing:border-box; font-size:1em;">
+      </div>
+      <div id="enhance-prompt-row" style="display:none; margin-bottom:0.5em;">
+        <label for="enhance_prompt" style="display:flex; align-items:center; gap:0.45em; font-weight:normal;">
+          <input type="checkbox" id="enhance_prompt">
+          <span style="font-weight:bold;">Enhance prompt</span>
+        </label>
+      </div>
+      <div id="unknown-provider-options-row" style="display:none; margin-bottom:0.6em;">
+        <label>Unknown provider options</label>
+        <div id="unknown-provider-options" class="image-btn-label"></div>
+      </div>
+      <div id="image-options" style="display:none;">
+        <div class="image-select-row" id="generic-images-row">
+          <span class="image-select-label" id="generic-images-row-label">Images</span>
+          <div class="image-btn-row">
+            <button type="button" id="generic-images-btn">Choose...</button>
+            <span id="generic-images-label" class="image-btn-label"></span>
+            <button type="button" id="generic-images-clear-btn" class="image-btn-clear" style="display:none;" title="Clear">&#x2715;</button>
+          </div>
+        </div>
+        <div class="image-select-row start-end-image-row" id="start-image-row">
+          <span class="image-select-label">Start Image</span>
+          <div class="image-btn-row">
+            <button type="button" id="start-image-btn">Choose...</button>
+            <span id="start-image-label" class="image-btn-label"></span>
+            <button type="button" id="start-image-clear-btn" class="image-btn-clear" style="display:none;" title="Clear">&#x2715;</button>
+          </div>
+        </div>
+        <div class="image-select-row start-end-image-row" id="end-image-row">
+          <span class="image-select-label">End Image</span>
+          <div class="image-btn-row">
+            <button type="button" id="end-image-btn">Choose...</button>
+            <span id="end-image-label" class="image-btn-label"></span>
+            <button type="button" id="end-image-clear-btn" class="image-btn-clear" style="display:none;" title="Clear">&#x2715;</button>
+          </div>
+        </div>
+        <div class="image-select-row" id="reference-image-row">
+          <span class="image-select-label" id="reference-image-row-label">Reference</span>
+          <div class="image-btn-row">
+            <button type="button" id="ref-image-btn">Choose...</button>
+            <span id="ref-image-label" class="image-btn-label"></span>
+            <button type="button" id="ref-image-clear-btn" class="image-btn-clear" style="display:none;" title="Clear">&#x2715;</button>
+          </div>
+        </div>
+        <div id="reference-doc-link-row" class="image-btn-label" style="display:none; margin:0.2em 0 0 6em;">
+          <a
+            id="reference-doc-link"
+            href="https://docs.venice.ai/guides/media/reference-to-video"
+            target="_blank"
+            rel="noopener noreferrer"
+          >Venice reference-to-video guide</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="image-picker" style="display:none;">
+  <div id="image-picker-box">
+    <div id="image-picker-header">
+      <strong id="image-picker-title"></strong>
+      {% if source_dirs_json_url %}<div id="image-picker-tabs"><button type="button" id="picker-tab-uploads" class="picker-tab active">Uploads</button><button type="button" id="picker-tab-source" class="picker-tab">Source Dirs</button></div>{% endif %}
+      <button type="button" id="image-picker-close">Close</button>
+    </div>
+    <div id="image-picker-grid">
+      {% for item in uploads %}
+      <div class="image-thumb-wrap" data-url="{{ item.url }}" data-fname="{{ item.fname }}" title="{{ item.fname }}">
+        <img class="image-thumb" src="{{ item.thumb_url }}" alt="{{ item.fname }}" loading="lazy">
+      </div>
+      {% empty %}
+      <div style="color:#777; padding:0.5em;">No uploaded images.</div>
+      {% endfor %}
+    </div>
+    <div id="sd-picker-nav" style="display:none;font-size:0.85em;color:#555;margin-bottom:0.4em;"></div>
+    <div id="sd-picker-grid" class="image-picker-grid-inner" style="display:none;overflow-y:auto;"></div>
+  </div>
+</div>
+
+<div id="result-vb-overlay">
+  <button id="result-vb-close" style="position:fixed;top:1em;right:1.2em;font-size:2em;color:#fff;background:none;border:none;cursor:pointer;line-height:1;" aria-label="Close">&times;</button>
+  <video id="result-vb-video" controls></video>
+</div>
+
+{{ model_options|json_script:"model-options-data" }}
+{{ model_tag_states|json_script:"model-tag-states-data" }}
+{{ venice_video_model_type_suffixes|json_script:"venice-video-model-type-suffixes-data" }}
+{{ reverse_tags|json_script:"reverse-tags-data" }}
+<script>
+(function () {
+  let MODEL_OPTIONS = JSON.parse(document.getElementById('model-options-data').textContent);
+  let MODEL_TAG_STATES = JSON.parse(document.getElementById('model-tag-states-data').textContent);
+  const VENICE_VIDEO_MODEL_TYPE_SUFFIXES = JSON.parse(document.getElementById('venice-video-model-type-suffixes-data').textContent);
+  let startImageUrl = '', startImageFname = '';
+  let endImageUrl = '', endImageFname = '';
+  let genericImageUrls = [], genericImageFnames = [];
+  let refImageUrls = [], refImageFnames = [];
+  let pickerTarget = '';
+  let DEFAULT_MODEL = '{{ default_model|escapejs }}';
+  let DEFAULT_DURATION = '{{ default_duration|escapejs }}';
+  const REVERSE_FILTER_TAGS = new Set(JSON.parse(document.getElementById('reverse-tags-data').textContent));
+  const INITIAL_PROVIDER = '{{ provider|escapejs }}';
+  const generateUrl = '{{ generate_url|escapejs }}';
+  const modelNoteUrl = '{{ model_note_url|escapejs }}';
+  const modelsJsonUrl = '{{ models_json_url|escapejs }}';
+  const videoFileUrl = '{{ video_file_url|escapejs }}';
+  const videoLargeThumbnailUrl = '{{ video_large_thumbnail_url|escapejs }}';
+  let currentVideoUrl = '';
+  const providerSel = document.getElementById('provider');
+  const modelSel = document.getElementById('model');
+  const modelDesc = document.getElementById('model-description');
+  const notesArea = document.getElementById('model-notes');
+  const notesStatus = document.getElementById('notes-status');
+  const urlParams = new URLSearchParams(window.location.search);
+  let currentProvider = INITIAL_PROVIDER;
+  let noteLoadSeq = 0;
+  const providerCache = {};
+  providerCache[INITIAL_PROVIDER] = {
+    model_options: MODEL_OPTIONS,
+    model_tag_states: MODEL_TAG_STATES,
+    default_model: DEFAULT_MODEL,
+    default_duration: DEFAULT_DURATION,
+  };
+
+  function appendImageThumb(label, imageUrl, imageName, imageTag) {
+    if (!imageUrl) return;
+    const item = document.createElement('span');
+    item.className = 'ref-thumb-item';
+    item.title = imageName || '';
+    const img = document.createElement('img');
+    img.src = imageUrl;
+    img.alt = imageName || imageTag;
+    const tag = document.createElement('span');
+    tag.textContent = imageTag;
+    item.appendChild(img);
+    item.appendChild(tag);
+    label.appendChild(item);
+  }
+  function renderImageThumb(label, imageUrl, imageName, imageTag) {
+    label.textContent = '';
+    label.classList.toggle('ref-thumb-list', Boolean(imageUrl));
+    appendImageThumb(label, imageUrl, imageName, imageTag);
+  }
+
+  function updateStartImageDisplay() {
+    renderImageThumb(document.getElementById('start-image-label'), startImageUrl, startImageFname, 'Start');
+    document.getElementById('start-image-clear-btn').style.display = startImageFname ? '' : 'none';
+  }
+  function updateEndImageDisplay() {
+    renderImageThumb(document.getElementById('end-image-label'), endImageUrl, endImageFname, 'End');
+    document.getElementById('end-image-clear-btn').style.display = endImageFname ? '' : 'none';
+  }
+  function clearStartImage() {
+    startImageUrl = ''; startImageFname = '';
+    updateStartImageDisplay();
+  }
+  function clearEndImage() {
+    endImageUrl = ''; endImageFname = '';
+    updateEndImageDisplay();
+  }
+  function updateRefImageDisplay() {
+    const n = refImageUrls.length;
+    const label = document.getElementById('ref-image-label');
+    label.textContent = '';
+    label.classList.toggle('ref-thumb-list', n > 0);
+    for (let i = 0; i < n; i += 1) {
+      appendImageThumb(label, refImageUrls[i], refImageFnames[i], currentRefImageTag(i));
+    }
+    document.getElementById('ref-image-clear-btn').style.display = n ? '' : 'none';
+  }
+  function clearRefImages() {
+    refImageUrls = []; refImageFnames = [];
+    updateRefImageDisplay();
+  }
+  function updateGenericImagesDisplay() {
+    const n = genericImageUrls.length;
+    const label = document.getElementById('generic-images-label');
+    label.textContent = '';
+    label.classList.toggle('ref-thumb-list', n > 0);
+    for (let i = 0; i < n; i += 1) {
+      appendImageThumb(
+        label,
+        genericImageUrls[i],
+        genericImageFnames[i],
+        modelIsKlingReferenceVideo(modelSel.value) ? '@Image' + (i + 1) : 'Image' + (i + 1),
+      );
+    }
+    document.getElementById('generic-images-clear-btn').style.display = n ? '' : 'none';
+  }
+  function clearGenericImages() {
+    genericImageUrls = []; genericImageFnames = [];
+    updateGenericImagesDisplay();
+  }
+  function openImagePicker(target) {
+    pickerTarget = target;
+    document.getElementById('image-picker-title').textContent =
+      target === 'start' ? 'Choose Start Image' :
+      target === 'end'   ? 'Choose End Image' :
+      target === 'images' ? (
+        modelIsKlingReferenceVideo(modelSel.value) ? 'Choose Scene Images' : 'Choose Images'
+      ) : (
+        modelIsKlingReferenceVideo(modelSel.value) ? 'Choose Element Images' : 'Choose Reference Images'
+      );
+    document.querySelectorAll('#image-picker-grid .image-thumb-wrap, #sd-picker-grid .image-thumb-wrap').forEach(function (el) {
+      if (target === 'ref' || target === 'images') {
+        const selectedUrls = target === 'ref' ? refImageUrls : genericImageUrls;
+        el.classList.toggle('selected', selectedUrls.includes(el.dataset.url));
+      } else {
+        const cur = target === 'start' ? startImageUrl : endImageUrl;
+        el.classList.toggle('selected', cur !== '' && el.dataset.url === cur);
+      }
+    });
+    document.getElementById('image-picker').style.display = 'flex';
+  }
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(c) {
+      return {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c];
+    });
+  }
+  function getCookie(name) {
+    const v = document.cookie.split(';').map(s => s.trim()).find(s => s.startsWith(name + '='));
+    return v ? decodeURIComponent(v.substring(name.length + 1)) : '';
+  }
+  function normalizeAudio(value) {
+    if (value === true || value === '1' || value === 'true') return 'yes';
+    if (value === false || value === '0' || value === 'false') return 'no';
+    return value == null ? '' : String(value);
+  }
+  function renderResultInfo(rows, galleryUrl) {
+    const info = document.getElementById('result-info');
+    const html = (rows || [])
+      .filter(function(row) { return row[1] !== null && row[1] !== undefined && row[1] !== ''; })
+      .map(function(row) {
+        return '<div><span class="info-label">' + esc(row[0]) + ':</span> ' + esc(row[1]) + '</div>';
+      });
+    info.innerHTML = html.join('');
+    info.style.display = html.length ? 'block' : 'none';
+  }
+  function metadataRows(meta, fname) {
+    meta = meta || {};
+    const opts = meta.options || {};
+    return [
+      ['Provider', meta.provider],
+      ['API', meta.api],
+      ['Model', meta.model_display || meta.model],
+      ['Duration', meta.duration],
+      ['Resolution', opts.resolution],
+      ['Aspect ratio', opts.aspect_ratio],
+      ['Audio', opts.audio === undefined ? '' : normalizeAudio(opts.audio)],
+      ['File', fname || (meta.files && meta.files[0]) || ''],
+      ['Prompt', meta.prompt],
+    ];
+  }
+  function modelFilterBoxes() { return document.querySelectorAll('#model-filter-tags input[type=checkbox]'); }
+  function noteTagBoxes() { return document.querySelectorAll('#notes-tags input[type=checkbox]'); }
+  function selectedFilterTags() {
+    const tags = [];
+    for (const cb of modelFilterBoxes()) if (cb.checked) tags.push(cb.value);
+    return tags;
+  }
+  function modelVideoType(modelId) {
+    const id = String(modelId || '');
+    for (const [modelType, suffixes] of Object.entries(VENICE_VIDEO_MODEL_TYPE_SUFFIXES)) {
+      if (suffixes.some(suffix => id.endsWith(suffix))) return modelType;
+    }
+    return 'other';
+  }
+  function modelAllowsStartEndImages(modelId) {
+    const type = modelVideoType(modelId);
+    return type === 'image-to-video' || type === 'transition' || type === 'other';
+  }
+  function modelAllowsReferenceImages(modelId) {
+    const type = modelVideoType(modelId);
+    return type === 'reference-to-video' || type === 'other';
+  }
+  function modelIsKlingReferenceVideo(modelId) {
+    const id = String(modelId || '');
+    return id.startsWith('kling-') && modelVideoType(id) === 'reference-to-video';
+  }
+  function modelIsGrokReferenceVideo(modelId) {
+    const id = String(modelId || '');
+    return id.startsWith('grok-') && modelVideoType(id) === 'reference-to-video';
+  }
+  function currentRefImageTag(index) {
+    return modelIsKlingReferenceVideo(modelSel.value)
+      ? '@Element' + (index + 1)
+      : '@Image' + (index + 1);
+  }
+  function updateReferenceInputLabels() {
+    const refLabel = document.getElementById('reference-image-row-label');
+    const genericLabel = document.getElementById('generic-images-row-label');
+    if (refLabel) {
+      refLabel.textContent = modelIsKlingReferenceVideo(modelSel.value) ? 'Elements' : 'Reference';
+    }
+    if (genericLabel) {
+      genericLabel.textContent = modelIsKlingReferenceVideo(modelSel.value) ? 'Scene Images' : 'Images';
+    }
+  }
+  function updateReferenceDocLinkVisibility() {
+    const row = document.getElementById('reference-doc-link-row');
+    if (!row) return;
+    const visible = currentProvider === 'venice' && (
+      modelIsKlingReferenceVideo(modelSel.value) || modelIsGrokReferenceVideo(modelSel.value)
+    );
+    row.style.display = visible ? '' : 'none';
+  }
+  function selectedModelCapabilities() {
+    const opt = selectedModelOption();
+    return (opt && opt.capabilities) || {};
+  }
+  function veniceSupportedParameters() {
+    const caps = selectedModelCapabilities();
+    return new Set(Array.isArray(caps.supported_parameters) ? caps.supported_parameters : []);
+  }
+  function openrouterAllowedPassthroughParameters() {
+    const caps = selectedModelCapabilities();
+    return new Set(Array.isArray(caps.allowed_passthrough_parameters) ? caps.allowed_passthrough_parameters : []);
+  }
+  function openrouterSupportedParameters() {
+    const caps = selectedModelCapabilities();
+    return new Set(Array.isArray(caps.supported_parameters) ? caps.supported_parameters : []);
+  }
+  function openrouterProviderSlug() {
+    const caps = selectedModelCapabilities();
+    return typeof caps.provider_slug === 'string' ? caps.provider_slug : '';
+  }
+  function openrouterAllowsStartEndImages() {
+    const caps = selectedModelCapabilities();
+    const frameImages = new Set(Array.isArray(caps.frame_images) ? caps.frame_images : []);
+    if (frameImages.size > 0) return frameImages.has('first_frame') || frameImages.has('last_frame');
+    return openrouterSupportedParameters().has('frame_images');
+  }
+  function openrouterAllowsFirstFrameImage() {
+    const caps = selectedModelCapabilities();
+    const frameImages = new Set(Array.isArray(caps.frame_images) ? caps.frame_images : []);
+    if (frameImages.size > 0) return frameImages.has('first_frame');
+    return openrouterSupportedParameters().has('frame_images');
+  }
+  function openrouterAllowsLastFrameImage() {
+    const caps = selectedModelCapabilities();
+    const frameImages = new Set(Array.isArray(caps.frame_images) ? caps.frame_images : []);
+    if (frameImages.size > 0) return frameImages.has('last_frame');
+    return (
+      openrouterSupportedParameters().has('frame_images') ||
+      openrouterAllowedPassthroughParameters().has('last_image')
+    );
+  }
+  function openrouterAllowsReferenceImages() {
+    return openrouterSupportedParameters().has('input_references');
+  }
+  function openrouterAllowsGenericImages() {
+    return currentProvider === 'openrouter';
+  }
+  function openrouterAllowsAudio() {
+    const caps = selectedModelCapabilities();
+    const outputs = new Set(Array.isArray(caps.output_modalities) ? caps.output_modalities : []);
+    return (
+      outputs.has('audio') ||
+      openrouterSupportedParameters().has('generate_audio') ||
+      openrouterAllowedPassthroughParameters().has('audio')
+    );
+  }
+  function openrouterAllowsAspectRatio() {
+    const caps = selectedModelCapabilities();
+    return (
+      (Array.isArray(caps.aspect_ratios) && caps.aspect_ratios.length > 0) ||
+      openrouterAllowedPassthroughParameters().has('aspectRatio') ||
+      openrouterAllowedPassthroughParameters().has('ratio')
+    );
+  }
+  function openrouterAllowsNegativePrompt() {
+    const params = openrouterAllowedPassthroughParameters();
+    return params.has('negativePrompt') || params.has('negative_prompt');
+  }
+  function openrouterAllowsCfgScale() {
+    const params = openrouterAllowedPassthroughParameters();
+    return params.has('cfg_scale') || params.has('cfgScale');
+  }
+  function openrouterCfgScaleKey() {
+    const params = openrouterAllowedPassthroughParameters();
+    if (params.has('cfg_scale')) return 'cfg_scale';
+    if (params.has('cfgScale')) return 'cfgScale';
+    return '';
+  }
+  function openrouterNegativePromptKey() {
+    const params = openrouterAllowedPassthroughParameters();
+    if (params.has('negativePrompt')) return 'negativePrompt';
+    if (params.has('negative_prompt')) return 'negative_prompt';
+    return '';
+  }
+  function openrouterAllowsEnhancePrompt() {
+    const params = openrouterAllowedPassthroughParameters();
+    return (
+      params.has('enhancePrompt') ||
+      params.has('enable_prompt_expansion') ||
+      params.has('prompt_extend')
+    );
+  }
+  function openrouterEnhancePromptKey() {
+    const params = openrouterAllowedPassthroughParameters();
+    if (params.has('enhancePrompt')) return 'enhancePrompt';
+    if (params.has('enable_prompt_expansion')) return 'enable_prompt_expansion';
+    if (params.has('prompt_extend')) return 'prompt_extend';
+    return '';
+  }
+  function openrouterUnknownProviderOptions() {
+    const handled = new Set([
+      'audio',
+      'ratio',
+      'aspectRatio',
+      'cfg_scale',
+      'cfgScale',
+      'last_image',
+      'images',
+      'negativePrompt',
+      'negative_prompt',
+      'enhancePrompt',
+      'enable_prompt_expansion',
+      'prompt_extend',
+    ]);
+    return Array.from(openrouterAllowedPassthroughParameters()).filter(function(name) {
+      return !handled.has(name);
+    });
+  }
+  function modelPassesFilters(modelId) {
+    if (currentProvider === 'venice') {
+      const typeSel = document.getElementById('model_type_filter');
+      const modelType = typeSel ? typeSel.value : 'all';
+      if (modelType !== 'all' && modelVideoType(modelId) !== modelType) return false;
+    }
+    for (const tag of selectedFilterTags()) {
+      const state = (MODEL_TAG_STATES[modelId] || {})[tag];
+      if (REVERSE_FILTER_TAGS.has(tag)) {
+        if (state === true) return false;
+      } else if (state === false) {
+        return false;
+      }
+    }
+    return true;
+  }
+  function renderModels(preferred) {
+    const previous = preferred || modelSel.value || DEFAULT_MODEL;
+    const opts = MODEL_OPTIONS.filter(opt => modelPassesFilters(opt.id));
+    modelSel.innerHTML = '';
+    for (const opt of opts) {
+      const el = document.createElement('option');
+      el.value = opt.id;
+      el.textContent = opt.display;
+      modelSel.appendChild(el);
+    }
+    if (opts.some(opt => opt.id === previous)) modelSel.value = previous;
+    else if (opts.some(opt => opt.id === DEFAULT_MODEL)) modelSel.value = DEFAULT_MODEL;
+    else if (opts.length) modelSel.value = opts[0].id;
+    modelSel.disabled = opts.length === 0;
+  }
+  function updateDescription(modelId) {
+    const opt = MODEL_OPTIONS.find(function(option) { return option.id === modelId; });
+    modelDesc.textContent = (opt && opt.description) ? opt.description : '';
+  }
+  function selectedModelOption() {
+    return MODEL_OPTIONS.find(opt => opt.id === modelSel.value) || null;
+  }
+  function uniqueValues(values) {
+    const seen = new Set();
+    const out = [];
+    for (const value of values || []) {
+      const text = String(value == null ? '' : value).trim();
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      out.push(text);
+    }
+    return out;
+  }
+  function setSelectOptions(id, values, selected, emptyLabel) {
+    const sel = document.getElementById(id);
+    const choices = uniqueValues(values);
+    const selectedValue = String(selected == null ? '' : selected);
+    sel.innerHTML = '';
+    if (emptyLabel !== null) {
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = emptyLabel;
+      sel.appendChild(empty);
+    }
+    for (const value of choices) {
+      const el = document.createElement('option');
+      el.value = value;
+      el.textContent = value;
+      sel.appendChild(el);
+    }
+    if (selectedValue && choices.includes(selectedValue)) sel.value = selectedValue;
+    else if (emptyLabel !== null) sel.value = '';
+    else if (sel.options.length) sel.value = sel.options[0].value;
+  }
+  function setSelectValueAllowCustom(id, value) {
+    const sel = document.getElementById(id);
+    if (!sel || value === null) return;
+    const text = String(value);
+    if (text && !Array.from(sel.options).some(opt => opt.value === text)) {
+      const el = document.createElement('option');
+      el.value = text;
+      el.textContent = text;
+      sel.appendChild(el);
+    }
+    sel.value = text;
+  }
+  function updateVideoChoiceControls() {
+    const caps = selectedModelCapabilities();
+    const duration = document.getElementById('duration').value || DEFAULT_DURATION;
+    setSelectOptions('duration', caps.durations && caps.durations.length ? caps.durations : [DEFAULT_DURATION], duration, null);
+    setSelectOptions('resolution', caps.resolutions || [], document.getElementById('resolution').value, 'Default');
+    setSelectOptions('aspect_ratio', caps.aspect_ratios || [], document.getElementById('aspect_ratio').value, 'Default');
+    updateReferenceInputLabels();
+    updateRefImageDisplay();
+    updateGenericImagesDisplay();
+    updateReferenceDocLinkVisibility();
+    updateProviderOptionVisibility();
+  }
+  function resetFilters() {
+    for (const cb of modelFilterBoxes()) cb.checked = REVERSE_FILTER_TAGS.has(cb.value);
+    const typeSel = document.getElementById('model_type_filter');
+    if (typeSel) typeSel.value = 'all';
+  }
+  function setVeniceOptionsVisible() {
+    const visible = currentProvider === 'venice';
+    document.querySelectorAll('.venice-option').forEach(function(el) {
+      el.style.display = visible ? '' : 'none';
+    });
+    updateProviderOptionVisibility();
+    updateImageChoiceVisibility();
+  }
+  function updateProviderOptionVisibility() {
+    const resolutionGroup = document.getElementById('resolution-group');
+    const aspectRatioGroup = document.getElementById('aspect-ratio-group');
+    const audioGroup = document.getElementById('audio-group');
+    const negativePromptRow = document.getElementById('negative-prompt-row');
+    const cfgScaleRow = document.getElementById('cfg-scale-row');
+    const enhancePromptRow = document.getElementById('enhance-prompt-row');
+    const unknownRow = document.getElementById('unknown-provider-options-row');
+    const unknownBox = document.getElementById('unknown-provider-options');
+    const veniceParams = veniceSupportedParameters();
+    const veniceCaps = selectedModelCapabilities();
+    const veniceHasResolutionChoices = Array.isArray(veniceCaps.resolutions) && veniceCaps.resolutions.length > 0;
+    const veniceAllowsAudio = !modelIsGrokReferenceVideo(modelSel.value) && (
+      veniceParams.size === 0 || veniceParams.has('audio')
+    );
+
+    const showResolution = currentProvider === 'venice' && veniceHasResolutionChoices;
+    const showAspectRatio = currentProvider === 'venice' || (
+      currentProvider === 'openrouter' && openrouterAllowsAspectRatio()
+    );
+    const showAudio = (
+      currentProvider === 'venice' && veniceAllowsAudio
+    ) || (
+      currentProvider === 'openrouter' && openrouterAllowsAudio()
+    );
+    const showNegativePrompt = currentProvider === 'venice' || (
+      currentProvider === 'openrouter' && openrouterAllowsNegativePrompt()
+    );
+    const showCfgScale = currentProvider === 'openrouter' && openrouterAllowsCfgScale();
+    const showEnhancePrompt = currentProvider === 'openrouter' && openrouterAllowsEnhancePrompt();
+    const unknownOptions = currentProvider === 'openrouter' ? openrouterUnknownProviderOptions() : [];
+
+    if (resolutionGroup) resolutionGroup.style.display = showResolution ? '' : 'none';
+    if (aspectRatioGroup) aspectRatioGroup.style.display = showAspectRatio ? '' : 'none';
+    if (audioGroup) audioGroup.style.display = showAudio ? '' : 'none';
+    if (negativePromptRow) negativePromptRow.style.display = showNegativePrompt ? '' : 'none';
+    if (cfgScaleRow) cfgScaleRow.style.display = showCfgScale ? '' : 'none';
+    if (enhancePromptRow) enhancePromptRow.style.display = showEnhancePrompt ? '' : 'none';
+    if (unknownRow) unknownRow.style.display = unknownOptions.length ? '' : 'none';
+    if (unknownBox) unknownBox.textContent = unknownOptions.join(', ');
+
+    if (!showResolution) document.getElementById('resolution').value = '';
+    if (!showAspectRatio) document.getElementById('aspect_ratio').value = '';
+    if (!showAudio) document.getElementById('audio').value = '';
+    if (!showNegativePrompt) document.getElementById('negative_prompt').value = '';
+    if (!showCfgScale) document.getElementById('cfg_scale').value = '';
+    if (!showEnhancePrompt) document.getElementById('enhance_prompt').checked = false;
+  }
+  function updateImageChoiceVisibility() {
+    const imageOptions = document.getElementById('image-options');
+    if (!imageOptions) return;
+    let genericImagesVisible, startVisible, endVisible, refVisible;
+    if (currentProvider === 'venice') {
+      genericImagesVisible = modelIsKlingReferenceVideo(modelSel.value);
+      startVisible = modelAllowsStartEndImages(modelSel.value);
+      endVisible = modelAllowsStartEndImages(modelSel.value);
+      refVisible = modelAllowsReferenceImages(modelSel.value);
+    } else if (currentProvider === 'openai') {
+      genericImagesVisible = false;
+      startVisible = true;
+      endVisible = false;
+      refVisible = false;
+    } else if (currentProvider === 'openrouter') {
+      genericImagesVisible = openrouterAllowsGenericImages();
+      startVisible = openrouterAllowsFirstFrameImage();
+      endVisible = openrouterAllowsLastFrameImage();
+      refVisible = openrouterAllowsReferenceImages();
+    } else {
+      genericImagesVisible = false;
+      startVisible = false;
+      endVisible = false;
+      refVisible = false;
+    }
+    const genericImagesRow = document.getElementById('generic-images-row');
+    const startRow = document.getElementById('start-image-row');
+    const endRow = document.getElementById('end-image-row');
+    const refRow = document.getElementById('reference-image-row');
+    const visible = genericImagesVisible || startVisible || endVisible || refVisible;
+    imageOptions.style.display = visible ? '' : 'none';
+    if (genericImagesRow) genericImagesRow.style.display = genericImagesVisible ? '' : 'none';
+    if (startRow) startRow.style.display = startVisible ? '' : 'none';
+    if (endRow) endRow.style.display = endVisible ? '' : 'none';
+    if (refRow) refRow.style.display = refVisible ? '' : 'none';
+    if (!genericImagesVisible) clearGenericImages();
+    if (!startVisible) clearStartImage();
+    if (!endVisible) clearEndImage();
+    if (!refVisible) {
+      clearRefImages();
+    }
+    updateReferenceDocLinkVisibility();
+  }
+  function applyProviderData(data) {
+    MODEL_OPTIONS = data.model_options || [];
+    MODEL_TAG_STATES = data.model_tag_states || {};
+    DEFAULT_MODEL = data.default_model || '';
+    DEFAULT_DURATION = data.default_duration || '';
+    document.getElementById('duration').value = DEFAULT_DURATION;
+    renderModels(urlParams.get('model') || DEFAULT_MODEL);
+    updateDescription(modelSel.value);
+    updateVideoChoiceControls();
+    setVeniceOptionsVisible();
+    applyUrlPrefill();
+    if (modelSel.value) loadNote(modelSel.value);
+  }
+  function applyUrlPrefill() {
+    const fields = ['prompt', 'duration', 'resolution', 'aspect_ratio', 'negative_prompt', 'cfg_scale'];
+    for (const id of fields) {
+      const value = urlParams.get(id);
+      const el = document.getElementById(id);
+      if (value !== null && el) {
+        if (el.tagName === 'SELECT') setSelectValueAllowCustom(id, value);
+        else el.value = value;
+      }
+    }
+    const audio = urlParams.get('audio');
+    if (audio !== null) {
+      document.getElementById('audio').value =
+        (audio === '1' || audio === 'true') ? 'true' :
+        (audio === '0' || audio === 'false') ? 'false' : '';
+    }
+    const enhancePrompt = urlParams.get('enhance_prompt');
+    if (enhancePrompt !== null) {
+      document.getElementById('enhance_prompt').checked =
+        enhancePrompt === '1' || enhancePrompt === 'true';
+    }
+    const imageUrlParam = urlParams.get('image_url');
+    if (imageUrlParam) {
+      for (const wrap of document.querySelectorAll('#image-picker-grid .image-thumb-wrap')) {
+        if (wrap.dataset.url === imageUrlParam) {
+          startImageUrl = imageUrlParam; startImageFname = wrap.dataset.fname;
+          updateStartImageDisplay(); break;
+        }
+      }
+    }
+    const endImageParam = urlParams.get('end_image_url');
+    if (endImageParam) {
+      for (const wrap of document.querySelectorAll('#image-picker-grid .image-thumb-wrap')) {
+        if (wrap.dataset.url === endImageParam) {
+          endImageUrl = endImageParam; endImageFname = wrap.dataset.fname;
+          updateEndImageDisplay(); break;
+        }
+      }
+    }
+    loadVideoFromUrl();
+  }
+  function showResultThumb(fname) {
+    currentVideoUrl = videoFileUrl.replace('PLACEHOLDER', encodeURIComponent(fname));
+    const thumb = document.getElementById('result-thumb');
+    thumb.src = videoLargeThumbnailUrl.replace('PLACEHOLDER', encodeURIComponent(fname));
+    thumb.alt = fname;
+    document.getElementById('result-thumb-wrap').style.display = 'flex';
+    document.getElementById('top-section').classList.add('has-video');
+  }
+  function openVideoLightbox() {
+    if (!currentVideoUrl) return;
+    const video = document.getElementById('result-vb-video');
+    video.src = currentVideoUrl;
+    video.load();
+    document.getElementById('result-vb-overlay').style.display = 'flex';
+  }
+  function closeVideoLightbox() {
+    const video = document.getElementById('result-vb-video');
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    document.getElementById('result-vb-overlay').style.display = 'none';
+  }
+  document.getElementById('result-thumb-wrap').addEventListener('click', openVideoLightbox);
+  document.getElementById('result-vb-overlay').addEventListener('click', function(e) {
+    if (e.target === this) closeVideoLightbox();
+  });
+  document.getElementById('result-vb-close').addEventListener('click', closeVideoLightbox);
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && document.getElementById('result-vb-overlay').style.display === 'flex') {
+      closeVideoLightbox();
+    }
+  });
+  function loadVideoFromUrl() {
+    const fname = urlParams.get('fname');
+    if (!fname) return;
+    showResultThumb(fname);
+    renderResultInfo(metadataRows({
+      provider: urlParams.get('provider'),
+      api: urlParams.get('api'),
+      model: urlParams.get('model'),
+      duration: urlParams.get('duration'),
+      prompt: urlParams.get('prompt'),
+      options: {
+        resolution: urlParams.get('resolution'),
+        aspect_ratio: urlParams.get('aspect_ratio'),
+        audio: urlParams.get('audio'),
+      },
+    }, fname));
+  }
+  function resetForm() {
+    document.getElementById('prompt').value = '';
+    document.getElementById('duration').value = DEFAULT_DURATION;
+    document.getElementById('resolution').value = '';
+    document.getElementById('aspect_ratio').value = '';
+    document.getElementById('negative_prompt').value = '';
+    document.getElementById('cfg_scale').value = '';
+    document.getElementById('enhance_prompt').checked = false;
+    document.getElementById('audio').value = '';
+    clearStartImage();
+    clearEndImage();
+    clearGenericImages();
+    clearRefImages();
+    renderModels(DEFAULT_MODEL);
+    updateDescription(modelSel.value);
+    updateVideoChoiceControls();
+    updateImageChoiceVisibility();
+    if (modelSel.value) loadNote(modelSel.value);
+    document.getElementById('status').textContent = '';
+    closeVideoLightbox();
+    currentVideoUrl = '';
+    document.getElementById('result-thumb').src = '';
+    document.getElementById('result-thumb-wrap').style.display = 'none';
+    const info = document.getElementById('result-info');
+    info.innerHTML = '';
+    info.style.display = 'none';
+    document.getElementById('top-section').classList.remove('has-video');
+  }
+  async function switchProvider(providerId) {
+    currentProvider = providerId;
+    if (providerCache[providerId]) {
+      applyProviderData(providerCache[providerId]);
+      return;
+    }
+    const resp = await fetch(modelsJsonUrl + '?provider=' + encodeURIComponent(providerId));
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    providerCache[providerId] = data;
+    applyProviderData(data);
+  }
+  function defaultTagState(tagName) { return REVERSE_FILTER_TAGS.has(tagName) ? false : null; }
+  function setTristate(cb, state) {
+    if (state === true) { cb.checked = true; cb.indeterminate = false; cb.setAttribute('aria-checked', 'true'); }
+    else if (state === false) { cb.checked = false; cb.indeterminate = false; cb.setAttribute('aria-checked', 'false'); }
+    else { cb.checked = false; cb.indeterminate = true; cb.setAttribute('aria-checked', 'mixed'); }
+    cb._tristate = state;
+  }
+  function cycleTristate(cb) {
+    const cur = cb._tristate === undefined ? defaultTagState(cb.value) : cb._tristate;
+    if (REVERSE_FILTER_TAGS.has(cb.value)) setTristate(cb, cur === true ? false : true);
+    else setTristate(cb, cur === null ? true : cur === true ? false : null);
+    saveNote();
+  }
+  async function loadNote(modelId) {
+    const providerId = currentProvider;
+    const seq = ++noteLoadSeq;
+    notesStatus.textContent = '';
+    for (const cb of noteTagBoxes()) setTristate(cb, defaultTagState(cb.value));
+    try {
+      const resp = await fetch(modelNoteUrl + '?provider=' + encodeURIComponent(providerId) + '&model=' + encodeURIComponent(modelId));
+      const data = await resp.json();
+      if (seq !== noteLoadSeq || providerId !== currentProvider || modelId !== modelSel.value) return;
+      notesArea.value = data.notes || '';
+      const tags = data.tags || {};
+      for (const cb of noteTagBoxes()) setTristate(cb, tags[cb.value] === undefined ? defaultTagState(cb.value) : tags[cb.value]);
+    } catch (e) {
+      notesStatus.textContent = 'Could not load notes.';
+    }
+  }
+  async function saveNote() {
+    const modelId = modelSel.value;
+    if (!modelId) return;
+    const providerId = currentProvider;
+    const tags = {};
+    for (const cb of noteTagBoxes()) if (cb._tristate !== null && cb._tristate !== undefined) tags[cb.value] = cb._tristate;
+    notesStatus.textContent = 'Saving...';
+    try {
+      const resp = await fetch(modelNoteUrl, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+        body: JSON.stringify({provider: providerId, model: modelId, notes: notesArea.value, tags}),
+      });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || 'save failed');
+      MODEL_TAG_STATES[modelId] = {...(data.tags || tags)};
+      if (providerCache[providerId]) providerCache[providerId].model_tag_states = MODEL_TAG_STATES;
+      renderModels(modelId);
+      notesStatus.textContent = 'Saved.';
+    } catch (e) {
+      notesStatus.textContent = 'Error: ' + e.message;
+    }
+  }
+  providerSel.addEventListener('change', function () {
+    switchProvider(this.value).catch(e => alert(e.message));
+  });
+  modelSel.addEventListener('change', function () {
+    updateDescription(this.value);
+    updateVideoChoiceControls();
+    updateImageChoiceVisibility();
+    loadNote(this.value);
+  });
+  notesArea.addEventListener('blur', saveNote);
+  for (const lbl of document.querySelectorAll('#notes-tags label')) {
+    lbl.addEventListener('click', function (e) {
+      e.preventDefault();
+      const cb = this.querySelector('input[type=checkbox]');
+      if (cb) cycleTristate(cb);
+    });
+  }
+  for (const cb of noteTagBoxes()) {
+    cb.addEventListener('keydown', function (e) {
+      if (e.key !== ' ' && e.key !== 'Enter') return;
+      e.preventDefault();
+      cycleTristate(this);
+    });
+  }
+  for (const cb of modelFilterBoxes()) cb.addEventListener('change', function () {
+    const before = modelSel.value;
+    renderModels(modelSel.value);
+    updateDescription(modelSel.value);
+    updateVideoChoiceControls();
+    updateImageChoiceVisibility();
+    if (modelSel.value && modelSel.value !== before) loadNote(modelSel.value);
+  });
+  document.getElementById('model_type_filter').addEventListener('change', function () {
+    const before = modelSel.value;
+    renderModels(modelSel.value);
+    updateDescription(modelSel.value);
+    updateVideoChoiceControls();
+    updateImageChoiceVisibility();
+    if (modelSel.value && modelSel.value !== before) loadNote(modelSel.value);
+  });
+  const clearBtn = document.getElementById('model-filter-clear');
+  if (clearBtn) clearBtn.addEventListener('click', function () {
+    const before = modelSel.value;
+    resetFilters();
+    renderModels(modelSel.value);
+    updateDescription(modelSel.value);
+    updateVideoChoiceControls();
+    updateImageChoiceVisibility();
+    if (modelSel.value && modelSel.value !== before) loadNote(modelSel.value);
+  });
+  document.getElementById('reset-btn').addEventListener('click', resetForm);
+  document.getElementById('start-image-btn').addEventListener('click', function () { openImagePicker('start'); });
+  document.getElementById('end-image-btn').addEventListener('click', function () { openImagePicker('end'); });
+  document.getElementById('generic-images-btn').addEventListener('click', function () { openImagePicker('images'); });
+  document.getElementById('ref-image-btn').addEventListener('click', function () { openImagePicker('ref'); });
+  document.getElementById('start-image-clear-btn').addEventListener('click', clearStartImage);
+  document.getElementById('end-image-clear-btn').addEventListener('click', clearEndImage);
+  document.getElementById('generic-images-clear-btn').addEventListener('click', clearGenericImages);
+  document.getElementById('ref-image-clear-btn').addEventListener('click', clearRefImages);
+  document.getElementById('image-picker-close').addEventListener('click', function () {
+    document.getElementById('image-picker').style.display = 'none';
+  });
+  document.getElementById('image-picker').addEventListener('click', function (e) {
+    if (e.target === this) this.style.display = 'none';
+  });
+  function handlePickerWrapClick(wrap) {
+    const alreadySelected = wrap.classList.contains('selected');
+    if (pickerTarget === 'ref' || pickerTarget === 'images') {
+      wrap.classList.toggle('selected');
+      const currentUrls = pickerTarget === 'ref' ? refImageUrls : genericImageUrls;
+      const currentNames = pickerTarget === 'ref' ? refImageFnames : genericImageFnames;
+      const idx = currentUrls.indexOf(wrap.dataset.url);
+      if (alreadySelected) {
+        if (idx !== -1) { currentUrls.splice(idx, 1); currentNames.splice(idx, 1); }
+      } else {
+        currentUrls.push(wrap.dataset.url);
+        currentNames.push(wrap.dataset.fname);
+      }
+      if (pickerTarget === 'ref') updateRefImageDisplay();
+      else updateGenericImagesDisplay();
+    } else {
+      document.querySelectorAll('#image-picker-grid .image-thumb-wrap, #sd-picker-grid .image-thumb-wrap').forEach(function (el) { el.classList.remove('selected'); });
+      if (alreadySelected) {
+        if (pickerTarget === 'start') { startImageUrl = ''; startImageFname = ''; }
+        else { endImageUrl = ''; endImageFname = ''; }
+      } else {
+        wrap.classList.add('selected');
+        if (pickerTarget === 'start') { startImageUrl = wrap.dataset.url; startImageFname = wrap.dataset.fname; }
+        else { endImageUrl = wrap.dataset.url; endImageFname = wrap.dataset.fname; }
+        document.getElementById('image-picker').style.display = 'none';
+      }
+      updateStartImageDisplay();
+      updateEndImageDisplay();
+    }
+  }
+  document.getElementById('image-picker-grid').addEventListener('click', function (e) {
+    const wrap = e.target.closest('.image-thumb-wrap');
+    if (wrap) handlePickerWrapClick(wrap);
+  });
+  document.getElementById('sd-picker-grid').addEventListener('click', function (e) {
+    const wrap = e.target.closest('.image-thumb-wrap');
+    if (wrap) handlePickerWrapClick(wrap);
+  });
+  // Source dirs picker
+  const sdJsonUrl = '{{ source_dirs_json_url|escapejs }}';
+  let sdPickerNick = '', sdPickerSubdir = '', sdPickerLoaded = false;
+  function sdPickerFetch(nick, subdir) {
+    sdPickerNick = nick; sdPickerSubdir = subdir;
+    const params = nick ? '?nick=' + encodeURIComponent(nick) + (subdir ? '&subdir=' + encodeURIComponent(subdir) : '') : '';
+    document.getElementById('sd-picker-grid').innerHTML = '<span style="color:#888;padding:0.5em">Loading…</span>';
+    document.getElementById('sd-picker-nav').innerHTML = '';
+    fetch(sdJsonUrl + params).then(function(r) { return r.json(); }).then(renderSdPicker).catch(function() {
+      document.getElementById('sd-picker-grid').innerHTML = '<span style="color:#c00;padding:0.5em">Failed to load.</span>';
+    });
+    sdPickerLoaded = true;
+  }
+  function renderSdPicker(data) {
+    const sdGrid = document.getElementById('sd-picker-grid');
+    const sdNav = document.getElementById('sd-picker-nav');
+    let nav = '<span class="sd-pick-nav" data-nick="" data-subdir="">Source Dirs</span>';
+    if (data.type === 'dir') {
+      nav += ' › <span class="sd-pick-nav" data-nick="' + esc(data.nick) + '" data-subdir="">' + esc(data.nick) + '</span>';
+      if (data.subdir) {
+        const parts = data.subdir.split('/');
+        for (let i = 0; i < parts.length; i++) {
+          const s = parts.slice(0, i + 1).join('/');
+          nav += ' › <span class="sd-pick-nav" data-nick="' + esc(data.nick) + '" data-subdir="' + esc(s) + '">' + esc(parts[i]) + '</span>';
+        }
+      }
+    }
+    sdNav.innerHTML = nav;
+    sdNav.querySelectorAll('.sd-pick-nav').forEach(function(el) {
+      el.addEventListener('click', function() { sdPickerFetch(this.dataset.nick, this.dataset.subdir); });
+    });
+    let html = '';
+    if (data.type === 'list') {
+      if (!data.source_dirs || !data.source_dirs.length) {
+        html = '<span style="color:#777;padding:0.5em">No source directories configured.</span>';
+      } else {
+        for (const sd of data.source_dirs) {
+          html += '<div class="sd-pick-dir" data-nick="' + esc(sd.nick) + '" data-subdir="">📁 ' + esc(sd.name) + '</div>';
+        }
+      }
+    } else {
+      for (const d of (data.dirs || [])) {
+        html += '<div class="sd-pick-dir" data-nick="' + esc(d.nick) + '" data-subdir="' + esc(d.subdir) + '">📁 ' + esc(d.name) + '</div>';
+      }
+      for (const img of (data.images || [])) {
+        const sel = (pickerTarget === 'ref' ? refImageUrls : pickerTarget === 'images' ? genericImageUrls : []).includes(img.url)
+          || (pickerTarget === 'start' ? startImageUrl === img.url : pickerTarget === 'end' ? endImageUrl === img.url : false);
+        html += '<div class="image-thumb-wrap' + (sel ? ' selected' : '') + '" data-url="' + esc(img.url) + '" data-fname="' + esc(img.fname) + '" title="' + esc(img.fname) + '"><img class="image-thumb" src="' + esc(img.thumb_url) + '" alt="' + esc(img.fname) + '" loading="lazy"></div>';
+      }
+      if (!(data.dirs || []).length && !(data.images || []).length) {
+        html += '<span style="color:#777;padding:0.5em">Empty directory.</span>';
+      }
+    }
+    sdGrid.innerHTML = html;
+    sdGrid.querySelectorAll('.sd-pick-dir').forEach(function(el) {
+      el.addEventListener('click', function() { sdPickerFetch(this.dataset.nick, this.dataset.subdir); });
+    });
+  }
+  function showPickerTab(tab) {
+    const uploadsGrid = document.getElementById('image-picker-grid');
+    const sdNav = document.getElementById('sd-picker-nav');
+    const sdGrid = document.getElementById('sd-picker-grid');
+    if (tab === 'source') {
+      uploadsGrid.style.display = 'none';
+      sdNav.style.display = '';
+      sdGrid.style.display = 'flex';
+      document.getElementById('picker-tab-uploads').classList.remove('active');
+      document.getElementById('picker-tab-source').classList.add('active');
+      if (!sdPickerLoaded) sdPickerFetch('', '');
+    } else {
+      uploadsGrid.style.display = '';
+      sdNav.style.display = 'none';
+      sdGrid.style.display = 'none';
+      document.getElementById('picker-tab-uploads').classList.add('active');
+      document.getElementById('picker-tab-source').classList.remove('active');
+    }
+  }
+  if (sdJsonUrl) {
+    document.getElementById('picker-tab-uploads').addEventListener('click', function() { showPickerTab('uploads'); });
+    document.getElementById('picker-tab-source').addEventListener('click', function() { showPickerTab('source'); });
+  }
+  document.getElementById('videogen-form').addEventListener('submit', async function () {
+    const status = document.getElementById('status');
+    const btn = document.getElementById('generate-btn');
+    const prompt = document.getElementById('prompt').value.trim();
+    if (!prompt) { status.textContent = 'Prompt is required.'; return; }
+    const body = {
+      provider: currentProvider,
+      model: modelSel.value,
+      duration: document.getElementById('duration').value.trim(),
+      prompt,
+    };
+    if (currentProvider === 'venice') {
+      for (const id of ['resolution', 'aspect_ratio', 'negative_prompt']) {
+        const val = document.getElementById(id).value.trim();
+        if (val) body[id] = val;
+      }
+      const audio = document.getElementById('audio').value;
+      if (audio) body.audio = audio === 'true';
+      if (modelAllowsStartEndImages(modelSel.value)) {
+        if (startImageUrl) body.image_url = startImageUrl;
+        if (endImageUrl) body.end_image_url = endImageUrl;
+      }
+      if (modelAllowsReferenceImages(modelSel.value) && refImageUrls.length) {
+        body.reference_image_urls = refImageUrls.slice();
+      }
+      if (modelIsKlingReferenceVideo(modelSel.value) && genericImageUrls.length) {
+        body.scene_image_urls = genericImageUrls.slice();
+      }
+    } else if (currentProvider === 'openai') {
+      if (startImageUrl) body.image_url = startImageUrl;
+    } else if (currentProvider === 'openrouter') {
+      const aspectRatio = document.getElementById('aspect_ratio').value.trim();
+      if (openrouterAllowsAspectRatio() && aspectRatio) body.aspect_ratio = aspectRatio;
+      const audio = document.getElementById('audio').value;
+      if (openrouterAllowsAudio() && audio) body.audio = audio === 'true';
+      if (genericImageUrls.length) body.image_urls = genericImageUrls.slice();
+      const cfgScale = document.getElementById('cfg_scale').value.trim();
+      if (openrouterAllowsCfgScale() && cfgScale) {
+        body.cfg_scale = cfgScale;
+        body.cfg_scale_key = openrouterCfgScaleKey();
+      }
+      const negativePrompt = document.getElementById('negative_prompt').value.trim();
+      if (openrouterAllowsNegativePrompt() && negativePrompt) {
+        body.negative_prompt = negativePrompt;
+        body.negative_prompt_key = openrouterNegativePromptKey();
+      }
+      if (openrouterAllowsEnhancePrompt()) {
+        body.enhance_prompt = document.getElementById('enhance_prompt').checked;
+        body.enhance_prompt_key = openrouterEnhancePromptKey();
+      }
+      const providerSlug = openrouterProviderSlug();
+      if (providerSlug) body.provider_slug = providerSlug;
+      if (openrouterAllowsFirstFrameImage() && startImageUrl) body.image_url = startImageUrl;
+      if (openrouterAllowsLastFrameImage() && endImageUrl) body.end_image_url = endImageUrl;
+      if (openrouterAllowsReferenceImages() && refImageUrls.length) {
+        body.reference_image_urls = refImageUrls.slice();
+      }
+    }
+    document.getElementById('result-thumb-wrap').style.display = 'none';
+    document.getElementById('result-thumb').src = '';
+    document.getElementById('top-section').classList.remove('has-video');
+    const resultInfo = document.getElementById('result-info');
+    resultInfo.innerHTML = '';
+    resultInfo.style.display = 'none';
+    currentVideoUrl = '';
+    closeVideoLightbox();
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner';
+    status.textContent = 'Generating…';
+    status.prepend(spinner);
+    btn.disabled = true;
+    try {
+      const resp = await fetch(generateUrl, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+        body: JSON.stringify(body),
+      });
+      const contentType = resp.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const html = await resp.text();
+        const win = window.open('about:blank', '_blank');
+        if (win) { win.document.open(); win.document.write(html); win.document.close(); }
+        throw new Error('Server error ' + resp.status + (win ? '; error page opened in new tab' : ''));
+      }
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || 'generation failed');
+      showResultThumb(data.file);
+      renderResultInfo(data.summary || metadataRows(data.meta, data.file), data.gallery_url);
+      status.textContent = 'Saved ' + data.file;
+    } catch (e) {
+      status.textContent = 'Error: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  resetFilters();
+  applyProviderData(providerCache[INITIAL_PROVIDER]);
+  window.addEventListener('pageshow', function (e) {
+    if (!e.persisted) return;
+    document.getElementById('generate-btn').disabled = false;
+    document.getElementById('status').textContent = '';
+    closeVideoLightbox();
+    document.getElementById('image-picker').style.display = 'none';
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends 'base/base.html' %}
+{% block content %}
+<p style="background: yellow; padding: 10px; font-weight: bold;">TEMPLATE LOADED - Column widths updated</p>
+{% if services %}
+<style>
+  .invalid-row { color: #b00000; font-weight: bold; }
+  .invalid-note { color: #b00000; font-size: 0.9em; font-weight: normal; }
+  table { width: 100%; table-layout: auto; border-collapse: collapse; }
+  th, td { padding: 8px; text-align: left; border: 1px solid #ddd; }
+  th { background-color: #f5f5f5; font-weight: bold; }
+  th:nth-child(2), td:nth-child(2) { min-width: 360px !important; word-wrap: break-word; }
+  th:nth-child(4), td:nth-child(4) { min-width: 405px !important; word-wrap: break-word; }
+  th:nth-child(5), td:nth-child(5) { min-width: 150px !important; word-wrap: break-word; }
+</style>
+<table>
+  <thead>
+    <tr>
+      <th>Service</th>
+      <th>Title</th>
+      <th>Provider</th>
+      <th>Model</th>
+      <th>Features</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for svc in services %}
+  <tr class="{% if svc.invalid %}invalid-row{% endif %}">
+    <td>{% if svc.invalid %}{{ svc.id }}{% else %}<a href="{% url 'llemon_persona:service' %}?file={{ svc.fname|urlencode }}">{{ svc.id }}</a>{% endif %}</td>
+    <td>{% if svc.invalid %}{{ svc.display }}{% else %}<a href="{% url 'llemon_persona:service' %}?file={{ svc.fname|urlencode }}">{{ svc.display }}</a>{% endif %}</td>
+    <td>{{ svc.provider }}</td>
+    <td>{{ svc.model }}</td>
+    <td>{{ svc.features }}{% if svc.invalid %}<span class="invalid-note"> {{ svc.error }}</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No service files found on search path.</p>
+{% endif %}
+{% endblock %}

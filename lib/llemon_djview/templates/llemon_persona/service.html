@@ -1,0 +1,18 @@
+{% extends 'base/base.html' %}
+{% block content %}
+<p><small>{{ fname }}</small></p>
+{% if error %}
+<div class="error-banner" id="error-banner">{{ error }} <span class="dismiss" onclick="document.getElementById('error-banner').style.display='none'">×</span></div>
+<style>.error-banner{color:#c00;border:1px solid #c00;border-radius:3px;padding:0.4em 0.8em;margin:0.5em 0;display:inline-block}.error-banner .dismiss{cursor:pointer;font-weight:bold;margin-left:0.5em}</style>
+{% elif svc %}
+<table>
+  <tr><th align="left">Provider</th><td>{{ svc.provider|default:"—" }}</td></tr>
+  <tr><th align="left">Model</th><td>{{ svc.model|default:"—" }}</td></tr>
+  <tr><th align="left">Features</th><td>{{ svc.features|default:"—" }}</td></tr>
+  <tr><th align="left">URL</th><td>{{ svc.url|default:"—" }}</td></tr>
+  <tr><th align="left">Write history</th><td>{{ svc.write_history|default:"(default)" }}</td></tr>
+  <tr><th align="left">Connect timeout</th><td>{% if svc.connect_timeout %}{{ svc.connect_timeout }}s{% else %}(default){% endif %}</td></tr>
+  <tr><th align="left">Stream timeout</th><td>{% if svc.stream_timeout %}{{ svc.stream_timeout }}s{% else %}(default){% endif %}</td></tr>
+</table>
+{% endif %}
+{% endblock %}

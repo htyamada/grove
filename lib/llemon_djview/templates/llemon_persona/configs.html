@@ -1,0 +1,348 @@
+{% extends 'base/base.html' %}
+{% block content %}
+<script>
+  const URL_DELETE_HISTORY = "{% url 'llemon_persona:delete_history' %}";
+</script>
+<style>
+  .tip { cursor: default; }
+  .history-list { margin: 0.3em 0 0.3em 1em; list-style: none; padding: 0; }
+  .history-item { margin: 0.25em 0; }
+  .history-num { font-weight: bold; margin-right: 0.4em; }
+  .history-preview { color: #666; font-size: 0.9em; margin-right: 0.6em; }
+  .history-links { white-space: nowrap; }
+  .setup-status, .init-table { border-collapse: collapse; margin: 0.6em 0; }
+  .setup-status th, .setup-status td, .init-table th, .init-table td { padding: 0.15em 0.8em 0.15em 0; text-align: left; vertical-align: top; }
+  .setup-status th, .init-table th { font-weight: bold; }
+  .init-table th:nth-child(3), .init-table td:nth-child(3) { min-width: 105px !important; }
+  .init-table th:nth-child(5), .init-table td:nth-child(5) { min-width: 160px !important; }
+  .init-table th:nth-child(6), .init-table td:nth-child(6) { word-wrap: break-word !important; white-space: normal !important; }
+  .delete-btn { background: none; border: none; color: #a00; cursor: pointer; font-family: monospace; font-size: 0.9em; padding: 0; }
+  .delete-btn:hover { text-decoration: underline; }
+  .start-name { color: #006; font-size: 0.9em; margin-right: 0.6em; }
+  .invalid-row { color: #b00000; font-weight: bold; }
+  .invalid-note { color: #b00000; font-size: 0.9em; font-weight: normal; }
+  .session-layout { display: grid; grid-template-columns: minmax(18rem, 1fr) minmax(16rem, 20rem) minmax(14rem, 0.7fr); gap: 2em; align-items: flex-start; }
+  .session-col { min-width: 0; }
+  .session-col > :first-child { margin-top: 0; }
+  .session-col > .error-banner:first-child { margin-top: 0; }
+  .session-picker { width: 100%; min-width: 14rem; font: inherit; }
+  .manual-picker-note { color: #555; font-size: 0.9em; margin: 0.4em 0 0; }
+  @media (max-width: 700px) {
+    .session-layout { grid-template-columns: 1fr; gap: 1rem; }
+  }
+  #abstract-panel {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: #f5f5f5;
+    border-top: 1px solid #bbb;
+    padding: 0.6em 0;
+    font-size: 1em;
+    max-height: 10em;
+    overflow-y: auto;
+    color: #222;
+    display: none;
+  }
+  #abstract-inner { max-width: 800px; margin: 0 auto; padding: 0 1em; }
+  #abstract-body p { margin: 0.4em 0; }
+  #abstract-body p:first-child { margin-top: 0; }
+  #abstract-body p:last-child { margin-bottom: 0; }
+  #abstract-body pre { background: #f4f4f4; border: 1px solid #ddd; border-radius: 3px; padding: 0.5em; overflow-x: auto; }
+  #abstract-body code { background: #f4f4f4; padding: 0.1em 0.3em; border-radius: 2px; font-family: monospace; }
+  #abstract-body pre code { background: none; padding: 0; }
+  #abstract-body ul, #abstract-body ol { margin: 0.4em 0; padding-left: 1.5em; }
+  #abstract-body table { border-collapse: collapse; margin: 0.5em 0; }
+  #abstract-body th, #abstract-body td { border: 1px solid #ccc; padding: 0.3em 0.6em; }
+  #abstract-panel.visible { display: block; }
+  #abstract-title { font-weight: bold; margin-bottom: 0.3em; }
+  .error-banner { color:#b00000; border:1px solid #b00000; border-radius:3px; padding:0.4em 0.8em; margin:0.5em 0; display:inline-block; font-weight:bold; }
+</style>
+
+{% if error %}
+<div class="error-banner">{{ error }}</div>
+{% endif %}
+
+{% for config in configs %}
+  {% if not selected %}
+  {% if forloop.first %}
+  <h2>Parameters</h2>
+  <table class="setup-status">
+    {% for row in status_rows %}
+    <tr>
+      <th>{% if row.url %}<a href="{{ row.url }}">{{ row.field }}</a>{% else %}{{ row.field }}{% endif %}</th>
+      <td>{{ row.value }}</td>
+      <td>{{ row.title }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <h2>Select config</h2>
+  <table class="init-table">
+    <thead>
+      <tr>
+        <th>Config</th>
+        <th>Title</th>
+      </tr>
+    </thead>
+    <tbody>
+  {% endif %}
+      <tr class="{% if config.invalid %}invalid-row{% endif %}">
+        <td>{% if config.url %}<a href="{{ config.url }}">{{ config.name }}</a>{% else %}{{ config.name }}{% endif %}</td>
+        <td class="init-title">{{ config.title }}</td>
+        {% if config.invalid %}<td class="invalid-note">{{ config.error }}</td>{% endif %}
+      </tr>
+  {% if forloop.last %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% else %}
+    <div class="session-layout">
+    <div class="session-col">
+    <h2>Parameters</h2>
+    <table class="setup-status">
+      {% for row in config.status_rows %}
+      {% if row.field != 'Init' and row.field != 'Service' %}
+      <tr>
+        <th>{% if row.url %}<a href="{{ row.url }}">{{ row.field }}</a>{% else %}{{ row.field }}{% endif %}</th>
+        <td>{{ row.value }}</td>
+        <td>{{ row.title }}</td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </table>
+    <h2>Start mode</h2>
+    <form method="get" action="{% url 'llemon_persona:configs' %}">
+      <input type="hidden" name="type" value="{{ type_id }}">
+      <input type="hidden" name="config" value="{{ config.fname }}">
+      {% if config.service_name and not config.manual_provider %}<input type="hidden" name="service" value="{{ config.service_name }}">{% endif %}
+      {% for name, value in config.query_overrides.items %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endfor %}
+      {% for name, value in config.manual_query_params.items %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endfor %}
+    <table class="init-table">
+      <thead>
+        <tr>
+          <th>Pick</th>
+          <th>Init</th>
+          <th>Title</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for entry in config.init_entries %}
+      <tr {% if entry.history_fname %}id="hitem-{{ entry.history_fname|slugify }}"{% endif %} class="{% if entry.invalid %}invalid-row{% endif %}">
+        <td><input type="radio" name="init_choice" value="{{ entry.choice_value }}" {% if entry.checked %}checked{% endif %} {% if entry.invalid %}disabled{% else %}onchange="this.form.submit()"{% endif %}></td>
+        <td>{{ entry.name }}</td>
+        <td class="init-title">{{ entry.title }}</td>
+        <td>
+        {% if entry.history_fname %}
+        <button class="delete-btn" data-fname="{{ entry.history_fname }}" data-item="hitem-{{ entry.history_fname|slugify }}">delete</button>
+        {% endif %}
+        {% if entry.invalid %}<span class="invalid-note">{{ entry.error }}</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </form>
+    <h2>Service</h2>
+    {% if config.services %}
+    <form method="get" action="{% url 'llemon_persona:configs' %}">
+      <input type="hidden" name="type" value="{{ type_id }}">
+      <input type="hidden" name="config" value="{{ config.fname }}">
+      {% if config.init_mode %}<input type="hidden" name="init" value="{{ config.init_mode }}">{% endif %}
+      {% if config.start_fname %}<input type="hidden" name="start" value="{{ config.start_fname }}">{% endif %}
+      {% if config.history_fname %}<input type="hidden" name="history" value="{{ config.history_fname }}">{% endif %}
+      {% for name, value in config.query_overrides.items %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endfor %}
+    <table class="init-table">
+      <thead>
+        <tr>
+          <th>Pick</th>
+          <th>Service</th>
+          <th>Title</th>
+          <th>Provider</th>
+          <th>Model</th>
+          <th>Features</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for svc in config.services %}
+      <tr class="{% if svc.invalid %}invalid-row{% endif %}">
+        <td><input type="radio" name="service_choice" value="{{ svc.choice_value }}" {% if svc.checked %}checked{% endif %} {% if svc.invalid %}disabled{% else %}onchange="this.form.submit()"{% endif %}></td>
+        <td>{{ svc.name }}</td>
+        <td class="init-title">{{ svc.display }}</td>
+        <td>{{ svc.provider }}</td>
+        <td>{{ svc.model }}</td>
+        <td>{{ svc.features }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </form>
+    {% else %}
+    <p>No services configured.</p>
+    {% endif %}
+    </div>
+    <div class="session-col">
+    <h2>Manual provider/model</h2>
+    <form method="get" action="{% url 'llemon_persona:configs' %}">
+      <input type="hidden" name="type" value="{{ type_id }}">
+      <input type="hidden" name="config" value="{{ config.fname }}">
+      {% if config.init_mode %}<input type="hidden" name="init" value="{{ config.init_mode }}">{% endif %}
+      {% if config.start_fname %}<input type="hidden" name="start" value="{{ config.start_fname }}">{% endif %}
+      {% if config.history_fname %}<input type="hidden" name="history" value="{{ config.history_fname }}">{% endif %}
+      {% for name, value in config.query_overrides.items %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endfor %}
+    <table class="init-table">
+      <tbody>
+        <tr>
+          <th><label for="manual-provider">Provider</label></th>
+          <td>
+            <select id="manual-provider" class="session-picker" name="provider" size="8" onchange="this.form.submit()">
+              <option value="" {% if not config.manual_provider %}selected{% endif %}>-- no manual provider --</option>
+              {% for provider in config.providers %}
+              <option value="{{ provider }}" {% if provider == config.manual_provider %}selected{% endif %}>{{ provider }}</option>
+              {% endfor %}
+            </select>
+            <p class="manual-picker-note">Select one provider to load its models.</p>
+          </td>
+        </tr>
+        {% if config.manual_provider %}
+        <tr>
+          <th><label for="manual-model">Model</label></th>
+          <td>
+            <select id="manual-model" class="session-picker" name="model" size="14" onchange="this.form.submit()">
+              <option value="" {% if not config.manual_model %}selected{% endif %}>-- no manual model --</option>
+              {% for model in config.manual_models %}
+              <option value="{{ model }}" {% if model == config.manual_model %}selected{% endif %}>{{ model }}</option>
+              {% endfor %}
+            </select>
+          </td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+    </form>
+    {% if config.manual_model_error %}
+    <div class="error-banner">{{ config.manual_model_error }}</div>
+    {% endif %}
+    </div>
+    <div class="session-col">
+    {% if config.override_error %}
+    <div class="error-banner">{{ config.override_error }}</div>
+    {% endif %}
+    <h2>Options</h2>
+    {% if config.overrides %}
+    <form id="start-session-form" method="get" action="{% url 'llemon_persona:chat' %}">
+      {% for name, value in config.selected_init.chat_params.items %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endfor %}
+      <table class="init-table">
+        <tbody>
+          <tr>
+            <th>Provider</th>
+            <td>{{ config.service_provider }}</td>
+          </tr>
+          <tr>
+            <th>Model</th>
+            <td>{{ config.service_model }}</td>
+          </tr>
+          <tr>
+            <th><label for="override-temperature">Temperature</label></th>
+            <td>
+              <input id="override-temperature" type="number" name="temperature" step="0.01" min="0" placeholder="{% if config.overrides.temperature != None %}{{ config.overrides.temperature }}{% else %}session{% endif %}">
+            </td>
+          </tr>
+          <tr>
+            <th><label for="override-write-history">Write history</label></th>
+            <td>
+              <select id="override-write-history" name="write_history">
+                <option value="">session ({% if config.overrides.write_history %}true{% else %}false{% endif %})</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </td>
+          </tr>
+          <tr>
+            <th><label for="override-debug">Debug</label></th>
+            <td>
+              <select id="override-debug" name="debug">
+                <option value="">session ({% if config.overrides.debug %}true{% else %}false{% endif %})</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </form>
+    {% else %}
+    <p>Select a service or choose a provider and model manually to view and adjust session options.</p>
+    {% endif %}
+    <h2>Start session</h2>
+    <table class="init-table">
+      <tbody>
+        <tr>
+          <th>Action</th>
+          <td><button type="submit" form="start-session-form" {% if not config.overrides %}disabled{% endif %}>Start</button></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    </div>
+  {% endif %}
+{% empty %}
+  <p>No configs found for this type.</p>
+{% endfor %}
+
+<div id="abstract-panel">
+  <div id="abstract-inner">
+    <div id="abstract-title"></div>
+    <div id="abstract-body"></div>
+  </div>
+</div>
+
+<script>
+  const panel = document.getElementById('abstract-panel');
+  const panelTitle = document.getElementById('abstract-title');
+  const panelBody = document.getElementById('abstract-body');
+
+  document.querySelectorAll('.tip').forEach(el => {
+    el.addEventListener('mouseenter', () => {
+      const tpl = document.getElementById('abstract-' + el.dataset.abstractId);
+      if (!tpl) return;
+      panelTitle.textContent = el.dataset.name;
+      panelBody.innerHTML = tpl.innerHTML;
+      panel.classList.add('visible');
+    });
+    el.addEventListener('mouseleave', () => {
+      panel.classList.remove('visible');
+    });
+  });
+
+  document.querySelectorAll('.delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const fname = btn.dataset.fname;
+      if (!confirm(`Delete history ${fname}?`)) return;
+      try {
+        const resp = await fetch(URL_DELETE_HISTORY, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history: fname }),
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          document.getElementById(btn.dataset.item).remove();
+        } else {
+          alert('Error: ' + data.error);
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    });
+  });
+</script>
+{% endblock %}

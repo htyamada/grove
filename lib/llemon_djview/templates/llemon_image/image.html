@@ -1,0 +1,1416 @@
+{% extends 'base/base.html' %}
+{% block extra_head %}
+<style>
+  /* Two-column page layout */
+  .page-layout { display: flex; align-items: stretch; }
+  .page-left   { flex: 1; min-width: 0; padding-right: 1.5em; border-right: 2px solid #ccc; display: flex; align-items: stretch; gap: 1.2em; }
+  .page-left-main { flex: 1; min-width: 0; }
+  .model-filter-column { width: 8.5em; flex-shrink: 0; padding-top: calc(300px + 2.4em); }
+  .page-right  { width: 27em; flex-shrink: 0; padding-left: 1.5em; display: flex; flex-direction: column; }
+
+  /* Top section — fixed height, empty until image arrives */
+  .top-section { display: flex; align-items: flex-start; height: 300px; gap: 1.2em; overflow: hidden; }
+  .top-section.has-image #placeholder-msg { display: none; }
+  #placeholder-msg { color: #bbb; font-style: italic; align-self: center; margin: auto; }
+  #result-img { max-height: 300px; max-width: 60%; object-fit: contain; border: 1px solid #ccc; display: none; flex-shrink: 0; cursor: pointer; }
+  #lb-overlay {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.85); z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  #lb-img { max-width: 92vw; max-height: 85vh; object-fit: contain; box-shadow: 0 0 30px #000; }
+  #result-info { display: none; font-size: 0.9em; line-height: 1.7; color: #333; align-self: flex-start; flex: 1; }
+  #result-info .info-label { font-weight: bold; }
+  #error-msg { color: #c00; padding: 0.5em 0; }
+
+  .separator { border: none; border-top: 2px solid #ccc; margin: 0.8em 0; }
+
+  /* Form */
+  .imagegen-form label { display: inline-block; width: 8em; font-weight: bold; }
+  .imagegen-form input[type=text], .imagegen-form select { font-size: 1em; }
+  .imagegen-form textarea { width: 100%; max-width: 60em; height: 6em; font-size: 1em; box-sizing: border-box; }
+  .imagegen-form .row { margin: 0.5em 0; }
+  #model-row { display: flex; align-items: center; gap: 0.6em; flex-wrap: wrap; }
+  #model-row > label:first-child { flex: 0 0 8em; }
+  #model-filter-tags { display: flex; flex-direction: column; align-items: flex-start; gap: 0.3em; font-size: 0.9em; }
+  #model-filter-tags label { width: auto; font-weight: normal; display: inline-flex; align-items: center; gap: 0.25em; margin: 0; }
+  #model-filter-clear { margin-top: 0.2em; padding: 0.15em 0.5em; font-size: 0.9em; cursor: pointer; }
+  #model-filter-empty { color: #777; font-style: italic; font-size: 0.9em; }
+  .form-buttons { margin-top: 0.8em; display: flex; gap: 0.6em; align-items: center; position: relative; padding-left: 8em; }
+  .form-buttons button { padding: 0.4em 1.2em; font-size: 1em; cursor: pointer; }
+  #clear-btn { position: absolute; left: 0; }
+  #status { color: #555; font-style: italic; }
+
+  /* Right sidebar */
+  .page-right label { font-weight: bold; display: block; margin-bottom: 0.25em; }
+  #source-image-section { flex-shrink: 0; display: flex; flex-direction: column; }
+  .image-select-row { display: flex; align-items: center; gap: 0.5em; margin: 0.4em 0; }
+  #system-section { flex-shrink: 0; display: flex; flex-direction: column; margin-bottom: 0.8em; }
+  #system-prompt { height: 6em; width: 100%; font-size: 0.9em; box-sizing: border-box; resize: vertical; }
+  #system-force-label { margin-top: 0.3em; font-size: 0.85em; }
+  #system-prompt[readonly] { background: #f3f3f3; color: #444; }
+  #notes-section { flex-shrink: 0; display: flex; flex-direction: column; }
+  #notes-tags { column-count: 3; column-gap: 0.8em; margin: 0.25em 0 0.1em; }
+  #notes-tags label { font-weight: normal; display: flex; align-items: center; gap: 0.35em; cursor: pointer; margin-bottom: 0.15em; font-size: 0.9em; min-width: 0; break-inside: avoid; }
+  #notes-tags input[type=checkbox] { pointer-events: none; }
+  #notes-tags input[type=checkbox]:indeterminate { opacity: 0.45; }
+  #notes-tags-legend { font-size: 0.78em; color: #999; margin: 0.1em 0 0.25em; }
+  .notes-error { margin: 0.4em 0 0.2em; padding: 0.5em 0.7em; border: 1px solid #c55; background: #fff2f2; color: #900; font-size: 0.9em; line-height: 1.4; white-space: pre-wrap; }
+  #model-notes { height: 5em; width: 100%; font-size: 1em; box-sizing: border-box; margin-top: 0.25em; resize: vertical; }
+  #notes-status { display: block; font-style: italic; color: #555; font-size: 0.85em; margin-top: 0.3em; flex-shrink: 0; }
+  #bottom-section { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 0.8em; }
+  #description-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #description-section:has(#model-description:empty) { display: none; }
+  #model-description { flex: 1; min-height: 0; overflow-y: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid #ddd; padding: 0.4em 0.5em; background: #fafafa; font-size: 0.85em; color: #444; line-height: 1.5; }
+  #model-quirks-section { margin-top: 0.8em; flex-shrink: 0; }
+  #model-quirks { border: 1px solid #ddd; padding: 0.4em 0.5em; background: #fafafa; font-size: 0.85em; color: #444; line-height: 1.6; word-break: break-word; white-space: pre-line; height: calc(4 * 1.6em + 0.8em); box-sizing: border-box; overflow-y: auto; }
+
+  /* Image picker overlay */
+  #image-picker { position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:1000; display:flex; align-items:center; justify-content:center; }
+  #image-picker-box { background:#fff; border-radius:6px; padding:1em 1.2em; display:flex; flex-direction:column; max-width:80vw; max-height:80vh; min-width:20em; }
+  #image-picker-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:0.7em; gap:1em; }
+  #image-picker-grid { overflow-y:auto; display:flex; flex-wrap:wrap; gap:0.5em; align-content:flex-start; }
+  .image-thumb-wrap { cursor:pointer; display:inline-block; }
+  .image-thumb { width:120px; height:120px; object-fit:cover; border:3px solid transparent; border-radius:3px; display:block; }
+  .image-thumb-wrap.selected .image-thumb { border-color:#0077cc; }
+  #image-picker-tabs { display:flex; gap:0.3em; }
+  .picker-tab { padding:0.2em 0.7em; font-size:0.85em; cursor:pointer; background:#eee; border:1px solid #ccc; border-radius:3px; }
+  .picker-tab.active { background:#0077cc; color:#fff; border-color:#0077cc; }
+  .sd-pick-dir { cursor:pointer; padding:0.3em 0.6em; background:#f0f4ff; border:1px solid #c0c8e0; border-radius:3px; font-size:0.85em; white-space:nowrap; max-width:160px; overflow:hidden; text-overflow:ellipsis; }
+  .sd-pick-dir:hover { background:#dde5ff; }
+  .sd-pick-nav { cursor:pointer; color:#0077cc; text-decoration:underline; }
+  .sd-pick-nav:hover { color:#004a8c; }
+  .image-picker-grid-inner { display:flex; flex-wrap:wrap; gap:0.5em; align-content:flex-start; }
+
+  /* Image selector row */
+  .image-btn-row { display:flex; align-items:center; gap:0.5em; }
+  .image-btn-label { font-style:italic; color:#555; font-size:0.9em; }
+  .image-btn-clear { cursor:pointer; font-size:0.85em; padding:0.1em 0.4em; }
+  .image-select-row { display:flex; align-items:center; gap:0.5em; margin:0.4em 0; }
+  .ref-thumb-list { display:flex; align-items:flex-start; gap:0.3em; flex-wrap:wrap; font-style:normal; }
+  .ref-thumb-item { display:flex; flex-direction:column; align-items:center; gap:0.1em; color:#333; font-size:0.78em; line-height:1.1; }
+  .ref-thumb-item img { width:34px; height:34px; object-fit:cover; border:1px solid #bbb; border-radius:2px; background:#eee; display:block; }
+
+</style>
+{% endblock %}
+{% block content %}
+<div class="page-layout">
+  <div class="page-left">
+    <div class="page-left-main">
+      <div class="top-section" id="top-section">
+        <span id="placeholder-msg">No image yet — fill in the form below and click Generate.</span>
+        <img id="result-img" alt="Generated image" onclick="lbShow();" title="Click to view full image">
+        <div id="result-info"></div>
+      </div>
+      <div id="error-msg"></div>
+
+      <hr class="separator">
+
+      <form class="imagegen-form" id="imagegen-form" onsubmit="return false;">
+        <div class="row">
+          <label for="prompt">Prompt</label><br>
+          <textarea id="prompt" name="prompt" placeholder="Describe the image you want to generate…"></textarea>
+        </div>
+        <div class="row">
+          <label for="provider">Provider</label>
+          <select id="provider" name="provider">
+            {% for p in providers %}<option value="{{ p }}"{% if p == provider %} selected{% endif %}>{{ p }}</option>{% endfor %}
+          </select>
+          {% if upscale_url or edit_image_url %}
+          <label for="image-type" style="width:auto; margin-left:1em;">Type</label>
+          <select id="image-type">
+            <option value="normal">Normal</option>
+            {% if upscale_url %}<option value="upscale">Upscale</option>{% endif %}
+            {% if edit_image_url %}<option value="edit">Edit</option>{% endif %}
+          </select>
+          {% endif %}
+        </div>
+        <div id="upscale-opts" style="display:none;">
+          <div class="row">
+            <label for="up-scale">Scale</label>
+            <select id="up-scale" style="font-size:1em;">
+              <option value="2" selected>2×</option>
+              <option value="3">3×</option>
+              <option value="4">4×</option>
+              <option value="1">1× (enhance only)</option>
+            </select>
+            <label style="width:auto; margin-left:1em;"><input type="checkbox" id="up-enhance"> Enhance</label>
+          </div>
+          <div id="up-enhance-opts" style="display:none;">
+            <div class="row">
+              <label for="up-enhance-prompt">Enhance prompt</label>
+              <input type="text" id="up-enhance-prompt" placeholder="e.g. sharp, detailed" style="width:18em; font-size:1em;">
+            </div>
+            <div class="row">
+              <label for="up-enhance-creativity">Creativity</label>
+              <input type="number" id="up-enhance-creativity" min="0" max="1" step="0.05" placeholder="0.5" style="width:5em; font-size:1em;">
+              <span style="font-size:0.85em; color:#666; margin-left:0.3em;">(0–1)</span>
+            </div>
+            <div class="row">
+              <label for="up-replication">Replication</label>
+              <input type="number" id="up-replication" min="0" max="1" step="0.05" placeholder="0.35" style="width:5em; font-size:1em;">
+              <span style="font-size:0.85em; color:#666; margin-left:0.3em;">(0–1)</span>
+            </div>
+          </div>
+        </div>
+        <div id="edit-opts" style="display:none;">
+          <div class="row">
+            <label for="edit-model-sel">Model</label>
+            <select id="edit-model-sel" style="font-size:1em;">
+              {% for m in edit_models %}<option value="{{ m }}"{% if m == default_edit_model %} selected{% endif %}>{{ m }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="row">
+            <label for="edit-aspect-sel">Aspect ratio</label>
+            <select id="edit-aspect-sel" style="font-size:1em;">
+              {% for r in edit_aspect_ratios %}<option value="{{ r }}"{% if not r %} selected{% endif %}>{% if r %}{{ r }}{% else %}(source){% endif %}</option>{% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="row" id="model-row">
+          <label for="model">Model</label>
+          <select id="model" name="model">
+            {% for opt in model_options %}<option value="{{ opt.id }}"{% if opt.id == default_model %} selected{% endif %}>{{ opt.display }}</option>{% endfor %}
+          </select>
+          <span id="model-filter-empty" style="display:none;">No models match the selected tags.</span>
+        </div>
+        <div class="row">
+          <label for="aspect_ratio">Aspect ratio</label>
+          <select id="aspect_ratio" name="aspect_ratio">
+            {% for r in aspect_ratios %}<option value="{{ r }}"{% if r == default_aspect_ratio %} selected{% endif %}>{{ r }}</option>{% endfor %}
+          </select>
+          <label for="image_size" style="width:auto; margin-left:1em;">Size</label>
+          <select id="image_size" name="image_size">
+            {% for s in image_sizes %}<option value="{{ s }}"{% if s == default_image_size %} selected{% endif %}>{{ s }}</option>{% endfor %}
+          </select>
+          <span id="inline-output-format" style="display:none;">
+            <label for="xf_output_format" style="width:auto; margin-left:1em;">Format</label>
+            <select id="xf_output_format" name="output_format" style="font-size:1em;"></select>
+          </span>
+          <span id="inline-style-preset" style="display:none;">
+            <label for="xf_style_preset" style="width:auto; margin-left:1em;">Style preset</label>
+            <select id="xf_style_preset" name="style_preset" style="font-size:1em;"></select>
+          </span>
+        </div>
+        <div class="row">
+          <label for="temperature">Temperature</label>
+          <input type="number" id="temperature" name="temperature" min="0" max="2" step="0.1" style="width:5em;" placeholder="auto">
+          <label id="temperature-force-label" for="temperature_force" style="width:auto; margin-left:1em; display:none;"><input type="checkbox" id="temperature_force" name="temperature_force"> Force</label>
+        </div>
+        <div class="form-buttons">
+          <button type="submit" id="generate-btn">Generate</button>
+          <button type="button" id="clear-btn">Reset</button>
+          <span id="status"></span>
+        </div>
+      </form>
+    </div>
+    {% if available_tags %}
+    <div class="model-filter-column">
+      <span id="model-filter-tags">
+        {% for tag in available_tags %}<label><input type="checkbox" name="model_filter_tag" value="{{ tag }}"{% if tag in reverse_tags %} checked{% endif %}> {{ tag }}</label>{% endfor %}
+        <button type="button" id="model-filter-clear">Reset filters</button>
+      </span>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="page-right">
+    <div id="system-section">
+      <label for="system-prompt">System prompt</label>
+      <textarea id="system-prompt" placeholder="Optional system prompt"></textarea>
+      <label id="system-force-label" for="system_force" style="display:none;"><input type="checkbox" id="system_force"> Force</label>
+    </div>
+    <div id="notes-section">
+      <label>Model notes</label>
+      <span id="notes-status"></span>
+      <textarea id="model-notes" placeholder="Notes for this model…"></textarea>
+      {% if notes_load_errors %}
+      <div class="notes-error">{% for msg in notes_load_errors %}Could not load notes tags: {{ msg }}{% if not forloop.last %}
+{% endif %}{% endfor %}</div>
+      {% endif %}
+      {% if available_tags %}
+      <div id="notes-tags-legend">— not tested &nbsp; ✓ yes &nbsp; ☐ no</div>
+      <div id="notes-tags">
+        {% for tag in available_tags %}<label><input type="checkbox" name="note_tag" value="{{ tag }}" aria-checked="mixed"> {{ tag }}</label>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    <div id="bottom-section">
+      <div id="description-section">
+        <label>Model description</label>
+        <div id="model-description"></div>
+      </div>
+      <div id="model-quirks-section">
+        <label>Model quirks</label>
+        <div id="model-quirks"></div>
+      </div>
+      <div id="provider-options-section" style="display:none; margin-top: 0.8em; flex-shrink: 0;">
+        <div id="provider-extra-fields"></div>
+      </div>
+    </div>
+    <div id="source-image-section" style="display:none; margin-top:0.8em; flex-shrink: 0;">
+      <label style="display:block; font-weight:bold; margin-bottom:0.25em;">Source image</label>
+      <div class="image-select-row">
+        <div class="image-btn-row">
+          <button type="button" id="source-image-btn">Choose…</button>
+          <span id="source-image-label" class="image-btn-label"></span>
+          <button type="button" id="source-image-clear-btn" class="image-btn-clear" style="display:none;" title="Clear">&#x2715;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{ model_descriptions|json_script:"model-descriptions-data" }}
+{{ model_quirks|json_script:"model-quirks-data" }}
+{{ model_system_prompts|json_script:"model-system-prompts-data" }}
+{{ model_options|json_script:"model-options-data" }}
+{{ model_tag_states|json_script:"model-tag-states-data" }}
+{{ aspect_ratios|json_script:"aspect-ratios-data" }}
+{{ image_sizes|json_script:"image-sizes-data" }}
+{{ provider_config|json_script:"provider-config-data" }}
+{{ reverse_tags|json_script:"reverse-tags-data" }}
+<script>
+var _lbUrl = '';
+function lbShow() {
+  if (!_lbUrl) return;
+  document.getElementById('lb-img').src = _lbUrl;
+  document.getElementById('lb-overlay').style.display = 'flex';
+}
+function lbHide() {
+  document.getElementById('lb-overlay').style.display = 'none';
+  document.getElementById('lb-img').src = '';
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && document.getElementById('lb-overlay').style.display === 'flex') lbHide();
+});
+</script>
+<script>
+(function () {
+  let MODEL_DESCRIPTIONS   = JSON.parse(document.getElementById('model-descriptions-data').textContent);
+  let MODEL_QUIRKS         = JSON.parse(document.getElementById('model-quirks-data').textContent);
+  let MODEL_SYSTEM_PROMPTS = JSON.parse(document.getElementById('model-system-prompts-data').textContent);
+  let MODEL_OPTIONS        = JSON.parse(document.getElementById('model-options-data').textContent);
+  let MODEL_TAG_STATES     = JSON.parse(document.getElementById('model-tag-states-data').textContent);
+  let DEFAULTS = {
+    model:        '{{ default_model|escapejs }}',
+    aspect_ratio: '{{ default_aspect_ratio|escapejs }}',
+    image_size:   '{{ default_image_size|escapejs }}',
+    temperature:  '',
+    temperature_force: '',
+  };
+  const INITIAL_PROVIDER = '{{ provider|escapejs }}';
+  const generateUrl           = '{{ generate_url|escapejs }}';
+  const imageFileUrl          = '{{ image_file_url|escapejs }}';
+  const largeThumbnailFileUrl = '{{ large_thumbnail_file_url|escapejs }}';
+  const modelNoteUrl   = '{{ model_note_url|escapejs }}';
+  const modelsJsonUrl  = '{{ models_json_url|escapejs }}';
+  const REVERSE_FILTER_TAGS = new Set(JSON.parse(document.getElementById('reverse-tags-data').textContent));
+
+  // Pre-populate provider cache with server-rendered data.
+  const _providerCache = {};
+  _providerCache[INITIAL_PROVIDER] = {
+    model_options:        JSON.parse(document.getElementById('model-options-data').textContent),
+    model_tag_states:     MODEL_TAG_STATES,
+    model_descriptions:   MODEL_DESCRIPTIONS,
+    model_quirks:         MODEL_QUIRKS,
+    model_system_prompts: MODEL_SYSTEM_PROMPTS,
+    aspect_ratios:        JSON.parse(document.getElementById('aspect-ratios-data').textContent),
+    image_sizes:          JSON.parse(document.getElementById('image-sizes-data').textContent),
+    default_model:        DEFAULTS.model,
+    default_aspect_ratio: DEFAULTS.aspect_ratio,
+    default_image_size:   DEFAULTS.image_size,
+    provider_config:      JSON.parse(document.getElementById('provider-config-data').textContent),
+  };
+
+  let currentProvider = INITIAL_PROVIDER;
+
+  const providerSel  = document.getElementById('provider');
+  const notesArea    = document.getElementById('model-notes');
+  const notesStatus  = document.getElementById('notes-status');
+  const modelSel     = document.getElementById('model');
+  const modelDesc    = document.getElementById('model-description');
+  const quirksBox    = document.getElementById('model-quirks');
+  const systemArea   = document.getElementById('system-prompt');
+
+  let _defaultSystem = '';
+  let _noteLoadSeq = 0;
+
+  function _applyProviderData(data) {
+    MODEL_DESCRIPTIONS   = data.model_descriptions;
+    MODEL_QUIRKS         = data.model_quirks;
+    MODEL_SYSTEM_PROMPTS = data.model_system_prompts;
+    MODEL_OPTIONS        = data.model_options || [];
+    MODEL_TAG_STATES     = data.model_tag_states || {};
+    DEFAULTS = {
+      model:        data.default_model,
+      aspect_ratio: data.default_aspect_ratio,
+      image_size:   data.default_image_size,
+      temperature:  '',
+      temperature_force: '',
+    };
+    _renderModelOptions(data.default_model);
+    // Repopulate aspect_ratio select.
+    const arSel = document.getElementById('aspect_ratio');
+    arSel.innerHTML = '';
+    for (const r of data.aspect_ratios) {
+      const el = document.createElement('option');
+      el.value = r;
+      el.textContent = r;
+      if (r === data.default_aspect_ratio) el.selected = true;
+      arSel.appendChild(el);
+    }
+    // Repopulate image_size select.
+    const szSel = document.getElementById('image_size');
+    szSel.innerHTML = '';
+    for (const s of data.image_sizes) {
+      const el = document.createElement('option');
+      el.value = s;
+      el.textContent = s;
+      if (s === data.default_image_size) el.selected = true;
+      szSel.appendChild(el);
+    }
+    // Apply provider_config: show/hide temperature, system prompt, extra fields.
+    const cfg = data.provider_config || {};
+    const extraFields = cfg.extra_fields || [];
+    const tempRow = document.getElementById('temperature').closest('.row');
+    if (tempRow) tempRow.style.display = cfg.supports_temperature === false ? 'none' : '';
+    const systemSection = document.getElementById('system-section');
+    if (systemSection) systemSection.style.display = cfg.supports_system_prompt === false ? 'none' : '';
+
+    // Inline: Format.
+    const fmtField = extraFields.find(f => f.name === 'output_format');
+    const fmtSpan  = document.getElementById('inline-output-format');
+    const fmtSel   = document.getElementById('xf_output_format');
+    if (fmtField && fmtSpan && fmtSel) {
+      fmtSel.innerHTML = '';
+      for (const [val, txt] of fmtField.choices || []) {
+        const opt = document.createElement('option');
+        opt.value = val; opt.textContent = txt;
+        if (fmtField.default && val === fmtField.default) opt.selected = true;
+        fmtSel.appendChild(opt);
+      }
+      fmtSpan.style.display = '';
+    } else if (fmtSpan) {
+      fmtSpan.style.display = 'none';
+    }
+
+    // Inline: Style preset.
+    const spField = extraFields.find(f => f.name === 'style_preset');
+    const spSpan  = document.getElementById('inline-style-preset');
+    const spSel   = document.getElementById('xf_style_preset');
+    if (spField && spSpan && spSel) {
+      spSel.innerHTML = '';
+      for (const [val, txt] of spField.choices || []) {
+        const opt = document.createElement('option');
+        opt.value = val; opt.textContent = txt;
+        spSel.appendChild(opt);
+      }
+      spSpan.style.display = '';
+    } else if (spSpan) {
+      spSpan.style.display = 'none';
+    }
+
+    // Render remaining extra fields (inline ones handled above).
+    const _INLINE_FIELDS = new Set(['output_format', 'style_preset']);
+    _renderExtraFields(extraFields.filter(f => !_INLINE_FIELDS.has(f.name)));
+    if (modelSel.value) {
+      updateDescription(modelSel.value);
+      loadNote(modelSel.value);
+    } else {
+      updateDescription('');
+      notesArea.value = '';
+      for (const cb of _noteTagBoxes()) _setTristate(cb, _defaultTagState(cb.value));
+    }
+  }
+
+  function _modelFilterBoxes() {
+    return document.querySelectorAll('#model-filter-tags input[type=checkbox]');
+  }
+
+  function _selectedModelFilterTags() {
+    const tags = [];
+    for (const cb of _modelFilterBoxes()) {
+      if (cb.checked) tags.push(cb.value);
+    }
+    return tags;
+  }
+
+  function _modelPassesTagFilters(modelId) {
+    for (const tag of _selectedModelFilterTags()) {
+      const state = (MODEL_TAG_STATES[modelId] || {})[tag];
+      if (REVERSE_FILTER_TAGS.has(tag)) {
+        if (state === true) return false;
+        continue;
+      }
+      if (state === false) return false;
+    }
+    return true;
+  }
+
+  function _resetModelFilterBoxes() {
+    for (const cb of _modelFilterBoxes()) cb.checked = REVERSE_FILTER_TAGS.has(cb.value);
+  }
+
+  function _filteredModelOptions() {
+    return MODEL_OPTIONS.filter(opt => _modelPassesTagFilters(opt.id));
+  }
+
+  function _renderModelOptions(preferredModelId) {
+    const previous = preferredModelId || modelSel.value || DEFAULTS.model;
+    const options = _filteredModelOptions();
+    modelSel.innerHTML = '';
+    for (const opt of options) {
+      const el = document.createElement('option');
+      el.value = opt.id;
+      el.textContent = opt.display;
+      modelSel.appendChild(el);
+    }
+    const preferredVisible = options.some(opt => opt.id === previous);
+    const defaultVisible = options.some(opt => opt.id === DEFAULTS.model);
+    if (preferredVisible) modelSel.value = previous;
+    else if (defaultVisible) modelSel.value = DEFAULTS.model;
+    else if (options.length > 0) modelSel.value = options[0].id;
+    modelSel.disabled = options.length === 0;
+    const emptyMsg = document.getElementById('model-filter-empty');
+    if (emptyMsg) emptyMsg.style.display = options.length === 0 ? '' : 'none';
+  }
+
+  function _applyModelFilters() {
+    const before = modelSel.value;
+    _renderModelOptions(before);
+    if (modelSel.value && modelSel.value !== before) {
+      updateDescription(modelSel.value);
+      loadNote(modelSel.value);
+    } else if (!modelSel.value) {
+      modelDesc.textContent = '';
+      quirksBox.textContent = '';
+      notesArea.value = '';
+      for (const cb of _noteTagBoxes()) _setTristate(cb, _defaultTagState(cb.value));
+    }
+  }
+
+  function _renderExtraFields(fields) {
+    const container = document.getElementById('provider-extra-fields');
+    const section   = document.getElementById('provider-options-section');
+    container.innerHTML = '';
+    if (section) section.style.display = fields.length > 0 ? '' : 'none';
+    for (const f of fields) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const label = document.createElement('label');
+      label.setAttribute('for', 'xf_' + f.name);
+      label.style.display = 'inline-block';
+      label.style.width = '10em';
+      label.style.fontWeight = 'bold';
+      label.textContent = f.label;
+      if (f.type === 'checkbox') {
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = 'xf_' + f.name;
+        cb.name = f.name;
+        label.style.width = 'auto';
+        label.style.marginLeft = '0.4em';
+        row.appendChild(cb);
+        row.appendChild(label);
+      } else if (f.type === 'textarea') {
+        row.appendChild(label);
+        row.appendChild(document.createElement('br'));
+        const ta = document.createElement('textarea');
+        ta.id = 'xf_' + f.name;
+        ta.name = f.name;
+        ta.style.width = '100%';
+        ta.style.maxWidth = '60em';
+        ta.style.height = '4em';
+        ta.style.fontSize = '1em';
+        ta.style.boxSizing = 'border-box';
+        if (f.placeholder) ta.placeholder = f.placeholder;
+        row.appendChild(ta);
+      } else if (f.type === 'select') {
+        row.appendChild(label);
+        const sel = document.createElement('select');
+        sel.id = 'xf_' + f.name;
+        sel.name = f.name;
+        sel.style.fontSize = '1em';
+        for (const [val, txt] of (f.choices || [])) {
+          const opt = document.createElement('option');
+          opt.value = val;
+          opt.textContent = txt;
+          if (f.default && val === f.default) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        row.appendChild(sel);
+      } else if (f.type === 'number') {
+        row.appendChild(label);
+        const inp = document.createElement('input');
+        inp.type = 'number';
+        inp.id = 'xf_' + f.name;
+        inp.name = f.name;
+        inp.style.width = '6em';
+        inp.style.fontSize = '1em';
+        if (f.min !== undefined) inp.min = f.min;
+        if (f.max !== undefined) inp.max = f.max;
+        if (f.step !== undefined) inp.step = f.step;
+        if (f.placeholder) inp.placeholder = f.placeholder;
+        inp.addEventListener('blur', function () {
+          if (this.value === '') return;
+          const v = parseFloat(this.value);
+          if (f.min !== undefined && v < f.min) this.value = f.min;
+          else if (f.max !== undefined && v > f.max) this.value = f.max;
+        });
+        row.appendChild(inp);
+        if (f.suffix) {
+          const suf = document.createElement('span');
+          suf.textContent = ' ' + f.suffix;
+          suf.style.fontSize = '0.85em';
+          suf.style.color = '#666';
+          row.appendChild(suf);
+        }
+      }
+      container.appendChild(row);
+    }
+  }
+
+  async function switchProvider(providerId) {
+    if (_providerCache[providerId]) {
+      currentProvider = providerId;
+      _applyProviderData(_providerCache[providerId]);
+      return;
+    }
+    try {
+      const resp = await fetch(modelsJsonUrl + '?provider=' + encodeURIComponent(providerId));
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      _providerCache[providerId] = data;
+      currentProvider = providerId;
+      _applyProviderData(data);
+    } catch (e) {
+      errMsg.textContent = 'Could not load provider models: ' + e.message;
+      providerSel.value = currentProvider;
+    }
+  }
+
+  providerSel.addEventListener('change', function () {
+    switchProvider(this.value);
+  });
+
+  function updateDescription(modelId) {
+    modelDesc.textContent = MODEL_DESCRIPTIONS[modelId] || '';
+    const quirks = MODEL_QUIRKS[modelId] || [];
+    quirksBox.textContent = quirks.length > 0 ? quirks.join('\n') : 'none';
+    const forcedSystem = MODEL_SYSTEM_PROMPTS[modelId] || '';
+    _defaultSystem = forcedSystem;
+    const systemForceLbl = document.getElementById('system-force-label');
+    const systemForceCb  = document.getElementById('system_force');
+    if (forcedSystem !== '') {
+      systemArea.value    = forcedSystem;
+      systemArea.readOnly = true;
+      systemForceLbl.style.display = '';
+      systemForceCb.checked = false;
+    } else {
+      systemArea.value    = '';
+      systemArea.readOnly = false;
+      systemForceLbl.style.display = 'none';
+      systemForceCb.checked = false;
+    }
+  }
+
+  function _noteTagBoxes() {
+    return document.querySelectorAll('#notes-tags input[type=checkbox]');
+  }
+
+  // Tristate: null = not tested (indeterminate), true = yes, false = no.
+  // Cycle on click: null → true → false → null.
+  // Reverse tags are binary only (no null state): default false, cycle false ↔ true.
+  function _defaultTagState(tagName) {
+    return REVERSE_FILTER_TAGS.has(tagName) ? false : null;
+  }
+
+  function _setTristate(cb, state) {
+    if (state === true)        { cb.checked = true;  cb.indeterminate = false; cb.setAttribute('aria-checked', 'true'); }
+    else if (state === false)  { cb.checked = false; cb.indeterminate = false; cb.setAttribute('aria-checked', 'false'); }
+    else                       { cb.checked = false; cb.indeterminate = true;  cb.setAttribute('aria-checked', 'mixed'); }
+    cb._tristate = state;
+  }
+
+  function _cycleTristate(cb) {
+    const cur = cb._tristate === undefined ? _defaultTagState(cb.value) : cb._tristate;
+    if (REVERSE_FILTER_TAGS.has(cb.value)) {
+      _setTristate(cb, cur === true ? false : true);
+    } else {
+      _setTristate(cb, cur === null ? true : cur === true ? false : null);
+    }
+    saveNote();
+  }
+
+  function _tristateLabelClick(e) {
+    e.preventDefault();
+    const cb = this.querySelector('input[type=checkbox]');
+    if (!cb) return;
+    _cycleTristate(cb);
+  }
+
+  function _tristateInputKeydown(e) {
+    if (e.key !== ' ' && e.key !== 'Enter') return;
+    e.preventDefault();
+    _cycleTristate(this);
+  }
+
+  async function loadNote(modelId) {
+    if (!notesArea) return;
+    const providerId = currentProvider;
+    const loadSeq = ++_noteLoadSeq;
+    notesStatus.textContent = '';
+    for (const cb of _noteTagBoxes()) _setTristate(cb, _defaultTagState(cb.value));
+    try {
+      const resp = await fetch(
+        modelNoteUrl + '?provider=' + encodeURIComponent(providerId) + '&model=' + encodeURIComponent(modelId)
+      );
+      const data = await resp.json();
+      if (loadSeq !== _noteLoadSeq || providerId !== currentProvider || modelId !== modelSel.value) return;
+      notesArea.value = data.notes || '';
+      const tagStates = data.tags || {};
+      for (const cb of _noteTagBoxes()) {
+        const v = tagStates[cb.value];
+        _setTristate(cb, v === undefined ? _defaultTagState(cb.value) : v);
+      }
+    } catch (e) {
+      notesStatus.textContent = 'Could not load notes.';
+    }
+  }
+
+  async function saveNote() {
+    if (!notesArea) return;
+    const providerId = currentProvider;
+    const modelId = modelSel.value;
+    if (!modelId) return;
+    notesStatus.textContent = 'Saving…';
+    const tags = {};
+    for (const cb of _noteTagBoxes()) {
+      if (cb._tristate !== null && cb._tristate !== undefined) tags[cb.value] = cb._tristate;
+    }
+    try {
+      const resp = await fetch(modelNoteUrl, {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+        body:    JSON.stringify({provider: providerId, model: modelId, notes: notesArea.value, tags}),
+      });
+      const data = await resp.json();
+      if (providerId !== currentProvider || modelId !== modelSel.value) return;
+      if (data.ok) {
+        MODEL_TAG_STATES[modelId] = {...(data.tags || tags)};
+        if (_providerCache[providerId]) _providerCache[providerId].model_tag_states = MODEL_TAG_STATES;
+        _applyModelFilters();
+        notesStatus.textContent = 'Saved.';
+      } else {
+        notesStatus.textContent = 'Error: ' + (data.error || 'unknown');
+      }
+    } catch (e) {
+      if (providerId !== currentProvider || modelId !== modelSel.value) return;
+      notesStatus.textContent = 'Save failed: ' + e.message;
+    }
+  }
+
+  modelSel.addEventListener('change', function () {
+    updateDescription(this.value);
+    loadNote(this.value);
+  });
+  if (notesArea) notesArea.addEventListener('blur', saveNote);
+  for (const lbl of document.querySelectorAll('#notes-tags label')) lbl.addEventListener('click', _tristateLabelClick);
+  for (const cb of _noteTagBoxes()) cb.addEventListener('keydown', _tristateInputKeydown);
+  for (const cb of _modelFilterBoxes()) cb.addEventListener('change', _applyModelFilters);
+  const modelFilterClear = document.getElementById('model-filter-clear');
+  if (modelFilterClear) modelFilterClear.addEventListener('click', function () {
+    _resetModelFilterBoxes();
+    _applyModelFilters();
+  });
+  document.getElementById('temperature_force').addEventListener('change', function () {
+    _updateTemperatureState();
+    if (this.checked) document.getElementById('temperature').focus();
+  });
+  document.getElementById('system_force').addEventListener('change', function () {
+    if (this.checked) {
+      systemArea.readOnly = false;
+      systemArea.focus();
+    } else {
+      systemArea.value    = _defaultSystem;
+      systemArea.readOnly = true;
+    }
+  });
+  // Apply initial provider_config (temperature/system visibility, extra fields).
+  // This also calls updateDescription + loadNote via _applyProviderData.
+  _applyProviderData(_providerCache[INITIAL_PROVIDER]);
+
+  function populateFromParams() {
+    const p = new URLSearchParams(window.location.search);
+    if (!p.toString()) return;
+    const promptEl = document.getElementById('prompt');
+    if (p.has('prompt') && promptEl) promptEl.value = p.get('prompt');
+    if (p.has('model')) {
+      modelSel.value = p.get('model');
+      updateDescription(modelSel.value);
+      loadNote(modelSel.value);
+    }
+    const ar = document.getElementById('aspect_ratio');
+    if (p.has('aspect_ratio') && ar) ar.value = p.get('aspect_ratio');
+    const isz = document.getElementById('image_size');
+    if (p.has('image_size') && isz) isz.value = p.get('image_size');
+    const tempEl  = document.getElementById('temperature');
+    const tempFCb = document.getElementById('temperature_force');
+    if (p.has('temperature_force')) {
+      if (tempFCb) tempFCb.checked = true;
+      _updateTemperatureState();
+      if (tempEl) tempEl.value = p.get('temperature_force');
+    } else if (p.has('temperature')) {
+      if (tempEl)  tempEl.value    = p.get('temperature');
+      if (tempFCb) tempFCb.checked = false;
+    }
+    const systemForceLbl = document.getElementById('system-force-label');
+    const systemForceCb  = document.getElementById('system_force');
+    if (p.has('system_force')) {
+      systemArea.value = p.get('system_force');
+      if (systemForceLbl.style.display !== 'none') {
+        systemForceCb.checked = true;
+        systemArea.readOnly   = false;
+      }
+    } else if (p.has('system') && !systemArea.readOnly) {
+      systemArea.value = p.get('system');
+    }
+    // Restore provider extra fields (e.g. Venice params).
+    for (const [key, val] of p.entries()) {
+      const el = document.getElementById('xf_' + key);
+      if (!el) continue;
+      if (el.type === 'checkbox') el.checked = (val === '1' || val === 'true');
+      else el.value = val;
+    }
+    if (p.has('fname')) {
+      const fname = p.get('fname');
+      _lbUrl = imageFileUrl.replace('PLACEHOLDER', encodeURIComponent(fname));
+      img.src = largeThumbnailFileUrl.replace('PLACEHOLDER', encodeURIComponent(fname));
+      img.style.display = 'block';
+      const lines = [];
+      if (p.has('provider'))     lines.push(['Provider',     p.get('provider')]);
+      if (p.has('model'))        lines.push(['Model',        p.get('model')]);
+      if (p.has('aspect_ratio')) lines.push(['Aspect ratio', p.get('aspect_ratio')]);
+      if (p.has('image_size'))   lines.push(['Size',         p.get('image_size')]);
+      if (p.has('cost'))         lines.push(['Cost',         '$' + parseFloat(p.get('cost')).toFixed(6)]);
+      lines.push(['File', fname]);
+      if (p.has('prompt'))       lines.push(['Prompt',       p.get('prompt')]);
+      info.innerHTML = lines.map(function(pair) {
+        return '<div><span class="info-label">' + esc(pair[0]) + ':</span> ' + esc(pair[1]) + '</div>';
+      }).join('');
+      info.style.display = 'block';
+      topSection.classList.add('has-image');
+    }
+  }
+  const topSection = document.getElementById('top-section');
+  const img        = document.getElementById('result-img');
+  const info       = document.getElementById('result-info');
+  const errMsg     = document.getElementById('error-msg');
+  const status     = document.getElementById('status');
+  const btn        = document.getElementById('generate-btn');
+
+  populateFromParams();
+
+  window.addEventListener('pageshow', function (e) {
+    if (!e.persisted) return;
+    btn.disabled = false;
+    status.textContent = '';
+    lbHide();
+    const picker = document.getElementById('image-picker');
+    if (picker) picker.style.display = 'none';
+  });
+
+  document.getElementById('clear-btn').addEventListener('click', function () {
+    document.getElementById('prompt').value = '';
+    errMsg.textContent = '';
+    status.textContent = '';
+    _resetModelFilterBoxes();
+    if (providerSel.value !== INITIAL_PROVIDER) {
+      providerSel.value = INITIAL_PROVIDER;
+      switchProvider(INITIAL_PROVIDER);
+    } else {
+      _applyModelFilters();
+      if (modelSel.value) {
+        updateDescription(modelSel.value);
+        loadNote(modelSel.value);
+      }
+      document.getElementById('image_size').value = DEFAULTS.image_size;
+      const tempEl = document.getElementById('temperature');
+      if (tempEl) { tempEl.value = ''; tempEl.disabled = false; }
+      const tempFCb = document.getElementById('temperature_force');
+      if (tempFCb) tempFCb.checked = false;
+      const ar = document.getElementById('aspect_ratio');
+      for (let i = 0; i < ar.options.length; i++) {
+        ar.options[i].selected = (ar.options[i].value === DEFAULTS.aspect_ratio);
+      }
+      // Reset inline fields to their first (default) option.
+      const fmtSel = document.getElementById('xf_output_format');
+      if (fmtSel) fmtSel.selectedIndex = 0;
+      const spSel = document.getElementById('xf_style_preset');
+      if (spSel) spSel.selectedIndex = 0;
+      // Clear remaining extra fields.
+      const extraContainer = document.getElementById('provider-extra-fields');
+      if (extraContainer) {
+        for (const el of extraContainer.querySelectorAll('input, select, textarea')) {
+          if (el.type === 'checkbox') el.checked = false;
+          else el.value = el.tagName === 'SELECT' ? (el.options[0]?.value || '') : '';
+        }
+      }
+    }
+  });
+
+  function _getSourceImageFname() {
+    const section = document.getElementById('source-image-section');
+    return (section && section.dataset.selectedFname) || '';
+  }
+
+  // Upscale/Edit submission handlers
+  async function handleUpscaleSubmit() {
+    const upscaleUrl = '{{ upscale_url|default:""|escapejs }}';
+    const sourceImageFname = _getSourceImageFname();
+
+    if (!sourceImageFname) { errMsg.textContent = 'Please select a source image.'; return; }
+    if (!upscaleUrl) { errMsg.textContent = 'Upscale is not available.'; return; }
+
+    btn.disabled = true;
+    status.textContent = 'Upscaling…';
+    errMsg.textContent = '';
+
+    const body = {
+      filename: sourceImageFname,
+      scale: parseInt(document.getElementById('up-scale').value),
+      enhance: document.getElementById('up-enhance').checked,
+      stream: true,
+    };
+
+    if (body.enhance) {
+      const enhancePrompt = document.getElementById('up-enhance-prompt').value.trim();
+      if (enhancePrompt) body.enhance_prompt = enhancePrompt;
+      const creativity = document.getElementById('up-enhance-creativity').value;
+      if (creativity !== '') body.enhance_creativity = parseFloat(creativity);
+      const replication = document.getElementById('up-replication').value;
+      if (replication !== '') body.replication = parseFloat(replication);
+    }
+
+    try {
+      const resp = await fetch(upscaleUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+        body: JSON.stringify(body),
+      });
+      const contentType = resp.headers.get('content-type') || '';
+      if (resp.body && contentType.indexOf('application/x-ndjson') !== -1) {
+        const data = await readGenerateStream(resp);
+        applyUpscaleResult(data);
+      } else {
+        const data = await resp.json();
+        applyUpscaleResult({ event: 'done', status: resp.status, ...data });
+      }
+    } catch (err) {
+      errMsg.textContent = 'Request failed: ' + err.message;
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function handleEditSubmit() {
+    const editImageUrl = '{{ edit_image_url|default:""|escapejs }}';
+    const sourceImageFname = _getSourceImageFname();
+    const prompt = document.getElementById('prompt').value.trim();
+
+    if (!sourceImageFname) { errMsg.textContent = 'Please select a source image.'; return; }
+    if (!editImageUrl) { errMsg.textContent = 'Edit is not available.'; return; }
+    if (!prompt) { errMsg.textContent = 'Please enter edit instructions.'; return; }
+
+    btn.disabled = true;
+    status.textContent = 'Editing…';
+    errMsg.textContent = '';
+
+    const body = {
+      filename: sourceImageFname,
+      prompt: prompt,
+      model: document.getElementById('edit-model-sel').value,
+      stream: true,
+    };
+
+    const aspectRatio = document.getElementById('edit-aspect-sel').value;
+    if (aspectRatio) body.aspect_ratio = aspectRatio;
+
+    try {
+      const resp = await fetch(editImageUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+        body: JSON.stringify(body),
+      });
+      const contentType = resp.headers.get('content-type') || '';
+      if (resp.body && contentType.indexOf('application/x-ndjson') !== -1) {
+        const data = await readGenerateStream(resp);
+        applyUpscaleResult(data);
+      } else {
+        const data = await resp.json();
+        applyUpscaleResult({ event: 'done', status: resp.status, ...data });
+      }
+    } catch (err) {
+      errMsg.textContent = 'Request failed: ' + err.message;
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function applyUpscaleResult(data) {
+    if ((data.status && data.status >= 400) || data.error) {
+      errMsg.textContent = 'Error: ' + (data.error || 'request failed');
+      status.textContent = '';
+      return;
+    }
+
+    const fname = data.files[0];
+    _lbUrl = imageFileUrl.replace('PLACEHOLDER', encodeURIComponent(fname));
+    img.src = largeThumbnailFileUrl.replace('PLACEHOLDER', encodeURIComponent(fname));
+    img.style.display = 'block';
+
+    info.innerHTML = '<div><span class="info-label">Result:</span> ' + esc(fname) + '</div>';
+    info.style.display = 'block';
+
+    topSection.classList.add('has-image');
+    status.textContent = 'Done.';
+  }
+
+  document.getElementById('imagegen-form').addEventListener('submit', async function () {
+    const imageTypeSel = document.getElementById('image-type');
+    const imageType = imageTypeSel ? imageTypeSel.value : 'normal';
+
+    // Handle upscale mode
+    if (imageType === 'upscale') {
+      return handleUpscaleSubmit();
+    }
+
+    // Handle edit mode
+    if (imageType === 'edit') {
+      return handleEditSubmit();
+    }
+
+    // Normal mode (existing logic)
+    const prompt = document.getElementById('prompt').value.trim();
+    if (!prompt) { errMsg.textContent = 'Please enter a prompt.'; return; }
+    if (!modelSel.value) { errMsg.textContent = 'No model is selected.'; return; }
+
+    btn.disabled = true;
+    status.textContent = 'Generating… (this may take 30–60 seconds)';
+    errMsg.textContent = '';
+
+    const body = {
+      prompt:       prompt,
+      provider:     currentProvider,
+      model:        document.getElementById('model').value.trim(),
+      aspect_ratio: document.getElementById('aspect_ratio').value,
+      image_size:   document.getElementById('image_size').value,
+      stream:       true,
+    };
+    const systemForceLbl = document.getElementById('system-force-label');
+    const systemForceCb  = document.getElementById('system_force');
+    const systemValue = systemArea.value.trim();
+    if (systemForceLbl.style.display !== 'none') {
+      if (systemForceCb.checked && systemValue !== '') body.system_force = systemValue;
+    } else {
+      if (systemValue !== '') body.system = systemValue;
+    }
+    const temperatureEl     = document.getElementById('temperature');
+    const temperatureValue  = temperatureEl && !temperatureEl.disabled ? temperatureEl.value : '';
+    const temperatureForceCb = document.getElementById('temperature_force');
+    const temperatureForced = temperatureForceCb ? temperatureForceCb.checked : false;
+    if (temperatureValue !== '') {
+      if (temperatureForced) body.temperature_force = parseFloat(temperatureValue);
+      else body.temperature = parseFloat(temperatureValue);
+    }
+
+    // Collect inline provider fields (Format, Style preset).
+    const fmtSpanEl = document.getElementById('inline-output-format');
+    if (fmtSpanEl && fmtSpanEl.style.display !== 'none') {
+      const v = document.getElementById('xf_output_format')?.value;
+      if (v) body['output_format'] = v;
+    }
+    const spSpanEl = document.getElementById('inline-style-preset');
+    if (spSpanEl && spSpanEl.style.display !== 'none') {
+      const v = document.getElementById('xf_style_preset')?.value;
+      if (v) body['style_preset'] = v;
+    }
+    // Collect remaining provider-specific extra fields.
+    const extraContainer = document.getElementById('provider-extra-fields');
+    if (extraContainer) {
+      for (const el of extraContainer.querySelectorAll('input, select, textarea')) {
+        const name = el.name;
+        if (!name) continue;
+        if (el.type === 'checkbox') {
+          body[name] = el.checked;
+        } else if (el.type === 'number') {
+          if (el.value !== '') body[name] = parseFloat(el.value);
+        } else {
+          if (el.value !== '') body[name] = el.value;
+        }
+      }
+    }
+
+    try {
+      const resp = await fetch(generateUrl, {
+        method:  'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+        body:    JSON.stringify(body),
+      });
+      const contentType = resp.headers.get('content-type') || '';
+      if (resp.body && contentType.indexOf('application/x-ndjson') !== -1) {
+        const data = await readGenerateStream(resp);
+        applyGenerateResult(data, body, prompt);
+      } else {
+        const data = await resp.json();
+        applyGenerateResult({event: 'done', status: resp.status, ...data}, body, prompt);
+      }
+    } catch (e) {
+      errMsg.textContent = 'Request failed: ' + e.message;
+      status.textContent = '';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  async function readGenerateStream(resp) {
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalEvent = {event: 'done', status: resp.status, error: resp.statusText || 'request failed'};
+
+    while (true) {
+      const chunk = await reader.read();
+      buffer += decoder.decode(chunk.value || new Uint8Array(), {stream: !chunk.done});
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.event === 'status') {
+          status.textContent = ev.message || 'Working…';
+        } else if (ev.event === 'done') {
+          finalEvent = ev;
+        }
+      }
+      if (chunk.done) break;
+    }
+    if (buffer.trim()) {
+      const ev = JSON.parse(buffer);
+      if (ev.event === 'done') finalEvent = ev;
+    }
+    return finalEvent;
+  }
+
+  function applyGenerateResult(data, body, prompt) {
+    if ((data.status && data.status >= 400) || data.error) {
+      errMsg.textContent = 'Error: ' + (data.error || 'request failed');
+      status.textContent = '';
+      return;
+    }
+
+    const fname = data.files[0];
+    _lbUrl = imageFileUrl.replace('PLACEHOLDER', encodeURIComponent(fname));
+    img.src = largeThumbnailFileUrl.replace('PLACEHOLDER', encodeURIComponent(fname));
+    img.style.display = 'block';
+
+    const lines = data.summary || [];
+    info.innerHTML = lines.map(function (p) {
+      return '<div><span class="info-label">' + esc(p[0]) + ':</span> ' + esc(p[1]) + '</div>';
+    }).join('');
+    info.style.display = 'block';
+
+    topSection.classList.add('has-image');
+    status.textContent = 'Done.';
+  }
+
+  function getCookie(name) {
+    const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return v ? v.pop() : '';
+  }
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+})();
+</script>
+
+<div id="image-picker" style="display:none;">
+  <div id="image-picker-box">
+    <div id="image-picker-header">
+      <strong>Select source image</strong>
+      {% if source_dirs_json_url %}<div id="image-picker-tabs"><button type="button" id="picker-tab-uploads" class="picker-tab active">Uploads</button><button type="button" id="picker-tab-source" class="picker-tab">Source Dirs</button></div>{% endif %}
+      <button type="button" id="image-picker-close">Close</button>
+    </div>
+    <div id="image-picker-grid">
+      {% for item in picker_images %}
+      <div class="image-thumb-wrap" data-url="{{ item.url }}" data-fname="{{ item.fname }}" title="{{ item.fname }}">
+        <img class="image-thumb" src="{{ item.thumb_url }}" alt="{{ item.fname }}" loading="lazy">
+      </div>
+      {% empty %}
+      <div style="color:#777; padding:0.5em;">No uploaded images available.</div>
+      {% endfor %}
+    </div>
+    <div id="sd-picker-nav" style="display:none;font-size:0.85em;color:#555;margin-bottom:0.4em;"></div>
+    <div id="sd-picker-grid" class="image-picker-grid-inner" style="display:none;"></div>
+  </div>
+</div>
+
+<script>
+// Type selector and image picker event handlers
+(function () {
+  const imageTypeSel = document.getElementById('image-type');
+  const modelRow = document.getElementById('model-row');
+  const sourceImageSection = document.getElementById('source-image-section');
+  const upscaleOpts = document.getElementById('upscale-opts');
+  const editOpts = document.getElementById('edit-opts');
+  const systemSection = document.getElementById('system-section');
+  const temperatureRow = document.getElementById('temperature').closest('.row');
+  const promptRow = document.querySelector('label[for="prompt"]').closest('.row');
+  const promptLabel = document.querySelector('label[for="prompt"]');
+  const generateBtn = document.getElementById('generate-btn');
+  const clearBtn = document.getElementById('clear-btn');
+
+  const arSzRow = document.getElementById('aspect_ratio')?.closest('.row');
+  const bottomSection = document.getElementById('bottom-section');
+  const modelFilterColumn = document.querySelector('.model-filter-column');
+
+  function switchType(type) {
+    const isNormal = type === 'normal';
+    const isUpscale = type === 'upscale';
+    const isEdit = type === 'edit';
+
+    if (modelRow) modelRow.style.display = isNormal ? '' : 'none';
+    if (sourceImageSection) sourceImageSection.style.display = isNormal ? 'none' : '';
+    if (upscaleOpts) upscaleOpts.style.display = isUpscale ? '' : 'none';
+    if (editOpts) editOpts.style.display = isEdit ? '' : 'none';
+    if (temperatureRow) temperatureRow.style.display = isNormal ? '' : 'none';
+    if (promptRow) promptRow.style.display = isUpscale ? 'none' : '';
+    if (systemSection) systemSection.style.display = isNormal ? '' : 'none';
+    if (arSzRow) arSzRow.style.display = isNormal ? '' : 'none';
+    if (bottomSection) bottomSection.style.display = isNormal ? '' : 'none';
+    if (modelFilterColumn) modelFilterColumn.style.display = isNormal ? '' : 'none';
+
+    if (promptLabel) promptLabel.textContent = isEdit ? 'Instructions' : 'Prompt';
+    if (generateBtn) generateBtn.textContent = isNormal ? 'Generate' : (isUpscale ? 'Upscale' : 'Edit');
+  }
+
+  if (imageTypeSel) {
+    imageTypeSel.addEventListener('change', function () {
+      switchType(this.value);
+    });
+  }
+
+  // Image picker handlers
+  const sourceImageBtn = document.getElementById('source-image-btn');
+  const sourceImageClearBtn = document.getElementById('source-image-clear-btn');
+  const sourceImageLabel = document.getElementById('source-image-label');
+  const imagePicker = document.getElementById('image-picker');
+  const imagePickerClose = document.getElementById('image-picker-close');
+  const imagePickerGrid = document.getElementById('image-picker-grid');
+
+  function appendImageThumb(label, imageUrl, imageName) {
+    if (!imageUrl) return;
+    const item = document.createElement('span');
+    item.className = 'ref-thumb-item';
+    item.title = imageName || '';
+    const img = document.createElement('img');
+    img.src = imageUrl;
+    img.alt = imageName || '';
+    item.appendChild(img);
+    label.appendChild(item);
+  }
+
+  function renderSourceImageDisplay() {
+    if (!sourceImageLabel || !sourceImageSection) return;
+    const fname = sourceImageSection.dataset.selectedFname || '';
+    const url   = sourceImageSection.dataset.selectedUrl   || '';
+    sourceImageLabel.textContent = '';
+    sourceImageLabel.classList.toggle('ref-thumb-list', Boolean(url));
+    if (url) appendImageThumb(sourceImageLabel, url, fname);
+    if (sourceImageClearBtn) sourceImageClearBtn.style.display = url ? '' : 'none';
+  }
+
+  function openImagePicker() {
+    if (!imagePicker || !sourceImageSection) return;
+    const fname = sourceImageSection.dataset.selectedFname || '';
+    document.querySelectorAll('#image-picker-grid .image-thumb-wrap').forEach(el => {
+      el.classList.toggle('selected', el.dataset.fname === fname);
+    });
+    imagePicker.style.display = 'flex';
+  }
+
+  function closeImagePicker() {
+    if (imagePicker) imagePicker.style.display = 'none';
+  }
+
+  function selectPickerImage(fname, url) {
+    if (!sourceImageSection) return;
+    sourceImageSection.dataset.selectedFname = fname || '';
+    sourceImageSection.dataset.selectedUrl   = url   || '';
+    renderSourceImageDisplay();
+    closeImagePicker();
+  }
+
+  function clearSourceImage() {
+    if (!sourceImageSection) return;
+    sourceImageSection.dataset.selectedFname = '';
+    sourceImageSection.dataset.selectedUrl   = '';
+    renderSourceImageDisplay();
+    document.querySelectorAll('#image-picker-grid .image-thumb-wrap').forEach(el => {
+      el.classList.remove('selected');
+    });
+  }
+
+  if (sourceImageBtn) {
+    sourceImageBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      openImagePicker();
+    });
+  }
+
+  if (imagePickerClose) {
+    imagePickerClose.addEventListener('click', closeImagePicker);
+  }
+
+  if (imagePicker) {
+    imagePicker.addEventListener('click', function (e) {
+      if (e.target === this) closeImagePicker();
+    });
+  }
+
+  if (imagePickerGrid) {
+    imagePickerGrid.addEventListener('click', function (e) {
+      const wrap = e.target.closest('.image-thumb-wrap');
+      if (!wrap) return;
+      selectPickerImage(wrap.dataset.fname, wrap.dataset.url);
+    });
+  }
+  // Source dirs picker
+  const sdJsonUrl = '{{ source_dirs_json_url|escapejs }}';
+  const sdPickerGrid = document.getElementById('sd-picker-grid');
+  const sdPickerNav = document.getElementById('sd-picker-nav');
+  let sdPickerNick = '', sdPickerSubdir = '', sdPickerLoaded = false;
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function sdPickerFetch(nick, subdir) {
+    sdPickerNick = nick; sdPickerSubdir = subdir;
+    const params = nick ? '?nick=' + encodeURIComponent(nick) + (subdir ? '&subdir=' + encodeURIComponent(subdir) : '') : '';
+    if (sdPickerGrid) sdPickerGrid.innerHTML = '<span style="color:#888;padding:0.5em">Loading…</span>';
+    if (sdPickerNav) sdPickerNav.innerHTML = '';
+    fetch(sdJsonUrl + params).then(function(r) { return r.json(); }).then(renderSdPicker).catch(function() {
+      if (sdPickerGrid) sdPickerGrid.innerHTML = '<span style="color:#c00;padding:0.5em">Failed to load.</span>';
+    });
+    sdPickerLoaded = true;
+  }
+  function renderSdPicker(data) {
+    if (!sdPickerGrid || !sdPickerNav) return;
+    let nav = '<span class="sd-pick-nav" data-nick="" data-subdir="">Source Dirs</span>';
+    if (data.type === 'dir') {
+      nav += ' › <span class="sd-pick-nav" data-nick="' + esc(data.nick) + '" data-subdir="">' + esc(data.nick) + '</span>';
+      if (data.subdir) {
+        const parts = data.subdir.split('/');
+        for (let i = 0; i < parts.length; i++) {
+          const s = parts.slice(0, i + 1).join('/');
+          nav += ' › <span class="sd-pick-nav" data-nick="' + esc(data.nick) + '" data-subdir="' + esc(s) + '">' + esc(parts[i]) + '</span>';
+        }
+      }
+    }
+    sdPickerNav.innerHTML = nav;
+    sdPickerNav.querySelectorAll('.sd-pick-nav').forEach(function(el) {
+      el.addEventListener('click', function() { sdPickerFetch(this.dataset.nick, this.dataset.subdir); });
+    });
+    let html = '';
+    if (data.type === 'list') {
+      if (!data.source_dirs || !data.source_dirs.length) {
+        html = '<span style="color:#777;padding:0.5em">No source directories configured.</span>';
+      } else {
+        for (const sd of data.source_dirs) {
+          html += '<div class="sd-pick-dir" data-nick="' + esc(sd.nick) + '" data-subdir="">📁 ' + esc(sd.name) + '</div>';
+        }
+      }
+    } else {
+      for (const d of (data.dirs || [])) {
+        html += '<div class="sd-pick-dir" data-nick="' + esc(d.nick) + '" data-subdir="' + esc(d.subdir) + '">📁 ' + esc(d.name) + '</div>';
+      }
+      const selUrl = (sourceImageSection && sourceImageSection.dataset.selectedUrl) || '';
+      for (const img of (data.images || [])) {
+        const sel = selUrl && img.url === selUrl;
+        html += '<div class="image-thumb-wrap' + (sel ? ' selected' : '') + '" data-url="' + esc(img.url) + '" data-fname="' + esc(img.fname) + '" title="' + esc(img.fname) + '"><img class="image-thumb" src="' + esc(img.thumb_url) + '" alt="' + esc(img.fname) + '" loading="lazy"></div>';
+      }
+      if (!(data.dirs || []).length && !(data.images || []).length) {
+        html += '<span style="color:#777;padding:0.5em">Empty directory.</span>';
+      }
+    }
+    sdPickerGrid.innerHTML = html;
+    sdPickerGrid.querySelectorAll('.sd-pick-dir').forEach(function(el) {
+      el.addEventListener('click', function() { sdPickerFetch(this.dataset.nick, this.dataset.subdir); });
+    });
+    sdPickerGrid.querySelectorAll('.image-thumb-wrap').forEach(function(el) {
+      el.addEventListener('click', function() { selectPickerImage(this.dataset.fname, this.dataset.url); });
+    });
+  }
+  function showPickerTab(tab) {
+    if (!imagePickerGrid || !sdPickerNav || !sdPickerGrid) return;
+    if (tab === 'source') {
+      imagePickerGrid.style.display = 'none';
+      sdPickerNav.style.display = '';
+      sdPickerGrid.style.display = 'flex';
+      document.getElementById('picker-tab-uploads').classList.remove('active');
+      document.getElementById('picker-tab-source').classList.add('active');
+      if (!sdPickerLoaded) sdPickerFetch('', '');
+    } else {
+      imagePickerGrid.style.display = '';
+      sdPickerNav.style.display = 'none';
+      sdPickerGrid.style.display = 'none';
+      document.getElementById('picker-tab-uploads').classList.add('active');
+      document.getElementById('picker-tab-source').classList.remove('active');
+    }
+  }
+  if (sdJsonUrl) {
+    const tabUploads = document.getElementById('picker-tab-uploads');
+    const tabSource = document.getElementById('picker-tab-source');
+    if (tabUploads) tabUploads.addEventListener('click', function() { showPickerTab('uploads'); });
+    if (tabSource) tabSource.addEventListener('click', function() { showPickerTab('source'); });
+  }
+
+  if (sourceImageClearBtn) {
+    sourceImageClearBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      clearSourceImage();
+    });
+  }
+
+  // Enhance checkbox handler
+  const upEnhanceCheckbox = document.getElementById('up-enhance');
+  if (upEnhanceCheckbox) {
+    upEnhanceCheckbox.addEventListener('change', function () {
+      const upEnhanceOpts = document.getElementById('up-enhance-opts');
+      if (upEnhanceOpts) upEnhanceOpts.style.display = this.checked ? '' : 'none';
+    });
+  }
+
+  // Override clear button to also reset type
+  if (clearBtn) {
+    clearBtn.addEventListener('click', function () {
+      if (imageTypeSel) {
+        imageTypeSel.value = 'normal';
+        switchType('normal');
+      }
+      clearSourceImage();
+    });
+  }
+})();
+</script>
+
+<div id="lb-overlay" onclick="if(event.target===this)lbHide();">
+  <button onclick="lbHide();" style="position:fixed;top:1em;right:1.2em;font-size:2em;color:#fff;background:none;border:none;cursor:pointer;line-height:1;" aria-label="Close">&times;</button>
+  <img id="lb-img" src="" alt="">
+</div>
+{% endblock %}

@@ -1,0 +1,1004 @@
+"""llemon_djview.videogen -- Django view logic for LLemon video generation."""
+
+import base64
+import json
+import logging
+import mimetypes
+import os
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import unquote, urlsplit
+
+from django.conf import settings  # type: ignore[import-untyped]
+from django.http import FileResponse, Http404, JsonResponse  # type: ignore[import-untyped]
+from django.shortcuts import render  # type: ignore[import-untyped]
+from django.urls import reverse  # type: ignore[import-untyped]
+from django.views.decorators.csrf import csrf_exempt  # type: ignore[import-untyped]
+from django.views.decorators.http import require_POST  # type: ignore[import-untyped]
+
+from hty7.llemon.mediagen.gallery import (
+    CategoryStore,
+    delete_media_file,
+    file_as_data_url,
+    safe_name,
+    sanitize_metadata_data_urls,
+)
+from hty7.llemon.mediagen.imagegen.gallery import LARGE_THUMB_SIZE, delete_image_asset, ensure_thumbnail, move_image_asset
+from hty7.llemon.mediagen.videogen import (
+    PROVIDERS,
+    default_duration,
+    default_video_model,
+    get_model_note,
+    get_model_tag_states,
+    get_notes_load_errors,
+    get_notes_slot,
+    get_reverse_tags,
+    get_tags,
+    set_model_note,
+    make_videogen_backend,
+    model_display,
+    normalize_provider_api,
+)
+from hty7.llemon.mediagen.videogen.gallery import (
+    IMAGE_EXTS,
+    VIDEO_EXTS,
+    delete_video_asset,
+    ensure_video_thumbnail,
+    move_video_asset,
+    read_sidecar as read_video_sidecar,
+    save_generated_videos,
+    save_uploaded_reference_images,
+    video_thumb_name,
+    write_video_sidecar,
+)
+from .media_utils import ensure_media_thumbnail, is_video
+from .base_viewset import MediaGenViewSetBase
+from hty7.llemon.mediagen.videogen.venice import (
+    VIDEO_MODEL_TYPE_SUFFIXES as VENICE_VIDEO_MODEL_TYPE_SUFFIXES,
+    video_model_allows_reference_images as venice_model_allows_reference_images,
+    video_model_allows_start_end_images as venice_model_allows_start_end_images,
+    video_model_is_grok_reference_to_video as venice_model_is_grok_reference_to_video,
+    video_model_is_kling_reference_to_video as venice_model_is_kling_reference_to_video,
+    video_model_uses_unsupported_video_input as venice_unsupported_video_input,
+)
+
+logger = logging.getLogger(__name__)
+
+_MEDIA_EXTS = VIDEO_EXTS | IMAGE_EXTS
+
+def _sanitize_video_metadata(value: Any) -> Any:
+    return sanitize_metadata_data_urls(value)
+
+
+class LLemonVideoGenViewSet(MediaGenViewSetBase):
+    """Django views for LLemon video generation, bound to an app namespace."""
+
+    shared_gallery_template_prefix = 'llemon_image'
+
+    route_gallery = 'video_gallery'
+    route_archive = 'video_archive'
+    route_uploads = 'video_uploads'
+    route_video_file = 'video_file'
+    route_video_thumbnail = 'video_thumbnail'
+    route_video_large_thumbnail = 'video_large_thumbnail'
+    route_archive_file = 'video_archive_file'
+    route_archive_thumbnail = 'video_archive_thumbnail'
+    route_archive_large_thumbnail = 'video_archive_large_thumbnail'
+    route_uploads_file = 'video_uploads_image_file'
+    route_uploads_thumbnail = 'video_uploads_thumbnail'
+    route_uploads_large_thumbnail = 'video_uploads_large_thumbnail'
+    route_delete = 'video_delete'
+    route_archive_delete = 'video_archive_delete'
+    route_uploads_delete = 'video_uploads_delete'
+    route_upload_uploads = 'video_upload_uploads'
+    route_move_to_archive = 'video_move_to_archive'
+    route_move_to_gallery = 'video_move_to_gallery'
+
+    def __init__(self, template_prefix: str, url_namespace: str, *, base_nav=None,
+                 nav=None, nav_suffix=None):
+        super().__init__(
+            template_prefix, url_namespace,
+            base_nav=base_nav, nav=nav, nav_suffix=nav_suffix,
+        )
+        self.gallery             = csrf_exempt(self.gallery)
+        self.generate            = csrf_exempt(require_POST(self._generate))
+        self.model_note          = csrf_exempt(self._model_note)
+        self.models_json         = self._models_json
+        self.video_file          = self._video_file
+        self.archive_video_file  = self._archive_video_file
+        self.video_thumbnail         = self._video_thumbnail
+        self.video_large_thumbnail   = self._video_large_thumbnail
+        self.archive_video_thumbnail = self._archive_video_thumbnail
+        self.archive_video_large_thumbnail = self._archive_video_large_thumbnail
+        self.uploads_image_file  = self._uploads_image_file
+        self.uploads_thumbnail   = self._uploads_thumbnail
+        self.uploads_large_thumbnail = self._uploads_large_thumbnail
+        self.upload_uploads      = csrf_exempt(require_POST(self._upload_uploads))
+        self.delete_video        = csrf_exempt(require_POST(self._delete_video))
+        self.delete_archive_video = csrf_exempt(require_POST(self._delete_archive_video))
+        self.delete_uploads_image = csrf_exempt(require_POST(self._delete_uploads_image))
+        self.move_to_archive     = csrf_exempt(require_POST(self._move_to_archive))
+        self.move_to_gallery     = csrf_exempt(require_POST(self._move_to_gallery))
+
+    def _ctx(self, title, nav, extra):
+        ctx = {'title': title, 'nav': nav}
+        if self._base_nav is not None:
+            ctx['base_nav'] = self._base_nav
+        ctx.update(extra)
+        return ctx
+
+    def _shared_gallery_template(self, name: str) -> str:
+        return f'{self.shared_gallery_template_prefix}/{name}'
+
+    def _media_dir(self):
+        return getattr(settings, 'LLEMON_VIDEOGEN_MEDIA_DIR', '')
+
+    def _log_dir(self):
+        return getattr(settings, 'LLEMON_VIDEOGEN_LOG_DIR', None)
+
+    def _delete_category_file(self, fname: str):
+        try:
+            conn = self._gallery_category_db()
+            conn.remove_file(fname)
+        except Exception as e:
+            logger.warning('could not remove video category assignment for %s: %s', fname, e)
+
+    def _nav(self, active: str | None = None):
+        items = [
+            ('video_creator', 'Video creator'),
+            (self.route_gallery, 'Gallery'),
+            (self.route_uploads, 'Uploads'),
+            (self.route_archive, 'Archive'),
+        ]
+        return self._nav_prefix + [{'name': label, 'url': self._u(name)} for name, label in items]
+
+    def video(self, request):
+        pages = [
+            {'name': 'Video creator', 'url': self._u('video_creator')},
+            {'name': 'Gallery', 'url': self._u(self.route_gallery)},
+            {'name': 'Uploads', 'url': self._u(self.route_uploads)},
+            {'name': 'Archive', 'url': self._u(self.route_archive)},
+        ]
+        return render(request, self._t('index.html'), self._ctx(
+            'LLemon Video', self._nav_prefix + pages, {'pages': pages},
+        ))
+
+    def video_creator(self, request):
+        provider_param = request.GET.get('provider', '').strip() or None
+        api_param = request.GET.get('api', '').strip() or None
+        try:
+            provider, api = normalize_provider_api(provider_param, api_param)
+            model_options = self._model_options(provider, api)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        except Exception as e:
+            logger.exception('could not list video generation models')
+            return JsonResponse({'error': f'could not list video generation models: {e}'},
+                                status=502)
+        model_ids = [opt['id'] for opt in model_options]
+        notes_load_errors = get_notes_load_errors()
+        return render(request, self._t('video.html'), self._ctx(
+            'LLemon Video Creator', self._nav('creator'), {
+                'providers':        PROVIDERS,
+                'provider':         provider,
+                'api':              api,
+                'default_model':    default_video_model(provider, api),
+                'default_duration': default_duration(provider, api),
+                'model_options':    model_options,
+                'model_tag_states': self._model_tag_states(provider, model_ids),
+                'venice_video_model_type_suffixes': {
+                    key: list(value)
+                    for key, value in VENICE_VIDEO_MODEL_TYPE_SUFFIXES.items()
+                },
+                'available_tags':   [] if notes_load_errors else get_tags(),
+                'reverse_tags':     [] if notes_load_errors else get_reverse_tags(),
+                'notes_load_errors': notes_load_errors,
+                'active_notes_slot': get_notes_slot(),
+                'generate_url':     self._u('video_generate'),
+                'model_note_url':   self._u('video_model_note'),
+                'models_json_url':  self._u('video_models_json'),
+                'video_file_url':              self._u(self.route_video_file, 'PLACEHOLDER'),
+                'video_large_thumbnail_url':   self._u(self.route_video_large_thumbnail, 'PLACEHOLDER'),
+                'uploads_url':      self._u(self.route_uploads),
+                'uploads':          self._list_uploads(request),
+                'source_dirs_json_url': self._source_dirs_json_url(),
+            },
+        ))
+
+    def _model_options(self, provider: str, api: str) -> list[dict[str, Any]]:
+        backend_cls = make_videogen_backend(provider, api)
+        if hasattr(backend_cls, 'list_video_models_with_metadata'):
+            rows = backend_cls.list_video_models_with_metadata()
+            return [
+                {
+                    'id': row['id'],
+                    'display': (
+                        f"{row.get('name') or ''} ({row['id']})"
+                        if row.get('name') else row['id']
+                    ),
+                    'description': row.get('description') or '',
+                    'capabilities': row.get('capabilities') or {},
+                }
+                for row in rows
+            ]
+        return [
+            {'id': model_id, 'display': model_id, 'description': ''}
+            for model_id in backend_cls.list_video_models()
+        ]
+
+    def gallery(self, request):
+        return self._media_page(
+            request,
+            title='LLemon Video Gallery',
+            media_dir=self._gallery_dir(),
+            file_url_name=self.route_video_file,
+            thumbnail_url_name=self.route_video_thumbnail,
+            large_thumbnail_url_name=self.route_video_large_thumbnail,
+            delete_url=self._u(self.route_delete),
+            move_url=self._u(self.route_move_to_archive),
+            move_label='Archive',
+            empty='No videos yet.',
+            generate_url=self._u('video_creator'),
+            category_enabled=True,
+        )
+
+    def archive(self, request):
+        return self._media_page(
+            request,
+            title='LLemon Video Archive',
+            template_name='archive.html',
+            media_dir=self._archive_dir(),
+            file_url_name=self.route_archive_file,
+            thumbnail_url_name=self.route_archive_thumbnail,
+            large_thumbnail_url_name=self.route_archive_large_thumbnail,
+            delete_url=self._u(self.route_archive_delete),
+            move_url=self._u(self.route_move_to_gallery),
+            move_label='Unarchive',
+            empty='No archived videos.',
+            generate_url=None,
+            category_enabled=False,
+        )
+
+    def uploads(self, request):
+        uploads_dir = self._uploads_dir()
+        items = []
+        if uploads_dir and os.path.isdir(uploads_dir):
+            for fname in sorted(os.listdir(uploads_dir), reverse=True):
+                ext = os.path.splitext(fname)[1].lower()
+                if ext not in _MEDIA_EXTS:
+                    continue
+                path = os.path.join(uploads_dir, fname)
+                if os.path.isfile(path):
+                    has_thumb = self._ensure_uploads_thumbnail(fname)
+                    has_large_thumb = self._ensure_uploads_large_thumbnail(fname)
+                    try:
+                        url = self._u(self.route_uploads_file, fname)
+                        thumb_url = self._u(self.route_uploads_thumbnail, fname) if has_thumb else url
+                        large_thumb_url = self._u(self.route_uploads_large_thumbnail, fname) if has_large_thumb else url
+                    except Exception:
+                        continue
+                    items.append({
+                        'fname': fname,
+                        'type': 'video' if is_video(fname) else 'image',
+                        'url': url,
+                        'thumb_url': thumb_url,
+                        'large_thumb_url': large_thumb_url,
+                        'sidecar': self._read_sidecar(uploads_dir, fname),
+                    })
+        return render(request, self._shared_gallery_template('uploads.html'), self._ctx(
+            'LLemon Video Uploads', self._nav('uploads'), {
+                'images': items,
+                'upload_url': self._u(self.route_upload_uploads),
+                'delete_image_url': self._u(self.route_uploads_delete),
+                'video_generate_url': self._u('video_creator'),
+            },
+        ))
+
+    def _media_page(
+        self,
+        request,
+        *,
+        title: str,
+        media_dir: str,
+        file_url_name: str,
+        thumbnail_url_name: str,
+        delete_url: str,
+        move_url: str,
+        move_label: str,
+        empty: str,
+        generate_url: str | None,
+        large_thumbnail_url_name: str = '',
+        template_name: str = 'gallery.html',
+        category_enabled: bool = False,
+    ):
+        categories, category_ids_by_file, active_category, category_filter = self._process_categories(request, category_enabled)
+        videos = self._list_videos(
+            media_dir,
+            file_url_name,
+            thumbnail_url_name,
+            large_thumbnail_url_name=large_thumbnail_url_name,
+            active_category=active_category if category_enabled else '',
+            category_filter=category_filter,
+            category_ids_by_file=category_ids_by_file,
+        )
+        ctx = {
+            'images': videos,
+            'delete_image_url': delete_url,
+            'empty': empty,
+            'generate_url': generate_url,
+            'video_generate_url': self._u('video_creator'),
+            'category_enabled': category_enabled,
+            'categories': categories,
+            'active_category': active_category,
+        }
+        if move_label == 'Archive':
+            ctx['move_to_archive_url'] = move_url
+        elif move_label == 'Unarchive':
+            ctx['move_to_gallery_url'] = move_url
+        return render(request, self._shared_gallery_template(template_name), self._ctx(
+            title, self._nav(), {
+                **ctx,
+            },
+        ))
+
+    def _list_videos(
+        self,
+        media_dir: str,
+        file_url_name: str,
+        thumbnail_url_name: str,
+        large_thumbnail_url_name: str = '',
+        active_category: str = '',
+        category_filter: set[str] | None = None,
+        category_ids_by_file: dict[str, set[int]] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not media_dir or not os.path.isdir(media_dir):
+            return []
+        if category_ids_by_file is None:
+            category_ids_by_file = {}
+        result = []
+        for fname in sorted(os.listdir(media_dir), reverse=True):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in _MEDIA_EXTS:
+                continue
+            if active_category == 'none' and category_ids_by_file.get(fname):
+                continue
+            if active_category != 'none' and category_filter is not None and fname not in category_filter:
+                continue
+            path = os.path.join(media_dir, fname)
+            if not os.path.isfile(path):
+                continue
+            sidecar = self._read_sidecar(media_dir, fname)
+            result.append({
+                'fname': fname,
+                'type': 'video' if is_video(fname) else 'image',
+                'url': self._u(file_url_name, fname),
+                'thumb_url': self._u(thumbnail_url_name, fname),
+                'large_thumb_url': (
+                    self._u(large_thumbnail_url_name, fname)
+                    if large_thumbnail_url_name else ''
+                ),
+                'size_mb': os.path.getsize(path) / (1024 * 1024),
+                'mtime': datetime.fromtimestamp(os.path.getmtime(path)).isoformat(timespec='seconds'),
+                'meta': sidecar,
+                'sidecar': sidecar,
+                'category_ids': sorted(category_ids_by_file.get(fname, [])),
+            })
+        return result
+
+    def _video_thumb_dir(self, media_dir: str) -> str:
+        return os.path.join(media_dir, 'thumbnails') if media_dir else ''
+
+    def _video_large_thumb_dir(self, media_dir: str) -> str:
+        return os.path.join(media_dir, 'thumbnails_large') if media_dir else ''
+
+    def _video_thumb_name(self, fname: str) -> str:
+        return video_thumb_name(fname)
+
+    def _ensure_video_thumbnail(self, media_dir: str, fname: str) -> bool:
+        return ensure_media_thumbnail(
+            media_dir, self._video_thumb_dir(media_dir), fname, size=160, quality='3',
+        )
+
+    def _source_dirs_json_url(self) -> str:
+        return ''
+
+    def _list_uploads(self, request=None) -> list[dict[str, str]]:
+        uploads_dir = self._uploads_dir()
+        if not uploads_dir or not os.path.isdir(uploads_dir):
+            return []
+        result = []
+        for fname in sorted(os.listdir(uploads_dir), reverse=True):
+            ext = os.path.splitext(fname)[1].lower()
+            path = os.path.join(uploads_dir, fname)
+            if ext in IMAGE_EXTS and os.path.isfile(path):
+                url = self._u(self.route_uploads_file, fname)
+                has_thumb = self._ensure_uploads_thumbnail(fname)
+                has_large_thumb = self._ensure_uploads_large_thumbnail(fname)
+                try:
+                    thumb_url = self._u(self.route_uploads_thumbnail, fname) if has_thumb else url
+                except Exception:
+                    thumb_url = url
+                try:
+                    large_thumb_url = self._u(self.route_uploads_large_thumbnail, fname) if has_large_thumb else url
+                except Exception:
+                    large_thumb_url = url
+                result.append({
+                    'fname': fname,
+                    'url': url,
+                    'thumb_url': thumb_url,
+                    'large_thumb_url': large_thumb_url,
+                })
+        return result
+
+    def _read_sidecar(self, media_dir: str, fname: str) -> dict[str, Any]:
+        return read_video_sidecar(media_dir, fname, _sanitize_video_metadata)
+
+    @staticmethod
+    def _summary_from_video_metadata(meta: dict[str, Any], fname: str = '') -> list[list[str]]:
+        rows: list[list[str]] = []
+        for label, key in (
+            ('Provider', 'provider'),
+            ('API', 'api'),
+            ('Model', 'model_display'),
+            ('Duration', 'duration'),
+        ):
+            value = meta.get(key)
+            if value not in (None, ''):
+                rows.append([label, str(value)])
+        options = meta.get('options') if isinstance(meta.get('options'), dict) else {}
+        for label, key in (
+            ('Resolution', 'resolution'),
+            ('Aspect ratio', 'aspect_ratio'),
+            ('Audio', 'audio'),
+        ):
+            value = options.get(key)
+            if value not in (None, ''):
+                if isinstance(value, bool):
+                    value = 'yes' if value else 'no'
+                rows.append([label, str(value)])
+        if fname:
+            rows.append(['File', fname])
+        prompt = meta.get('prompt')
+        if prompt:
+            rows.append(['Prompt', str(prompt)])
+        return rows
+
+    def _models_json(self, request):
+        provider_param = request.GET.get('provider', '').strip() or None
+        try:
+            provider, api = normalize_provider_api(provider_param)
+            model_options = self._model_options(provider, api)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        except Exception as e:
+            logger.exception('could not list video generation models')
+            return JsonResponse({'error': f'could not list video generation models: {e}'},
+                                status=502)
+        return JsonResponse({
+            'provider': provider,
+            'api': api,
+            'model_options': model_options,
+            'model_tag_states': self._model_tag_states(
+                provider, [opt['id'] for opt in model_options],
+            ),
+            'default_model': default_video_model(provider, api),
+            'default_duration': default_duration(provider, api),
+        })
+
+    def _generate(self, request):
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+        prompt = (data.get('prompt') or '').strip()
+        if not prompt:
+            return JsonResponse({'error': 'prompt is required'}, status=400)
+        try:
+            provider, api = normalize_provider_api(data.get('provider'), data.get('api'))
+            model = (data.get('model') or default_video_model(provider, api)).strip()
+            backend_cls = make_videogen_backend(provider, api)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir:
+            return JsonResponse({'error': 'video output directory is not configured'}, status=500)
+        duration = data.get('duration') or default_duration(provider, api)
+        if provider == 'openrouter':
+            try:
+                duration = int(duration)
+            except (TypeError, ValueError):
+                return JsonResponse({'error': 'duration must be an integer for openrouter'},
+                                    status=400)
+        gen_kwargs: dict[str, Any] = {
+            'model': model,
+            'log_dir': self._log_dir(),
+            'duration': duration,
+            'debug': bool(data.get('debug')),
+        }
+        if provider in ('openai', 'openrouter', 'venice'):
+            gen_kwargs['base_url'] = (data.get('url') or '').strip() or None
+        if provider == 'venice':
+            for key in ('resolution', 'aspect_ratio'):
+                value = (data.get(key) or '').strip()
+                if value:
+                    gen_kwargs[key] = value
+        generate_kwargs: dict[str, Any] = {}
+        metadata_options: dict[str, Any] = {}
+        if provider == 'openai':
+            image_value = data.get('image_url')
+            if isinstance(image_value, str) and image_value.strip():
+                clean_value = image_value.strip()
+                generate_kwargs['image_url'] = self._data_reference_for_api(request, clean_value)
+                metadata_options['image_url'] = clean_value
+            ref_urls = data.get('reference_image_urls')
+            if isinstance(ref_urls, list):
+                clean_values = [v.strip() for v in ref_urls if isinstance(v, str) and v.strip()]
+                if clean_values:
+                    generate_kwargs['reference_image_urls'] = [
+                        self._data_reference_for_api(request, v) for v in clean_values
+                    ]
+                    metadata_options['reference_image_urls'] = clean_values
+        if provider == 'venice':
+            is_kling_reference = venice_model_is_kling_reference_to_video(model)
+            is_grok_reference = venice_model_is_grok_reference_to_video(model)
+            for key in ('negative_prompt', 'resolution', 'aspect_ratio'):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    clean_value = value.strip()
+                    generate_kwargs[key] = clean_value
+                    metadata_options[key] = clean_value
+            for key in ('audio_url', 'video_url'):
+                value = data.get(key)
+                if (
+                    isinstance(value, str)
+                    and value.strip()
+                    and not venice_unsupported_video_input(model)
+                ):
+                    clean_value = value.strip()
+                    generate_kwargs[key] = self._data_reference_for_api(request, clean_value)
+                    metadata_options[key] = clean_value
+            if venice_model_allows_start_end_images(model):
+                for key in ('image_url', 'end_image_url'):
+                    value = data.get(key)
+                    if isinstance(value, str) and value.strip():
+                        clean_value = value.strip()
+                        generate_kwargs[key] = self._data_reference_for_api(request, clean_value)
+                        metadata_options[key] = clean_value
+            if venice_model_allows_reference_images(model):
+                ref_value = data.get('reference_image_urls')
+                if isinstance(ref_value, list):
+                    clean_values = [
+                        v.strip()
+                        for v in ref_value
+                        if isinstance(v, str) and v.strip()
+                    ]
+                    if clean_values:
+                        generate_kwargs['reference_image_urls'] = [
+                            self._data_reference_for_api(request, v)
+                            for v in clean_values
+                        ]
+                        metadata_options['reference_image_urls'] = clean_values
+                if is_kling_reference or not is_grok_reference:
+                    scene_value = data.get('scene_image_urls')
+                    if isinstance(scene_value, list):
+                        clean_values = [
+                            v.strip()
+                            for v in scene_value
+                            if isinstance(v, str) and v.strip()
+                        ]
+                        if clean_values:
+                            generate_kwargs['scene_image_urls'] = [
+                                self._data_reference_for_api(request, v)
+                                for v in clean_values
+                            ]
+                            metadata_options['scene_image_urls'] = clean_values
+            if isinstance(data.get('audio'), bool):
+                generate_kwargs['audio'] = data['audio']
+                metadata_options['audio'] = data['audio']
+            if data.get('upscale_factor') in (1, 2, 4):
+                generate_kwargs['upscale_factor'] = data['upscale_factor']
+                metadata_options['upscale_factor'] = data['upscale_factor']
+
+        if provider == 'openrouter':
+            aspect_ratio = data.get('aspect_ratio')
+            if isinstance(aspect_ratio, str) and aspect_ratio.strip():
+                clean_aspect_ratio = aspect_ratio.strip()
+                generate_kwargs['aspect_ratio'] = clean_aspect_ratio
+                metadata_options['aspect_ratio'] = clean_aspect_ratio
+            if isinstance(data.get('audio'), bool):
+                generate_kwargs['generate_audio'] = data['audio']
+                metadata_options['audio'] = data['audio']
+            provider_slug = data.get('provider_slug')
+            if isinstance(provider_slug, str) and provider_slug.strip():
+                generate_kwargs['provider_slug'] = provider_slug.strip()
+                metadata_options['provider_slug'] = provider_slug.strip()
+            cfg_scale = data.get('cfg_scale')
+            if cfg_scale is not None and cfg_scale != '':
+                try:
+                    cfg_scale_float = float(cfg_scale)
+                except (TypeError, ValueError):
+                    return JsonResponse({'error': 'invalid cfg_scale'}, status=400)
+                generate_kwargs['cfg_scale'] = cfg_scale_float
+                metadata_options['cfg_scale'] = cfg_scale_float
+            cfg_scale_key = data.get('cfg_scale_key')
+            if isinstance(cfg_scale_key, str) and cfg_scale_key.strip():
+                generate_kwargs['cfg_scale_key'] = cfg_scale_key.strip()
+                metadata_options['cfg_scale_key'] = cfg_scale_key.strip()
+            negative_prompt = data.get('negative_prompt')
+            if isinstance(negative_prompt, str) and negative_prompt.strip():
+                clean_negative_prompt = negative_prompt.strip()
+                generate_kwargs['negative_prompt'] = clean_negative_prompt
+                metadata_options['negative_prompt'] = clean_negative_prompt
+            negative_prompt_key = data.get('negative_prompt_key')
+            if isinstance(negative_prompt_key, str) and negative_prompt_key.strip():
+                generate_kwargs['negative_prompt_key'] = negative_prompt_key.strip()
+                metadata_options['negative_prompt_key'] = negative_prompt_key.strip()
+            if isinstance(data.get('enhance_prompt'), bool):
+                generate_kwargs['enhance_prompt'] = data['enhance_prompt']
+                metadata_options['enhance_prompt'] = data['enhance_prompt']
+            enhance_prompt_key = data.get('enhance_prompt_key')
+            if isinstance(enhance_prompt_key, str) and enhance_prompt_key.strip():
+                generate_kwargs['enhance_prompt_key'] = enhance_prompt_key.strip()
+                metadata_options['enhance_prompt_key'] = enhance_prompt_key.strip()
+            for key in ('image_url', 'end_image_url'):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    clean_value = value.strip()
+                    generate_kwargs[key] = self._data_reference_for_api(request, clean_value)
+                    metadata_options[key] = clean_value
+            image_urls = data.get('image_urls')
+            if isinstance(image_urls, list):
+                clean_values = [v.strip() for v in image_urls if isinstance(v, str) and v.strip()]
+                if clean_values:
+                    generate_kwargs['image_urls'] = [
+                        self._data_reference_for_api(request, v) for v in clean_values
+                    ]
+                    metadata_options['image_urls'] = clean_values
+            ref_urls = data.get('reference_image_urls')
+            if isinstance(ref_urls, list):
+                clean_values = [v.strip() for v in ref_urls if isinstance(v, str) and v.strip()]
+                if clean_values:
+                    generate_kwargs['reference_image_urls'] = [
+                        self._data_reference_for_api(request, v) for v in clean_values
+                    ]
+                    metadata_options['reference_image_urls'] = clean_values
+
+        try:
+            gen = backend_cls(**gen_kwargs)
+            result = gen.generate(prompt, **generate_kwargs)
+            gen.shutdown()
+        except Exception as e:
+            logger.exception('video generation failed')
+            return JsonResponse({'error': str(e)}, status=500)
+        if result.get('error'):
+            err = result['error']
+            return JsonResponse({'error': err.get('message') or str(err), 'error_info': err},
+                                status=502)
+        videos = result.get('videos') or []
+        if not videos:
+            return JsonResponse({'error': 'generation returned no videos'}, status=502)
+        saved = save_generated_videos(videos, gallery_dir)
+        actual_model = result.get('model') or model
+        meta = {
+            'provider': provider,
+            'api': api,
+            'model_id': actual_model,
+            'model': actual_model,
+            'model_display': model_display(actual_model, provider, api),
+            'duration': duration,
+            'prompt': prompt,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'options': _sanitize_video_metadata(metadata_options),
+            'files': saved,
+        }
+        if result.get('id'):
+            meta['request_id'] = result['id']
+        if result.get('job_id'):
+            meta['job_id'] = result['job_id']
+        write_video_sidecar(gallery_dir, saved[0], meta)
+        return JsonResponse({
+            'ok': True,
+            'files': saved,
+            'file': saved[0],
+            'url': self._u(self.route_video_file, saved[0]),
+            'gallery_url': self._u(self.route_gallery),
+            'meta': meta,
+            'summary': self._summary_from_video_metadata(meta, saved[0]),
+        })
+
+    def _model_tag_states(self, provider: str, model_ids: list[str]) -> dict[str, dict[str, bool]]:
+        try:
+            return get_model_tag_states(provider, model_ids)
+        except Exception:
+            logger.exception('could not load video model tag states')
+            return {}
+
+    def _model_note(self, request):
+        if request.method == 'GET':
+            provider = request.GET.get('provider', '').strip()
+            model_id = request.GET.get('model', '').strip()
+            if not provider or not model_id:
+                return JsonResponse({'error': 'provider and model are required'}, status=400)
+            try:
+                notes, tags = get_model_note(provider, model_id)
+            except Exception as e:
+                return JsonResponse({'error': str(e)}, status=500)
+            return JsonResponse({'notes': notes, 'tags': tags})
+
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+        provider = (data.get('provider') or '').strip()
+        model_id = (data.get('model') or '').strip()
+        notes = data.get('notes', '')
+        raw_tags = data.get('tags', {})
+        submitted = (
+            {k: bool(v) for k, v in raw_tags.items() if isinstance(k, str)}
+            if isinstance(raw_tags, dict) else {}
+        )
+        if not provider or not model_id:
+            return JsonResponse({'error': 'provider and model are required'}, status=400)
+        try:
+            set_model_note(provider, model_id, notes, submitted)
+            _notes, tags = get_model_note(provider, model_id)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+        return JsonResponse({'ok': True, 'tags': tags})
+
+    def _safe_name(self, value: str) -> str:
+        return safe_name(value)
+
+    def _data_reference_for_api(self, request, value: str) -> str:
+        """Convert this app's private media URLs to data URLs for provider APIs."""
+        text = value.strip()
+        if not text or text.startswith('data:'):
+            return text
+
+        parts = urlsplit(text)
+        path = parts.path if parts.scheme else text
+        if not path:
+            return text
+
+        local = self._local_media_path_for_url(request, path, parts.netloc)
+        if local is None:
+            return text
+
+        file_path, fname = local
+        mime_type, _encoding = mimetypes.guess_type(fname)
+        if not file_path or not os.path.isfile(file_path) or not mime_type:
+            return text
+
+        try:
+            return file_as_data_url(file_path, fname)
+        except ValueError:
+            return text
+
+    def _local_media_path_for_url(
+        self,
+        request,
+        path: str,
+        netloc: str,
+    ) -> tuple[str, str] | None:
+        request_host = request.get_host() if request is not None else ''
+        if netloc and netloc != request_host:
+            return None
+
+        try:
+            fname = self._safe_name(unquote(path.rstrip('/').rsplit('/', 1)[-1]))
+        except Exception:
+            return None
+
+        route_dirs = (
+            (self.route_uploads_file, self._uploads_dir()),
+            (self.route_video_file, self._gallery_dir()),
+            (self.route_archive_file, self._archive_dir()),
+        )
+        for route_name, directory in route_dirs:
+            if not directory:
+                continue
+            try:
+                expected_path = self._u(route_name, fname)
+            except Exception:
+                continue
+            if path == expected_path:
+                return os.path.join(directory, fname), fname
+        return None
+
+    def _file_response(self, directory: str, filename: str, allowed_exts: set[str]):
+        try:
+            fname = self._safe_name(filename)
+        except ValueError:
+            raise Http404('invalid filename')
+        ext = os.path.splitext(fname)[1].lower()
+        path = os.path.join(directory, fname)
+        if ext not in allowed_exts or not os.path.isfile(path):
+            raise Http404('file not found')
+        ctype, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'), content_type=ctype or 'application/octet-stream')
+
+    def _video_file(self, request, filename):
+        return self._file_response(self._gallery_dir(), filename, _MEDIA_EXTS)
+
+    def _archive_video_file(self, request, filename):
+        return self._file_response(self._archive_dir(), filename, _MEDIA_EXTS)
+
+    def _video_thumbnail_response(self, directory: str, filename: str):
+        try:
+            fname = self._safe_name(filename)
+        except ValueError:
+            raise Http404('invalid filename')
+        if not self._ensure_video_thumbnail(directory, fname):
+            raise Http404('thumbnail not found')
+        thumb_fname = self._video_thumb_name(fname) if is_video(fname) else fname
+        path = os.path.join(self._video_thumb_dir(directory), thumb_fname)
+        ctype, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'), content_type=ctype or 'image/jpeg')
+
+    def _video_thumbnail(self, request, filename):
+        return self._video_thumbnail_response(self._gallery_dir(), filename)
+
+    def _archive_video_thumbnail(self, request, filename):
+        return self._video_thumbnail_response(self._archive_dir(), filename)
+
+    def _ensure_large_video_thumbnail(self, media_dir: str, fname: str) -> bool:
+        return ensure_media_thumbnail(
+            media_dir, self._video_large_thumb_dir(media_dir), fname, size=300, quality='2',
+        )
+
+    def _video_large_thumbnail_response(self, directory: str, filename: str):
+        try:
+            fname = self._safe_name(filename)
+        except ValueError:
+            raise Http404('invalid filename')
+        if not self._ensure_large_video_thumbnail(directory, fname):
+            raise Http404('thumbnail not found')
+        thumb_fname = self._video_thumb_name(fname) if is_video(fname) else fname
+        path = os.path.join(self._video_large_thumb_dir(directory), thumb_fname)
+        ctype, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'), content_type=ctype or 'image/jpeg')
+
+    def _video_large_thumbnail(self, request, filename):
+        return self._video_large_thumbnail_response(self._gallery_dir(), filename)
+
+    def _archive_video_large_thumbnail(self, request, filename):
+        return self._video_large_thumbnail_response(self._archive_dir(), filename)
+
+    def _uploads_image_file(self, request, filename):
+        return self._file_response(self._uploads_dir(), filename, IMAGE_EXTS)
+
+    def _uploads_thumbnail(self, request, filename):
+        return self._image_thumbnail_response(
+            self._uploads_dir(), self._uploads_thumb_dir(), filename, self._ensure_uploads_thumbnail,
+        )
+
+    def _uploads_large_thumbnail(self, request, filename):
+        return self._image_thumbnail_response(
+            self._uploads_dir(), self._uploads_large_thumb_dir(), filename,
+            self._ensure_uploads_large_thumbnail,
+        )
+
+    def _image_thumbnail_response(self, media_dir: str, thumb_dir: str, filename: str, ensure_thumb):
+        try:
+            fname = self._safe_name(filename)
+        except ValueError:
+            raise Http404('invalid filename')
+        ext = os.path.splitext(fname)[1].lower()
+        if ext not in IMAGE_EXTS or not media_dir:
+            raise Http404('file not found')
+        path = os.path.join(thumb_dir, fname)
+        if not os.path.isfile(path):
+            if not ensure_thumb(fname):
+                raise Http404('thumbnail not found')
+        ctype, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'), content_type=ctype or 'application/octet-stream')
+
+    def _delete_from_dir(
+        self,
+        request,
+        directory: str,
+        allowed_exts: set[str],
+        thumb_dir: str = '',
+        large_thumb_dir: str = '',
+        cleanup_categories: bool = False,
+    ):
+        try:
+            data = json.loads(request.body)
+            fname = self._safe_name(data.get('filename') or '')
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        ext = os.path.splitext(fname)[1].lower()
+        if ext not in allowed_exts:
+            return JsonResponse({'error': 'file not found'}, status=404)
+        if ext in VIDEO_EXTS:
+            try:
+                delete_video_asset(directory, fname, thumb_dir, large_thumb_dir)
+            except FileNotFoundError:
+                return JsonResponse({'error': 'file not found'}, status=404)
+        else:
+            try:
+                if thumb_dir or large_thumb_dir:
+                    delete_image_asset(directory, fname, thumb_dir, large_thumb_dir)
+                else:
+                    delete_media_file(directory, fname, allowed_exts)
+            except FileNotFoundError:
+                return JsonResponse({'error': 'file not found'}, status=404)
+        if cleanup_categories:
+            self._delete_category_file(fname)
+        return JsonResponse({'ok': True})
+
+    def _delete_video(self, request):
+        gallery_dir = self._gallery_dir()
+        return self._delete_from_dir(
+            request,
+            gallery_dir,
+            _MEDIA_EXTS,
+            self._video_thumb_dir(gallery_dir),
+            self._video_large_thumb_dir(gallery_dir),
+            cleanup_categories=True,
+        )
+
+    def _delete_archive_video(self, request):
+        archive_dir = self._archive_dir()
+        return self._delete_from_dir(
+            request, archive_dir, _MEDIA_EXTS,
+            self._video_thumb_dir(archive_dir),
+            self._video_large_thumb_dir(archive_dir),
+        )
+
+    def _delete_uploads_image(self, request):
+        return self._delete_from_dir(
+            request,
+            self._uploads_dir(),
+            IMAGE_EXTS,
+            self._uploads_thumb_dir(),
+            self._uploads_large_thumb_dir(),
+        )
+
+    def _upload_uploads(self, request):
+        uploads_dir = self._uploads_dir()
+        if not uploads_dir:
+            return JsonResponse({'error': 'media_dir not configured'}, status=500)
+        files = request.FILES.getlist('images')
+        if not files:
+            return JsonResponse({'error': 'no files uploaded'}, status=400)
+        saved, errors = save_uploaded_reference_images(files, uploads_dir)
+        return JsonResponse({'files': saved, 'errors': errors})
+
+    def _move_file(self, request, src_dir: str, dst_dir: str):
+        try:
+            data = json.loads(request.body)
+            fname = self._safe_name(data.get('filename') or '')
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        ext = os.path.splitext(fname)[1].lower()
+        try:
+            if ext in VIDEO_EXTS:
+                move_video_asset(
+                    src_dir, dst_dir, fname,
+                    self._video_thumb_dir(src_dir), self._video_thumb_dir(dst_dir),
+                    self._video_large_thumb_dir(src_dir), self._video_large_thumb_dir(dst_dir),
+                )
+            else:
+                move_image_asset(
+                    src_dir, dst_dir, fname,
+                    self._video_thumb_dir(src_dir), self._video_thumb_dir(dst_dir),
+                    self._video_large_thumb_dir(src_dir), self._video_large_thumb_dir(dst_dir),
+                )
+        except ValueError:
+            return JsonResponse({'error': 'invalid filename'}, status=400)
+        except FileNotFoundError:
+            return JsonResponse({'error': 'file not found'}, status=404)
+        except FileExistsError:
+            return JsonResponse({'error': 'destination file already exists'}, status=409)
+        except OSError as e:
+            return JsonResponse({'error': str(e)}, status=500)
+        if os.path.abspath(src_dir) == os.path.abspath(self._gallery_dir()):
+            self._delete_category_file(fname)
+        return JsonResponse({'ok': True})
+
+    def _move_to_archive(self, request):
+        return self._move_file(request, self._gallery_dir(), self._archive_dir())
+
+    def _move_to_gallery(self, request):
+        return self._move_file(request, self._archive_dir(), self._gallery_dir())

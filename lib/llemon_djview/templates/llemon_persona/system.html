@@ -1,0 +1,15 @@
+{% extends 'base/base.html' %}
+{% block content %}
+<style>
+  pre { white-space: pre-wrap; background: #f4f4f4; border: 1px solid #ddd; border-radius: 3px; padding: 1em; }
+</style>
+<p><a href="{% url 'llemon_persona:chat' %}?config={{ config_fname|urlencode }}{% if service_name %}&amp;service={{ service_name|urlencode }}{% endif %}{% if provider_name %}&amp;provider={{ provider_name|urlencode }}&amp;model={{ model_name|urlencode }}{% endif %}">Back to chat</a></p>
+{% if error %}
+<div class="error-banner" id="error-banner">{{ error }} <span class="dismiss" onclick="document.getElementById('error-banner').style.display='none'">×</span></div>
+<style>.error-banner{color:#c00;border:1px solid #c00;border-radius:3px;padding:0.4em 0.8em;margin:0.5em 0;display:inline-block}.error-banner .dismiss{cursor:pointer;font-weight:bold;margin-left:0.5em}</style>
+{% elif system_text %}
+<pre>{{ system_text }}</pre>
+{% else %}
+<p>No system prompt.</p>
+{% endif %}
+{% endblock %}

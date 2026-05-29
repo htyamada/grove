@@ -7,16 +7,16 @@ view logic lives in `views.py`; URL routes are in `urls.py`; thumbnail creation
 is in `thumbs.py`; app configuration loading is in `conf.py`; Django app
 metadata is in `apps.py`. The browser UI is a single template at
 `templates/mediaview/browse.html`. Design and behavior notes live in
-`specs/architecture.md`. There is no local test package in this directory;
-integration happens through host Django projects such as `../llime`.
+`../../specs/mediaview-architecture.md`. There is no local test package in this
+directory; integration happens through host Django projects such as `../../llime`.
 
 ## Build, Test, and Development Commands
 
 - `python3 -m py_compile views.py thumbs.py conf.py urls.py apps.py` checks
   local Python syntax without starting Django.
-- From `../llime`, `./start-server` runs the development server for manual
+- From `../../llime`, `./start-server` runs the development server for manual
   browser testing when this app is installed there.
-- From `../llime`, `python3 manage.py check` validates Django settings, URL
+- From `../../llime`, `python3 manage.py check` validates Django settings, URL
   configuration, and app loading.
 - From the repository root, `make` initializes the shared git submodule and
   installs unrelated PHP support files.

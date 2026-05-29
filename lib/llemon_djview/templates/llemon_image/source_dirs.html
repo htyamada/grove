@@ -1,0 +1,219 @@
+{% extends 'base/base.html' %}
+{% block extra_head %}
+<style>
+  .sd-breadcrumb { font-size:0.9em; margin-bottom:0.7em; color:#555; }
+  .sd-breadcrumb a { color:#3a6; text-decoration:none; }
+  .sd-breadcrumb a:hover { text-decoration:underline; }
+  .sd-breadcrumb .sep { margin:0 0.35em; color:#bbb; }
+  .thumb-grid { display:flex; flex-wrap:wrap; gap:0.6em; }
+  .thumb {
+    display:flex; align-items:center; justify-content:center;
+    width:160px; height:160px; background:#111; color:#bbb;
+    text-decoration:none; position:relative; border:1px solid #aaa; box-sizing:border-box;
+  }
+  .thumb img { max-width:100%; max-height:100%; object-fit:contain; display:block; transition:opacity 0.15s; }
+  .thumb:hover img { opacity:0.8; }
+  .thumb-fallback { display:none; height:100%; align-items:center; justify-content:center; font-size:0.8em; }
+  .thumb-label { font-size:0.7em; color:#555; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dir-thumb { background:#1a1a2e; cursor:pointer; flex-direction:column; gap:0.25em; }
+  .dir-thumb:hover { background:#22224a; }
+  .dir-icon { font-size:2.8em; line-height:1; pointer-events:none; }
+  .dir-name { font-size:0.72em; color:#99aacc; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; }
+  .parent-thumb .dir-icon { font-size:2em; color:#888; }
+  #sd-overlay {
+    display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.75); z-index:1000; align-items:center; justify-content:center;
+  }
+  #sd-box {
+    background:#fff; border-radius:4px; padding:1.4em 1.8em;
+    max-width:52em; width:90vw; max-height:85vh; overflow-y:auto; position:relative;
+  }
+  #sd-box .close-btn {
+    position:absolute; top:0.5em; right:0.8em; font-size:1.8em; color:#888;
+    background:none; border:none; cursor:pointer; line-height:1;
+  }
+  #sd-box .close-btn:hover { color:#000; }
+  #sd-thumb-wrap {
+    position:relative; flex-shrink:0; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    width:300px; height:300px; box-sizing:border-box;
+    border:1px solid #ccc; background:#111;
+  }
+  #sd-thumb { max-height:100%; max-width:100%; object-fit:contain; display:block; }
+  #sd-fname { font-size:0.85em; color:#666; font-style:italic; margin-bottom:0.5em; }
+  .sd-detail-actions { display:flex; gap:0.5em; flex-wrap:wrap; margin-top:0.9em; }
+  .sd-detail-actions button, .sd-detail-actions a { padding:0.25em 0.8em; cursor:pointer; font-size:0.9em; }
+  #img-overlay {
+    display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.92); z-index:1100; align-items:center; justify-content:center;
+  }
+  #img-display { max-width:92vw; max-height:85vh; }
+</style>
+{% endblock %}
+{% block content %}
+
+{% if mode == 'list' %}
+
+{% if source_dirs %}
+<p style="color:#666; font-size:0.92em; margin-bottom:0.8em;">Select a source directory to browse:</p>
+<div class="thumb-grid">
+  {% for sd in source_dirs %}
+  <div>
+    <a class="thumb dir-thumb" href="{{ sd.url }}">
+      <span class="dir-icon">&#128193;</span>
+      <span class="dir-name">{{ sd.name }}</span>
+    </a>
+    <div class="thumb-label" title="{{ sd.name }}">{{ sd.name }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p style="color:#888; font-style:italic;">No source directories configured. Add <code>source_dirs</code> to <code>[*.llemon.mediagen]</code> in llemon.conf.</p>
+{% endif %}
+
+{% else %}
+
+<div class="sd-breadcrumb">
+  <a href="{{ source_dirs_url }}">Source Dirs</a>
+  <span class="sep">›</span>
+  <a href="{{ source_dirs_url }}?nick={{ nick|urlencode }}">{{ nick }}</a>
+  {% for crumb in breadcrumb %}
+  <span class="sep">›</span>
+  <a href="{{ crumb.url }}">{{ crumb.name }}</a>
+  {% endfor %}
+</div>
+
+{% if subdirs or images or subdir %}
+<div class="thumb-grid">
+
+  <div>
+    <a class="thumb dir-thumb parent-thumb" href="{{ parent_url }}" title="Go up">
+      <span class="dir-icon">&#8593;</span>
+      <span class="dir-name">.. (up)</span>
+    </a>
+    <div class="thumb-label">..</div>
+  </div>
+
+  {% for sd in subdirs %}
+  <div>
+    <a class="thumb dir-thumb" href="{{ sd.url }}">
+      <span class="dir-icon">&#128193;</span>
+      <span class="dir-name">{{ sd.name }}</span>
+    </a>
+    <div class="thumb-label" title="{{ sd.name }}">{{ sd.name }}</div>
+  </div>
+  {% endfor %}
+
+  {% for item in images %}
+  <div>
+    <a class="thumb" href="javascript:void(0);" onclick="sdShow({{ forloop.counter0 }})">
+      <img src="{{ item.thumb_url }}" alt="{{ item.fname }}" loading="lazy"
+           onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+      <span class="thumb-fallback">No image</span>
+    </a>
+    <div class="thumb-label" title="{{ item.fname }}">{{ item.fname }}</div>
+  </div>
+  {% endfor %}
+
+</div>
+{% else %}
+<p style="color:#888; font-style:italic;">Empty directory.</p>
+{% endif %}
+
+<div id="sd-overlay" onclick="if(event.target===this)sdHide();">
+  <button onclick="sdNext(-1);" style="position:fixed;top:50%;left:0.3em;transform:translateY(-50%);font-size:2.5em;color:#fff;background:none;border:none;cursor:pointer;user-select:none;" aria-label="Previous">&#8249;</button>
+  <button onclick="sdNext(1);" style="position:fixed;top:50%;right:0.3em;transform:translateY(-50%);font-size:2.5em;color:#fff;background:none;border:none;cursor:pointer;user-select:none;" aria-label="Next">&#8250;</button>
+  <div id="sd-box">
+    <button class="close-btn" onclick="sdHide();" aria-label="Close">&times;</button>
+    <div style="display:flex; align-items:flex-start; gap:1.2em;">
+      <div id="sd-thumb-wrap" onclick="sdFullView();" title="Click to view full size">
+        <img id="sd-thumb" src="" alt="">
+      </div>
+      <div style="flex:1; min-width:0; padding-right:2em;">
+        <div id="sd-fname"></div>
+        <div id="sd-path" style="font-size:0.8em; color:#999; margin-bottom:0.5em;"></div>
+        <div class="sd-detail-actions">
+          <button type="button" onclick="sdDownload();">Download</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="img-overlay" onclick="if(event.target===this)imgHide();" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.92); z-index:1100; align-items:center; justify-content:center;">
+  <button onclick="imgHide();" style="position:fixed;top:1em;right:1.2em;font-size:2em;color:#fff;background:none;border:none;cursor:pointer;line-height:1;" aria-label="Close">&times;</button>
+  <button onclick="imgNext(-1);" style="position:fixed;top:50%;left:0.3em;transform:translateY(-50%);font-size:2.5em;color:#fff;background:none;border:none;cursor:pointer;user-select:none;" aria-label="Previous">&#8249;</button>
+  <img id="img-display" style="max-width:92vw; max-height:85vh;" alt="">
+  <button onclick="imgNext(1);" style="position:fixed;top:50%;right:0.3em;transform:translateY(-50%);font-size:2.5em;color:#fff;background:none;border:none;cursor:pointer;user-select:none;" aria-label="Next">&#8250;</button>
+</div>
+
+{{ images|json_script:"sd-items-data" }}
+<script>
+var _sdItems = JSON.parse(document.getElementById('sd-items-data').textContent);
+var _sdIdx = 0;
+var _sdItem = null;
+
+function sdShow(idx) {
+  _sdIdx = (idx + _sdItems.length) % _sdItems.length;
+  _sdItem = _sdItems[_sdIdx];
+  document.getElementById('sd-thumb').src = _sdItem.thumb_url;
+  document.getElementById('sd-thumb').alt = _sdItem.fname;
+  document.getElementById('sd-fname').textContent = _sdItem.fname;
+  document.getElementById('sd-path').textContent = _sdItem.rp;
+  document.getElementById('sd-overlay').style.display = 'flex';
+}
+
+function sdHide() {
+  document.getElementById('sd-overlay').style.display = 'none';
+}
+
+function sdNext(delta) {
+  if (_sdItems.length) sdShow(_sdIdx + delta);
+}
+
+function sdFullView() {
+  if (!_sdItem) return;
+  imgShow(_sdIdx);
+}
+
+function sdDownload() {
+  if (!_sdItem) return;
+  var a = document.createElement('a');
+  a.href = _sdItem.url;
+  a.download = _sdItem.fname;
+  a.click();
+}
+
+var _imgIdx = 0;
+function imgShow(idx) {
+  sdHide();
+  _imgIdx = (idx + _sdItems.length) % _sdItems.length;
+  var img = document.getElementById('img-display');
+  img.src = _sdItems[_imgIdx].url;
+  img.alt = _sdItems[_imgIdx].fname;
+  document.getElementById('img-overlay').style.display = 'flex';
+}
+
+function imgHide() {
+  document.getElementById('img-overlay').style.display = 'none';
+}
+
+function imgNext(delta) { imgShow(_imgIdx + delta); }
+
+document.addEventListener('keydown', function(e) {
+  var sdOpen = document.getElementById('sd-overlay').style.display === 'flex';
+  var imgOpen = document.getElementById('img-overlay').style.display === 'flex';
+  if (e.key === 'Escape') { if (sdOpen) sdHide(); if (imgOpen) imgHide(); }
+  if (sdOpen) {
+    if (e.key === 'ArrowLeft') sdNext(-1);
+    if (e.key === 'ArrowRight') sdNext(1);
+  }
+  if (imgOpen) {
+    if (e.key === 'ArrowLeft') imgNext(-1);
+    if (e.key === 'ArrowRight') imgNext(1);
+  }
+});
+</script>
+
+{% endif %}
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends 'base/base.html' %}
+{% block content %}
+{% if error %}
+<div class="error-banner" id="error-banner">{{ error }} <span class="dismiss" onclick="document.getElementById('error-banner').style.display='none'">×</span></div>
+<style>.error-banner{color:#c00;border:1px solid #c00;border-radius:3px;padding:0.4em 0.8em;margin:0.5em 0;display:inline-block}.error-banner .dismiss{cursor:pointer;font-weight:bold;margin-left:0.5em}</style>
+{% elif provider %}
+{% if models %}
+<ul>
+  {% for model in models %}
+  <li>{{ model }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>No models found.</p>
+{% endif %}
+{% else %}
+{% if providers %}
+<ul>
+  {% for s in providers %}
+  <li><a href="{% url 'llemon_persona:models' %}?provider={{ s|urlencode }}">{{ s }}</a></li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>No providers found.</p>
+{% endif %}
+{% endif %}
+{% endblock %}
