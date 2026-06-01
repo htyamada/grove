@@ -229,7 +229,7 @@ class DjviewMediaSettingsTests(unittest.TestCase):
             from llemon_djview.videogen import LLemonVideoGenViewSet
 
         view = LLemonVideoGenViewSet('llemon_video', 'llemon_video')
-        request = types.SimpleNamespace(FILES=types.SimpleNamespace(getlist=lambda key: []))
+        request = types.SimpleNamespace(FILES=types.SimpleNamespace(getlist=lambda key: []), POST={})
         with mock.patch.object(view, '_gallery_dir', return_value='/tmp/gallery'):
             resp = view._upload(request)
 
@@ -260,6 +260,7 @@ class DjviewMediaSettingsTests(unittest.TestCase):
                 FILES=types.SimpleNamespace(
                     getlist=lambda key: [types.SimpleNamespace(name='photo.png')],
                 ),
+                POST={},
             )
 
             with mock.patch.object(view, '_gallery_dir', return_value=str(gallery)):
@@ -384,6 +385,7 @@ class DjviewMediaSettingsTests(unittest.TestCase):
                 FILES=types.SimpleNamespace(
                     getlist=lambda key: [types.SimpleNamespace(name='reference.jpg')],
                 ),
+                POST={},
             )
 
             with mock.patch.object(view, '_gallery_dir', return_value=str(gallery)):
