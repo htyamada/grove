@@ -52,12 +52,13 @@ namespaces, or database schemas.
 |------|-----------|
 | Gallery (root) | `{LLEMON_GALLERY_DIR}` or `{media_dir}/gallery` |
 | Gallery project | `{gallery_dir}/{project_path}/` |
-| Archive | `{LLEMON_ARCHIVE_DIR}` or `{media_dir}/archive` |
+| Image archive | `{LLEMON_IMAGE_ARCHIVE_DIR}` / `image_archive`, falling back to `{LLEMON_ARCHIVE_DIR}` or `{media_dir}/archive` |
+| Video archive | `{LLEMON_VIDEO_ARCHIVE_DIR}` / `video_archive`, falling back to `{LLEMON_ARCHIVE_DIR}` or `{media_dir}/archive` |
 | Categories DB | Single unified database at `gallery/db/gallery.db` |
 | Notes DB | Shared by image & video at `notes_dir/notes.db` |
 
-Media pages always share the same directories and display identical content.
-The distinction is only in what operations can be performed based on file type.
+Media pages share one browsable gallery. Archives are move destinations, not
+browsable gallery pages; the archive destination is selected from the file type.
 
 ### Supported Media Types
 
@@ -188,7 +189,8 @@ valid only for root gallery files.
 ## Drag-and-Drop File Moving
 
 Files can be dragged between the root gallery and any project, or between
-projects, using HTML5 drag-and-drop.
+projects, using HTML5 drag-and-drop. Files can also be dragged from any gallery
+view onto the Archive tile.
 
 - Every media thumbnail tile has `draggable="true"` and an `ondragstart`
   handler that records the dragged item's index.
@@ -208,6 +210,18 @@ gallery. The move is performed by `move_image_asset()` or `move_video_asset()`
 from `storage.py`, which atomically moves the file and its sidecar, and
 migrates thumbnails from the source thumbnail directories to the destination
 thumbnail directories.
+
+Dropping a file onto the Archive tile sends:
+
+```
+POST /media/gallery/move-to-archive/
+Content-Type: application/json
+
+{"filename": "beach.png", "subdir": "vacation"}
+```
+
+Image files are moved to the configured image archive. Video files are moved to
+the configured video archive.
 
 ---
 
@@ -383,8 +397,9 @@ resolves and validates the project directory before deleting.
 {"filename": "beach.png", "subdir": "vacation"}
 ```
 
-Files archived from a project are moved to the flat root archive directory
-(archive has no project concept). Thumbnails are migrated.
+Files archived from a project are moved to the configured flat archive
+directory for their media type (archive has no project concept). Thumbnails are
+migrated.
 
 ### Moving to Gallery (Unarchive)
 

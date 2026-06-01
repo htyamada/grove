@@ -92,6 +92,35 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         self.assertIsNone(settings['LLEMON_LOG_DIR'])
         self.assertEqual(settings['LLEMON_VIDEOGEN_MEDIA_DIR'], str(Path('~/vid-media').expanduser()))
         self.assertIsNone(settings['LLEMON_VIDEOGEN_LOG_DIR'])
+        self.assertIsNone(settings['LLEMON_IMAGE_ARCHIVE_DIR'])
+        self.assertIsNone(settings['LLEMON_VIDEO_ARCHIVE_DIR'])
+
+    def test_media_settings_returns_type_specific_archive_dirs(self) -> None:
+        djview = self._import_djview()
+        fake_imagegen = types.SimpleNamespace(
+            init=mock.Mock(),
+            get_media_dir=mock.Mock(return_value='~/img-media'),
+            get_log_dir=mock.Mock(return_value=''),
+        )
+        fake_videogen = types.SimpleNamespace(
+            init=mock.Mock(),
+            get_media_dir=mock.Mock(return_value='~/vid-media'),
+            get_log_dir=mock.Mock(return_value=''),
+        )
+        fake_mediagen = types.SimpleNamespace(imagegen=fake_imagegen, videogen=fake_videogen)
+
+        class FakeAppConfig:
+            def get(self, namespace, section, key):
+                return {
+                    ('llemon', 'mediagen', 'image_archive'): '~/archive/images',
+                    ('llemon', 'mediagen', 'video_archive'): '~/archive/videos',
+                }.get((namespace, section, key))
+
+        with mock.patch.dict(sys.modules, {'hty7.llemon.mediagen': fake_mediagen}):
+            settings = djview.media_settings(FakeAppConfig())
+
+        self.assertEqual(settings['LLEMON_IMAGE_ARCHIVE_DIR'], str(Path('~/archive/images').expanduser()))
+        self.assertEqual(settings['LLEMON_VIDEO_ARCHIVE_DIR'], str(Path('~/archive/videos').expanduser()))
 
     def test_media_viewset_combines_image_video_creators_with_shared_pages(self) -> None:
         def fake_reverse(name, args=None, **kwargs):
@@ -112,7 +141,7 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         self.assertEqual(context['title'], 'LLemon Media')
         self.assertEqual(
             [item['name'] for item in context['pages']],
-            ['Image Creator', 'Video Creator', 'Gallery', 'Archive', 'Input files'],
+            ['Image Creator', 'Video Creator', 'Gallery', 'Input files'],
         )
         self.assertFalse(hasattr(view, 'video_gallery'))
         self.assertFalse(hasattr(view, 'video_archive'))
@@ -299,6 +328,8 @@ class DjviewMediaSettingsTests(unittest.TestCase):
             conf.write(
                 '[hty7.llemon.mediagen]\n'
                 'media_dir = "~/overlay/media"\n'
+                'image_archive = "~/archives/images"\n'
+                'video_archive = "~/archives/videos"\n'
                 'input_files = ["Pictures=/srv/pictures"]\n'
             )
             conf.flush()
@@ -315,6 +346,8 @@ class DjviewMediaSettingsTests(unittest.TestCase):
             {
                 'media_dir': str(Path('~/overlay/media').expanduser()),
                 'log_dir': '/base/log',
+                'image_archive': str(Path('~/archives/images').expanduser()),
+                'video_archive': str(Path('~/archives/videos').expanduser()),
                 'input_files': ['Pictures=/srv/pictures'],
             },
         )
@@ -387,6 +420,50 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         self.assertEqual(meta['files'], ['photo.png'])
         self.assertIn('timestamp', meta)
         self.assertEqual(meta['uploaded_at'], meta['timestamp'])
+
+    def test_archive_move_uses_destination_matching_media_type(self) -> None:
+        class FakeJsonResponse:
+            def __init__(self, data, status=200):
+                self.data = data
+                self.status_code = status
+
+        fake_django = self._fake_django_modules()
+        fake_django['django.http'] = types.SimpleNamespace(
+            FileResponse=object,
+            Http404=RuntimeError,
+            JsonResponse=FakeJsonResponse,
+            StreamingHttpResponse=object,
+        )
+        with mock.patch.dict(sys.modules, fake_django):
+            from llemon_djview.imagegen import LLemonImageGenViewSet
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gallery = root / 'gallery'
+            image_archive = root / 'image_archive'
+            video_archive = root / 'video_archive'
+            gallery.mkdir()
+            (gallery / 'photo.png').write_bytes(b'png')
+            (gallery / 'clip.mp4').write_bytes(b'mp4')
+
+            view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
+
+            with mock.patch.object(view, '_gallery_dir', return_value=str(gallery)):
+                with mock.patch.object(view, '_image_archive_dir', return_value=str(image_archive)):
+                    with mock.patch.object(view, '_video_archive_dir', return_value=str(video_archive)):
+                        img_req = types.SimpleNamespace(
+                            body=json.dumps({'filename': 'photo.png'}).encode('utf-8'),
+                        )
+                        vid_req = types.SimpleNamespace(
+                            body=json.dumps({'filename': 'clip.mp4'}).encode('utf-8'),
+                        )
+                        img_resp = view._move_to_archive(img_req)
+                        vid_resp = view._move_to_archive(vid_req)
+
+            self.assertEqual(img_resp.status_code, 200)
+            self.assertEqual(vid_resp.status_code, 200)
+            self.assertTrue((image_archive / 'photo.png').is_file())
+            self.assertTrue((video_archive / 'clip.mp4').is_file())
 
     def test_image_gallery_exposes_upload_url(self) -> None:
         fake_django = self._fake_django_modules(render=lambda request, template, context: context)

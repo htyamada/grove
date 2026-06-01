@@ -24,6 +24,9 @@
   .dir-thumb { background:#1a1a2e; cursor:pointer; flex-direction:column; gap:0.25em; }
   .dir-thumb:hover { background:#22224a; }
   .dir-thumb.drag-over { outline:3px dashed #6af; background:#1a2e4a; }
+  .archive-thumb { background:#2d2418; }
+  .archive-thumb:hover { background:#3a2d1c; }
+  .archive-thumb.drag-over { outline:3px dashed #fa6; background:#4a321a; }
   .dir-icon { font-size:2.8em; line-height:1; pointer-events:none; }
   .dir-name { font-size:0.72em; color:#99aacc; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; pointer-events:none; }
   .parent-thumb .dir-icon { font-size:2em; color:#888; }
@@ -162,7 +165,7 @@ function doUploadFiles(input) {
 {% endif %}
 {% endif %}
 
-{% if parent_url or subdirs or images %}
+{% if parent_url or subdirs or images or move_to_archive_url %}
 <div class="thumb-grid">
 
   {% if parent_url %}
@@ -190,6 +193,19 @@ function doUploadFiles(input) {
     <div class="thumb-label" title="{{ sd.name }}">{{ sd.name }}</div>
   </div>
   {% endfor %}
+
+  {% if move_to_archive_url %}
+  <div>
+    <a class="thumb dir-thumb archive-thumb" href="javascript:void(0);"
+       ondragover="event.preventDefault(); this.classList.add('drag-over');"
+       ondragleave="this.classList.remove('drag-over');"
+       ondrop="archiveDrop(event, this);">
+      <span class="dir-icon">&#128451;</span>
+      <span class="dir-name">Archive</span>
+    </a>
+    <div class="thumb-label">Archive</div>
+  </div>
+  {% endif %}
 
   {% for item in images %}
   <div>
@@ -336,6 +352,25 @@ async function dirDrop(event, el, targetSubdir) {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
       body: JSON.stringify({filename: item.fname, from_subdir: item.subdir || '', to_subdir: targetSubdir}),
+    });
+    var data = await resp.json();
+    if (data.error) { alert('Move failed: ' + data.error); return; }
+  } catch (e) {
+    alert('Move failed: ' + e.message); return;
+  }
+  window.location.reload();
+}
+
+async function archiveDrop(event, el) {
+  event.preventDefault();
+  el.classList.remove('drag-over');
+  if (_dragIdx < 0 || _dragIdx >= _items.length || !_moveToArchiveUrl) return;
+  var item = _items[_dragIdx];
+  try {
+    var resp = await fetch(_moveToArchiveUrl, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+      body: JSON.stringify({filename: item.fname, subdir: item.subdir || ''}),
     });
     var data = await resp.json();
     if (data.error) { alert('Move failed: ' + data.error); return; }

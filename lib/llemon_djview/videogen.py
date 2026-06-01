@@ -1035,11 +1035,22 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         self._write_upload_sidecars(upload_dir, saved)
         return JsonResponse({'files': saved, 'errors': errors})
 
-    def _move_file(self, request, src_dir: str, dst_dir: str, allow_from_subdir: bool = False):
+    def _move_file(
+        self,
+        request,
+        src_dir: str,
+        dst_dir: str,
+        allow_from_subdir: bool = False,
+        data: dict | None = None,
+    ):
+        if data is None:
+            try:
+                data = json.loads(request.body)
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                return JsonResponse({'error': str(e)}, status=400)
         try:
-            data = json.loads(request.body)
             fname = self._safe_name(data.get('filename') or '')
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+        except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
         if allow_from_subdir:
             raw_subdir = str(data.get('subdir') or '').strip()
@@ -1079,8 +1090,18 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         return JsonResponse({'ok': True})
 
     def _move_to_archive(self, request):
-        return self._move_file(request, self._gallery_dir(), self._archive_dir(),
-                               allow_from_subdir=True)
+        try:
+            data = json.loads(request.body)
+            fname = self._safe_name(data.get('filename') or '')
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        return self._move_file(
+            request,
+            self._gallery_dir(),
+            self._archive_dir_for_filename(fname),
+            allow_from_subdir=True,
+            data=data,
+        )
 
     def _move_to_gallery(self, request):
         return self._move_file(request, self._archive_dir(), self._gallery_dir())

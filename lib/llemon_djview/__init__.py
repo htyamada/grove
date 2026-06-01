@@ -60,6 +60,14 @@ def media_settings(appconfig) -> dict[str, str | None]:
     from hty7.llemon.mediagen import imagegen as _imagegen
     from hty7.llemon.mediagen import videogen as _videogen
 
+    def _optional_path(key: str) -> str | None:
+        if not hasattr(appconfig, 'get'):
+            return None
+        value = appconfig.get('llemon', 'mediagen', key)
+        if not value:
+            return None
+        return os.path.expanduser(str(value))
+
     _imagegen.init(appconfig)
     _videogen.init(appconfig)
     return {
@@ -72,6 +80,8 @@ def media_settings(appconfig) -> dict[str, str | None]:
         'LLEMON_VIDEOGEN_LOG_DIR': (
             os.path.expanduser(_videogen.get_log_dir()) or None
         ),
+        'LLEMON_IMAGE_ARCHIVE_DIR': _optional_path('image_archive'),
+        'LLEMON_VIDEO_ARCHIVE_DIR': _optional_path('video_archive'),
     }
 
 

@@ -35,7 +35,6 @@ class _MediaNavMixin:
             ('image_creator', 'Image Creator'),
             ('video_creator', 'Video Creator'),
             ('gallery', 'Gallery'),
-            ('archive', 'Archive'),
             ('source_dirs', 'Input files'),
         ]
         nav = []

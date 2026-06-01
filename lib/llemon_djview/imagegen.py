@@ -169,9 +169,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             {'name': 'Image creator', 'url': self._u('image_creator')},
             {'name': 'Gallery', 'url': self._u('gallery')},
         ]
-        archive_url = _safe_url('archive')
-        if archive_url:
-            pages.append({'name': 'Archive', 'url': archive_url})
         return render(request, self._t('index.html'), self._ctx(
             'LLemon Image', pages, {'pages': pages},
         ))
@@ -403,9 +400,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         video_creator_url = _safe_url('video_creator')
         if video_creator_url:
             nav.append({'name': 'Video Creator', 'url': _creator_url('video_creator')})
-        archive_url = _safe_url('archive')
-        if archive_url:
-            nav.append({'name': 'Archive', 'url': archive_url})
         source_dirs_url = _safe_url('source_dirs')
         if source_dirs_url:
             if subdir:
@@ -1283,11 +1277,13 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         src_thumb_dir: str, dst_thumb_dir: str,
         src_large_thumb_dir: str = '', dst_large_thumb_dir: str = '',
         allow_from_subdir: bool = False,
+        data: dict | None = None,
     ):
-        try:
-            data = json.loads(request.body)
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+        if data is None:
+            try:
+                data = json.loads(request.body)
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
 
         try:
             filename = self._safe_filename(str(data.get('filename') or ''))
@@ -1335,13 +1331,22 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         return JsonResponse({'moved': dst_fname})
 
     def _move_to_archive(self, request):
+        try:
+            data = json.loads(request.body)
+            filename = self._safe_filename(str(data.get('filename') or ''))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        dst_dir = self._archive_dir_for_filename(filename)
         return self._do_move_image(
             request,
-            src_dir=self._gallery_dir(), dst_dir=self._archive_dir(),
-            src_thumb_dir=self._thumb_dir(), dst_thumb_dir=self._archive_thumb_dir(),
+            src_dir=self._gallery_dir(), dst_dir=dst_dir,
+            src_thumb_dir=self._thumb_dir(), dst_thumb_dir=self._archive_thumb_dir(dst_dir),
             src_large_thumb_dir=self._large_thumb_dir(),
-            dst_large_thumb_dir=self._archive_large_thumb_dir(),
+            dst_large_thumb_dir=self._archive_large_thumb_dir(dst_dir),
             allow_from_subdir=True,
+            data=data,
         )
 
     def _move_to_gallery(self, request):

@@ -7,7 +7,7 @@ from django.conf import settings  # type: ignore[import-untyped]
 from django.urls import reverse  # type: ignore[import-untyped]
 
 from .media_utils import ensure_media_thumbnail
-from .storage import CategoryStore
+from .storage import CategoryStore, VIDEO_EXTS
 
 _RESERVED_GALLERY_DIRS: frozenset[str] = frozenset({'thumbnails', 'thumbnails_large', 'db'})
 
@@ -60,6 +60,23 @@ class MediaGenViewSetBase:
             return archive_dir
         media_dir = self._media_dir()
         return os.path.join(media_dir, 'archive') if media_dir else ''
+
+    def _image_archive_dir(self) -> str:
+        """Get the image archive directory, falling back to the legacy archive."""
+        archive_dir = getattr(settings, 'LLEMON_IMAGE_ARCHIVE_DIR', '')
+        return archive_dir or self._archive_dir()
+
+    def _video_archive_dir(self) -> str:
+        """Get the video archive directory, falling back to the legacy archive."""
+        archive_dir = getattr(settings, 'LLEMON_VIDEO_ARCHIVE_DIR', '')
+        return archive_dir or self._archive_dir()
+
+    def _archive_dir_for_filename(self, filename: str) -> str:
+        """Return the configured archive destination for this media filename."""
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in VIDEO_EXTS:
+            return self._video_archive_dir()
+        return self._image_archive_dir()
 
     def _gallery_category_db(self) -> CategoryStore:
         """Open the gallery category database."""
@@ -123,14 +140,16 @@ class MediaGenViewSetBase:
             media_dir = self._gallery_dir()
         return os.path.join(media_dir, 'thumbnails_large') if media_dir else ''
 
-    def _archive_thumb_dir(self) -> str:
+    def _archive_thumb_dir(self, archive_dir: str = '') -> str:
         """Get archive thumbnail directory."""
-        archive_dir = self._archive_dir()
+        if not archive_dir:
+            archive_dir = self._archive_dir()
         return os.path.join(archive_dir, 'thumbnails') if archive_dir else ''
 
-    def _archive_large_thumb_dir(self) -> str:
+    def _archive_large_thumb_dir(self, archive_dir: str = '') -> str:
         """Get archive large thumbnail directory."""
-        archive_dir = self._archive_dir()
+        if not archive_dir:
+            archive_dir = self._archive_dir()
         return os.path.join(archive_dir, 'thumbnails_large') if archive_dir else ''
 
     def _ensure_thumbnail(self, fname: str, size: int = 160) -> bool:
