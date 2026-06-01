@@ -1,4 +1,6 @@
 import json
+import errno
+import os
 import sys
 import tempfile
 import types
@@ -464,6 +466,38 @@ class DjviewMediaSettingsTests(unittest.TestCase):
             self.assertEqual(vid_resp.status_code, 200)
             self.assertTrue((image_archive / 'photo.png').is_file())
             self.assertTrue((video_archive / 'clip.mp4').is_file())
+
+    def test_image_asset_move_handles_cross_device_archives(self) -> None:
+        from llemon_djview.storage import move_image_asset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / 'gallery'
+            dst = root / 'archive'
+            src_thumb = src / 'thumbnails'
+            dst_thumb = dst / 'thumbnails'
+            src.mkdir()
+            src_thumb.mkdir()
+            (src / 'photo.png').write_bytes(b'png')
+            (src / 'photo.json').write_text('{"source":"test"}', encoding='utf-8')
+            (src_thumb / 'photo.png').write_bytes(b'thumb')
+
+            def fake_replace(src_path, dst_path):
+                raise OSError(errno.EXDEV, 'Invalid cross-device link', src_path)
+
+            with mock.patch('os.replace', side_effect=fake_replace):
+                moved = move_image_asset(
+                    str(src), str(dst), 'photo.png',
+                    str(src_thumb), str(dst_thumb),
+                )
+
+            self.assertEqual(moved, 'photo.png')
+            self.assertTrue((dst / 'photo.png').is_file())
+            self.assertTrue((dst / 'photo.json').is_file())
+            self.assertTrue((dst_thumb / 'photo.png').is_file())
+            self.assertFalse((src / 'photo.png').exists())
+            self.assertFalse((src / 'photo.json').exists())
+            self.assertFalse((src_thumb / 'photo.png').exists())
 
     def test_image_gallery_exposes_upload_url(self) -> None:
         fake_django = self._fake_django_modules(render=lambda request, template, context: context)

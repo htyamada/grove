@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import mimetypes
 import os
@@ -26,6 +27,16 @@ def safe_name(value: str) -> str:
     if not name or name.startswith('.'):
         raise ValueError('invalid filename')
     return name
+
+
+def _replace_or_move(src: str, dst: str) -> None:
+    """Replace on one filesystem; fall back to copy/unlink across filesystems."""
+    try:
+        os.replace(src, dst)
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+        shutil.move(src, dst)
 
 
 def file_as_data_url(file_path: str, filename: str | None = None) -> str:
@@ -353,7 +364,7 @@ def move_image_asset(
             sidecar_bare = candidate
             break
 
-    os.replace(src_path, os.path.join(dst_dir, dst_fname))
+    _replace_or_move(src_path, os.path.join(dst_dir, dst_fname))
 
     if found_sidecar_path and sidecar_bare is not None:
         siblings = [
@@ -366,7 +377,7 @@ def move_image_asset(
             try:
                 if os.path.exists(dst_sidecar):
                     os.unlink(dst_sidecar)
-                os.replace(found_sidecar_path, dst_sidecar)
+                _replace_or_move(found_sidecar_path, dst_sidecar)
             except OSError:
                 pass
 
@@ -380,7 +391,7 @@ def move_image_asset(
         if os.path.isfile(src_thumb_path):
             try:
                 os.makedirs(dst_thumb, exist_ok=True)
-                os.replace(src_thumb_path, os.path.join(dst_thumb, dst_fname))
+                _replace_or_move(src_thumb_path, os.path.join(dst_thumb, dst_fname))
             except OSError:
                 pass
     return dst_fname
