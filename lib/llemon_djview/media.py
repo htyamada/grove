@@ -3,20 +3,26 @@
 The media app keeps separate image and video creator endpoints, but shares the
 gallery and archive pages.
 
-Source directories are read-only image libraries that supplement the gallery
-image picker. Configure via source_dirs / source_thumb_dir in llemon.conf under
-[*.llemon.mediagen]; see sourcedirs.py for details.
+Source directories are read-only image libraries that can be browsed and copied
+into the gallery. Configure via source_dirs / source_thumb_dir in llemon.conf
+under [*.llemon.mediagen]; see sourcedirs.py for details.
 """
 
+import json
 import mimetypes
 import os
+import shutil
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
-from django.http import FileResponse, Http404  # type: ignore[import-untyped]
+from django.http import FileResponse, Http404, JsonResponse  # type: ignore[import-untyped]
 from django.shortcuts import render  # type: ignore[import-untyped]
+from django.views.decorators.csrf import csrf_exempt  # type: ignore[import-untyped]
+from django.views.decorators.http import require_POST  # type: ignore[import-untyped]
 
 from .imagegen import LLemonImageGenViewSet
 from .media_utils import is_image
+from .storage import write_operation_sidecar
 from .videogen import LLemonVideoGenViewSet
 
 
@@ -54,12 +60,6 @@ class _MediaNavMixin:
 class _MediaImageViewSet(_MediaNavMixin, LLemonImageGenViewSet):
     """Image-generation view set with combined media navigation."""
 
-    def _source_dirs_json_url(self) -> str:
-        try:
-            return self._u('source_dirs_json')
-        except Exception:
-            return ''
-
 
 class _MediaVideoViewSet(_MediaNavMixin, LLemonVideoGenViewSet):
     """Video-generation view set with combined media navigation."""
@@ -80,19 +80,6 @@ class _MediaVideoViewSet(_MediaNavMixin, LLemonVideoGenViewSet):
 
     def _nav(self, active=None):
         return self._media_nav()
-
-    def _source_dirs_json_url(self) -> str:
-        try:
-            return self._u('source_dirs_json')
-        except Exception:
-            return ''
-
-    def _local_media_path_for_url(self, request, path, netloc):
-        result = super()._local_media_path_for_url(request, path, netloc)
-        if result is not None:
-            return result
-        from .sourcedirs import resolve_source_dir_path
-        return resolve_source_dir_path(path, self._ns)
 
 
 class LLemonMediaViewSet:
@@ -138,6 +125,9 @@ class LLemonMediaViewSet:
         self.source_dirs_file = self._source_dirs_file
         self.source_dirs_thumb = self._source_dirs_thumb
         self.source_dirs_json = self._source_dirs_json
+        self.source_dirs_copy_to_gallery = csrf_exempt(
+            require_POST(self._source_dirs_copy_to_gallery)
+        )
 
         self.generate = self._image.generate
         self.video_generate = self._video.generate
@@ -345,6 +335,11 @@ class LLemonMediaViewSet:
                     'thumb_url': thumb_url,
                 })
 
+        try:
+            copy_url = self._u('source_dirs_copy_to_gallery')
+        except Exception:
+            copy_url = ''
+
         return render(request, self._t('source_dirs.html'), self._ctx(
             f'Source: {nick}', [], {
                 'mode': 'browse',
@@ -355,6 +350,7 @@ class LLemonMediaViewSet:
                 'subdirs': subdirs_list,
                 'images': images,
                 'source_dirs_url': base_url,
+                'copy_to_gallery_url': copy_url,
             },
         ))
 
@@ -428,6 +424,91 @@ class LLemonMediaViewSet:
         return FileResponse(open(thumb_path, 'rb'), content_type=mime or 'image/jpeg')
 
 
+    def _source_dirs_copy_to_gallery(self, request):
+        """Copy a source directory image into the gallery (read-only source is never modified)."""
+        from .sourcedirs import (
+            get_source_dirs, validate_nickname, validate_subdir,
+            safe_source_filename, get_real_path,
+        )
+        from .storage import sidecar_path
+
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+
+        nick = (data.get('nick') or '').strip()
+        rp = (data.get('rp') or '').strip()
+
+        source_dirs_cfg = get_source_dirs()
+        try:
+            sd_entry = validate_nickname(nick, source_dirs_cfg)
+        except ValueError:
+            return JsonResponse({'error': 'invalid source directory'}, status=400)
+
+        if '/' in rp:
+            subdir_part, fname = rp.rsplit('/', 1)
+        else:
+            subdir_part, fname = '', rp
+
+        try:
+            subdir_part = validate_subdir(subdir_part)
+            fname = safe_source_filename(fname)
+            file_path = get_real_path(sd_entry['path'], subdir_part, fname)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+
+        if not os.path.isfile(file_path):
+            return JsonResponse({'error': 'file not found'}, status=404)
+
+        gallery_dir = self._image._gallery_dir()
+        if not gallery_dir:
+            return JsonResponse({'error': 'gallery not configured'}, status=500)
+
+        dest_fname = fname
+        dest_path = os.path.join(gallery_dir, dest_fname)
+        if os.path.exists(dest_path):
+            stem, ext = os.path.splitext(dest_fname)
+            i = 1
+            while os.path.exists(dest_path):
+                dest_fname = f'{stem}_{i}{ext}'
+                dest_path = os.path.join(gallery_dir, dest_fname)
+                i += 1
+
+        try:
+            os.makedirs(gallery_dir, exist_ok=True)
+            shutil.copy2(file_path, dest_path)
+        except OSError as e:
+            return JsonResponse({'error': f'could not copy file: {e}'}, status=500)
+
+        # Load source sidecar as the starting point, then add copy provenance.
+        payload: dict = {}
+        src_sidecar = sidecar_path(file_path)
+        if os.path.isfile(src_sidecar):
+            try:
+                with open(src_sidecar, encoding='utf-8') as f:
+                    payload = json.load(f)
+                if not isinstance(payload, dict):
+                    payload = {}
+            except Exception:
+                payload = {}
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        payload.update({
+            'source': 'source_dir',
+            'source_nick': nick,
+            'source_rp': rp,
+            'timestamp': timestamp,
+            'files': [dest_fname],
+        })
+        try:
+            write_operation_sidecar(dest_path, payload)
+        except OSError:
+            pass
+
+        return JsonResponse({'file': dest_fname})
+
+
 def bind_llemon_views(namespace: dict, persona_viewset, media_viewset) -> None:
     """Bind persona and media viewset callables into a thin Django views module."""
     namespace.update({
@@ -479,6 +560,7 @@ def bind_llemon_views(namespace: dict, persona_viewset, media_viewset) -> None:
         'source_dirs_file': media_viewset.source_dirs_file,
         'source_dirs_thumb': media_viewset.source_dirs_thumb,
         'source_dirs_json': media_viewset.source_dirs_json,
+        'source_dirs_copy_to_gallery': media_viewset.source_dirs_copy_to_gallery,
     })
 
 
@@ -548,5 +630,10 @@ def media_urlpatterns(views_module):
             'media/source-dirs/thumb/<str:nick>/<path:rp>',
             views_module.source_dirs_thumb,
             name='source_dirs_thumb',
+        ),
+        path(
+            'media/source-dirs/copy-to-gallery/',
+            views_module.source_dirs_copy_to_gallery,
+            name='source_dirs_copy_to_gallery',
         ),
     ]

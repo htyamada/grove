@@ -189,7 +189,9 @@ This decouples state from global variables.
 The image picker modal displays a grid of 120×120 mini-thumbnails from the
 gallery, rendered using `appendImageThumb()` (matching the video creator
 pattern). Selected images show a blue border. Clicking an image or the Close
-button dismisses the modal and updates the source-image label.
+button dismisses the modal and updates the source-image label. Input files
+must come from the gallery; to use a source dir image, copy it to the gallery
+first via the Source Dirs browser.
 
 ### Form Submission Routing
 

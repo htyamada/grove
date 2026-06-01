@@ -210,7 +210,6 @@ The Image Creator view passes the following to `image.html`:
 | `available_tags` | `get_tags()` — list of currently visible/editable tag label strings |
 | `active_notes_slot` | `get_notes_slot()` — slot identifier or `''` |
 | `picker_images` | List of `{fname, url, thumb_url}` dicts for the gallery image picker |
-| `source_dirs_json_url` | URL of the source dirs JSON API, or `''` if not available. When non-empty, a Source Dirs tab is shown in the image picker alongside Gallery. See [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md) §Source Directories. |
 
 ### 5.2 `model_note` Endpoint
 

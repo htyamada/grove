@@ -27,8 +27,9 @@ The video-generation Django UI is integrated with the unified media gallery syst
 | Categories | `gallery/db/gallery.db` | Yes |
 | Notes DB | `notes_dir/notes.db` | Yes (with image generation) |
 
-Video Creator uses image files from gallery, archive, or source dirs as start
-images, end images, and reference images for video models.
+Video Creator uses image files from the gallery or archive as start images,
+end images, and reference images for video models. Source dir images must be
+copied to the gallery first via the Source Dirs browser.
 
 ## Routes
 

@@ -124,9 +124,9 @@ Video generation accepts image files as reference images:
 
 | Reference Type | Source |
 |----------------|--------|
-| Start image | gallery, archive, or source dirs (image files only) |
-| End image | gallery, archive, or source dirs (image files only) |
-| Reference images (ordered) | gallery, archive, or source dirs (image files only) |
+| Start image | gallery or archive (image files only) |
+| End image | gallery or archive (image files only) |
+| Reference images (ordered) | gallery or archive (image files only) |
 
 All media URLs are converted to `data:` URLs server-side before sending to the provider API.
 
@@ -138,9 +138,10 @@ Notes and tags are model-scoped (provider:model) and are independent of whether 
 
 ## Source Directories
 
-Source directories are read-only image libraries that supplement the gallery
-picker. They are configured in `llemon.conf` and are never modified by
-the application.
+Source directories are read-only image libraries that can be browsed and
+copied into the gallery. They are configured in `llemon.conf` and are
+never modified by the application. Input files for generation, upscaling,
+and editing must come from the gallery.
 
 ### Configuration
 
@@ -156,9 +157,9 @@ source_thumb_dir = "~/var/hty7/llemon/mediagen/source_thumbs"  # optional
 ```
 
 Each `source_dirs` entry is a `"nickname=path"` string. The nickname is the
-user-visible label shown in the browser and picker; the path is the directory
-on disk. Tilde in paths is expanded. `source_thumb_dir` is optional; if
-absent, thumbnails default to `{media_dir}/source_thumbs/`.
+user-visible label shown in the browser; the path is the directory on disk.
+Tilde in paths is expanded. `source_thumb_dir` is optional; if absent,
+thumbnails default to `{media_dir}/source_thumbs/`.
 
 Both keys are parsed by `mediagen.common.init_common_config()` and exposed
 via `mediagen.imagegen.get_source_dirs()` and
@@ -173,20 +174,32 @@ The source dirs browser (`/media/source-dirs/`) has two modes:
   - Breadcrumb navigation
   - Parent directory entry
   - Child subdirectory entries (click to navigate in)
-  - Image file thumbnails (click to view, download)
+  - Image file thumbnails (click to view, download, copy to gallery)
 
-### Image Picker Integration
+### Copy to Gallery
 
-Source dir images are available directly in the image picker used by the
-Image Creator (source image selection) and the Video Creator (start, end,
-and reference image selection). The picker shows a **Gallery** tab (default)
-and a **Source Dirs** tab. The Source Dirs tab is only shown when
-`source_dirs_json_url` is present in the template context, which requires
-`source_dirs` to be configured.
+Clicking **Copy to Gallery** in the image detail overlay copies the source
+file into the gallery directory without modifying the original. The copied
+filename matches the source; if a file with that name already exists in the
+gallery, a numeric suffix is appended (`stem_1.ext`, `stem_2.ext`, …).
 
-Selecting a directory navigates into it; selecting an image closes the picker
-and sets the chosen image. Navigation fetches directory listings via the JSON
-API endpoint (`/media/source-dirs/json/`) rather than a full page reload.
+If the source file has a sidecar (a `{stem}.json` file alongside it), the
+sidecar is loaded as the starting point for the gallery sidecar. The
+following fields are then added or overwritten to record copy provenance:
+
+| Field | Value |
+|-------|-------|
+| `source` | `"source_dir"` |
+| `source_nick` | nickname of the source directory |
+| `source_rp` | relative path within the source directory |
+| `timestamp` | ISO-8601 UTC timestamp of the copy |
+| `files` | `[dest_fname]` — gallery filename of the copy |
+
+**POST** `/media/source-dirs/copy-to-gallery/`
+
+Request body: `{"nick": "<nickname>", "rp": "<relative-path>"}`
+
+Response: `{"file": "<gallery-filename>"}` on success, or `{"error": "..."}` on failure.
 
 ### Thumbnail Cache
 
@@ -196,16 +209,8 @@ Thumbnails (160 px) are cached outside the source directories at:
 {source_thumb_dir}/{nickname}/{subdir…}/thumbnails/{filename}
 ```
 
-Thumbnails are created on first access (browse or picker navigation).
+Thumbnails are created on first access (browse navigation).
 Originals are never written to or modified.
-
-### Reference Image Integration
-
-Source dir image URLs (`/media/source-dirs/file/<nick>/<relpath>`) are
-recognised by `_MediaVideoViewSet._local_media_path_for_url()` and converted
-to `data:` URLs before being sent to provider APIs, making them usable as
-start/end/reference images in video generation without any additional upload
-step. This uses Django's `resolve()` to identify the URL by name and namespace.
 
 ### Security
 
@@ -226,9 +231,10 @@ Host front ends should expose a single Media app route group:
 /llemon/media/gallery/                               → gallery display (both media types)
 /llemon/media/archive/                               → archive display (both media types)
 /llemon/media/source-dirs/                           → source dir browser
-/llemon/media/source-dirs/json/                      → source dir JSON API (picker navigation)
+/llemon/media/source-dirs/json/                      → source dir JSON API (browser navigation)
 /llemon/media/source-dirs/file/<nick>/<path>         → serve source dir image (read-only)
 /llemon/media/source-dirs/thumb/<nick>/<path>        → serve source dir thumbnail (cached)
+/llemon/media/source-dirs/copy-to-gallery/           → POST: copy source dir image to gallery
 ```
 
 Gallery, archive, and file operations use the canonical Media URL
