@@ -1,14 +1,14 @@
 """llemon_djview.sourcedirs -- source directory browser utilities.
 
-Source directories are configured in llemon.conf under [*.llemon.mediagen]:
+Source directories are configured in llemon_djview.conf under [*.llemon.mediagen]:
 
-    source_dirs = [
+    input_files = [
         "Photos=~/Pictures",
         "Stock=/data/stock-images",
     ]
     source_thumb_dir = "~/var/hty7/llemon/mediagen/source_thumbs"  # optional
 
-Each source_dirs entry is "nickname=path". Thumbnails are cached in
+Each input_files entry is "nickname=path". Thumbnails are cached in
 source_thumb_dir (or {media_dir}/source_thumbs/). Originals are never modified.
 """
 

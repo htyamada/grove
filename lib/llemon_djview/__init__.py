@@ -16,6 +16,7 @@ from django.views.decorators.csrf import csrf_exempt  # type: ignore[import-unty
 from django.views.decorators.http import require_POST  # type: ignore[import-untyped]
 
 from hty7.config import AppConfig as _AppConfig
+from hty7.config import _parser as _config_parser
 
 from hty7.llemon.persona import attach_context_estimate, summarize_history_estimates
 from hty7.llemon.persona.config import Config, ConfigError
@@ -36,6 +37,7 @@ _md_doc = _markdown.Markdown(extensions=['fenced_code', 'tables'])
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONF = '~/etc/llemon.conf'
+_DEFAULT_DJVIEW_CONF = '~/etc/llemon_djview.conf'
 
 
 def _render_md(text):
@@ -71,6 +73,10 @@ def media_settings(appconfig) -> dict[str, str | None]:
 def django_settings(variant: str, conf_path: str = _DEFAULT_CONF) -> dict[str, str | None]:
     """Load installed LLemon config for variant and return Django settings values."""
     appconfig = _AppConfig(os.path.expanduser(conf_path), variant)
+    djview_conf = os.path.expanduser(_DEFAULT_DJVIEW_CONF)
+    if os.path.exists(djview_conf):
+        overlay = _config_parser.parse(djview_conf)
+        appconfig._data = _config_parser.merge(appconfig._data, overlay)
     discover.init(appconfig)
     return media_settings(appconfig)
 

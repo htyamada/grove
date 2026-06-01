@@ -112,7 +112,7 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         self.assertEqual(context['title'], 'LLemon Media')
         self.assertEqual(
             [item['name'] for item in context['pages']],
-            ['Image Creator', 'Video Creator', 'Gallery', 'Archive', 'Source Dirs'],
+            ['Image Creator', 'Video Creator', 'Gallery', 'Archive', 'Input files'],
         )
         self.assertFalse(hasattr(view, 'video_gallery'))
         self.assertFalse(hasattr(view, 'video_archive'))
@@ -198,13 +198,14 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         fake_appconfig = object()
 
         with mock.patch.object(djview, '_AppConfig', return_value=fake_appconfig) as appconfig_cls:
-            with mock.patch.object(djview.discover, 'init') as discover_init:
-                with mock.patch.object(
-                    djview,
-                    'media_settings',
-                    return_value={'LLEMON_IMAGEGEN_MEDIA_DIR': '/tmp/media'},
-                ) as media_settings:
-                    settings = djview.django_settings('qat')
+            with mock.patch('os.path.exists', return_value=False):
+                with mock.patch.object(djview.discover, 'init') as discover_init:
+                    with mock.patch.object(
+                        djview,
+                        'media_settings',
+                        return_value={'LLEMON_IMAGEGEN_MEDIA_DIR': '/tmp/media'},
+                    ) as media_settings:
+                        settings = djview.django_settings('qat')
 
         appconfig_cls.assert_called_once_with(str(Path('~/etc/llemon.conf').expanduser()), 'qat')
         discover_init.assert_called_once_with(fake_appconfig)
