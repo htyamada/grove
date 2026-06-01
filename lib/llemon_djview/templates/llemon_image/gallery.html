@@ -1,6 +1,11 @@
 {% extends 'base/base.html' %}
+{% block heading %}{{ site_name }}: {{ title }}{% if subdir %} / {{ subdir }}{% endif %}{% endblock %}
 {% block extra_head %}
 <style>
+  .gallery-breadcrumb { font-size:0.9em; margin-bottom:0.7em; color:#555; }
+  .gallery-breadcrumb a { color:#3a6; text-decoration:none; }
+  .gallery-breadcrumb a:hover { text-decoration:underline; }
+  .gallery-breadcrumb .sep { margin:0 0.35em; color:#bbb; }
   .gallery-controls { display:flex; align-items:center; gap:0.6em; margin-bottom:0.6em; }
   .gallery-controls label { font-weight:bold; }
   .gallery-controls form { display:inline-flex; align-items:center; gap:0.35em; margin:0; }
@@ -16,6 +21,13 @@
   }
   .thumb-fallback { display:none; height:100%; align-items:center; justify-content:center; font-size:0.8em; }
   .thumb-label { font-size:0.7em; color:#555; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dir-thumb { background:#1a1a2e; cursor:pointer; flex-direction:column; gap:0.25em; }
+  .dir-thumb:hover { background:#22224a; }
+  .dir-thumb.drag-over { outline:3px dashed #6af; background:#1a2e4a; }
+  .dir-icon { font-size:2.8em; line-height:1; pointer-events:none; }
+  .dir-name { font-size:0.72em; color:#99aacc; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; pointer-events:none; }
+  .parent-thumb .dir-icon { font-size:2em; color:#888; }
+  .thumb[draggable="true"] { cursor:grab; }
   #desc-overlay {
     display:none; position:fixed; top:0; left:0; right:0; bottom:0;
     background:rgba(0,0,0,0.75); z-index:1000; align-items:center; justify-content:center;
@@ -69,6 +81,17 @@
 </style>
 {% endblock %}
 {% block content %}
+
+{% if subdir %}
+<div class="gallery-breadcrumb">
+  <a href="{{ gallery_url }}">Gallery</a>
+  {% for crumb in breadcrumb %}
+  <span class="sep">›</span>
+  <a href="{{ crumb.url }}">{{ crumb.name }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
 {% if category_enabled %}
 <div class="gallery-controls">
   <label for="gallery-category-select">Category:</label>
@@ -94,12 +117,24 @@
 </div>
 {% endif %}
 
-{% if upload_url %}
-<div style="margin-bottom:0.8em;">
-  <button onclick="document.getElementById('upload-file-input').click();" style="padding:0.25em 0.8em; cursor:pointer;">Upload</button>
+{% if upload_url or gallery_create_project_url %}
+<div style="margin-bottom:0.8em; display:flex; align-items:center; gap:0.6em; flex-wrap:wrap;">
+  {% if upload_url %}
+  <button onclick="document.getElementById('upload-file-input').click();" style="padding:0.25em 0.8em; cursor:pointer;">Upload{% if subdir %} to {{ subdir }}{% endif %}</button>
   <input type="file" id="upload-file-input" accept="image/*" multiple style="display:none;" onchange="doUploadFiles(this);">
-  <span id="upload-file-status" style="margin-left:0.7em; font-style:italic; color:#555; font-size:0.9em;"></span>
+  <span id="upload-file-status" style="font-style:italic; color:#555; font-size:0.9em;"></span>
+  {% endif %}
+  {% if gallery_create_project_url %}
+  <button type="button" id="new-project-btn" onclick="createProjectShow();" style="padding:0.25em 0.8em; cursor:pointer;">New Project</button>
+  <span id="create-project-form" style="display:none; align-items:center; gap:0.4em;">
+    <input type="text" id="create-project-name" placeholder="Project name" size="18" style="font-size:0.95em;" onkeydown="if(event.key==='Enter')createProject();">
+    <button type="button" onclick="createProject();" style="padding:0.2em 0.7em;">Create</button>
+    <button type="button" onclick="createProjectHide();" style="padding:0.2em 0.7em;">Cancel</button>
+  </span>
+  <span id="create-project-status" style="font-size:0.85em; color:#555; font-style:italic;"></span>
+  {% endif %}
 </div>
+{% if upload_url %}
 <script>
 function doUploadFiles(input) {
   if (!input.files.length) return;
@@ -107,6 +142,7 @@ function doUploadFiles(input) {
   status.textContent = 'Uploading…';
   var fd = new FormData();
   for (var i = 0; i < input.files.length; i++) fd.append('images', input.files[i]);
+  if (_currentSubdir) fd.append('subdir', _currentSubdir);
   input.value = '';
   fetch('{{ upload_url|escapejs }}', {
     method: 'POST',
@@ -124,18 +160,51 @@ function doUploadFiles(input) {
 }
 </script>
 {% endif %}
+{% endif %}
 
-{% if images %}
+{% if parent_url or subdirs or images %}
 <div class="thumb-grid">
+
+  {% if parent_url %}
+  <div>
+    <a class="thumb dir-thumb parent-thumb" href="{{ parent_url }}"
+       ondragover="event.preventDefault(); this.classList.add('drag-over');"
+       ondragleave="this.classList.remove('drag-over');"
+       ondrop="dirDrop(event, this, '{{ parent_subdir|escapejs }}');">
+      <span class="dir-icon">&#8593;</span>
+      <span class="dir-name">.. (up)</span>
+    </a>
+    <div class="thumb-label">..</div>
+  </div>
+  {% endif %}
+
+  {% for sd in subdirs %}
+  <div>
+    <a class="thumb dir-thumb" href="{{ sd.url }}"
+       ondragover="event.preventDefault(); this.classList.add('drag-over');"
+       ondragleave="this.classList.remove('drag-over');"
+       ondrop="dirDrop(event, this, '{{ sd.subdir|escapejs }}');">
+      <span class="dir-icon">&#128193;</span>
+      <span class="dir-name">{{ sd.name }}</span>
+    </a>
+    <div class="thumb-label" title="{{ sd.name }}">{{ sd.name }}</div>
+  </div>
+  {% endfor %}
+
   {% for item in images %}
   <div>
-    <a class="thumb {% if item.type == 'video' %}video{% endif %}" href="javascript:void(0);" onclick="descShow({{ forloop.counter0 }})">
+    <a class="thumb {% if item.type == 'video' %}video{% endif %}"
+       href="javascript:void(0);"
+       draggable="true"
+       ondragstart="thumbDragStart(event, {{ forloop.counter0 }});"
+       onclick="descShow({{ forloop.counter0 }})">
       <img src="{{ item.thumb_url }}" alt="{{ item.fname }}" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
       <span class="thumb-fallback">{% if item.type == 'video' %}No thumb{% else %}No image{% endif %}</span>
     </a>
     <div class="thumb-label" title="{{ item.fname }}">{{ item.fname }}</div>
   </div>
   {% endfor %}
+
 </div>
 {% else %}
 <p>{% if images is not None %}No media yet.{% else %}No media.{% endif %}{% if generate_url %} <a href="{{ generate_url }}">Generate one.</a>{% endif %}</p>
@@ -153,6 +222,7 @@ function doUploadFiles(input) {
       </div>
       <div style="flex:1; min-width:0; padding-right:2em;">
         <div id="desc-fname"></div>
+        <div id="desc-project" style="font-size:0.8em; color:#3a6; margin-bottom:0.3em;"></div>
         <div id="desc-noprops" style="display:none;">No description available.</div>
         <table id="desc-table" style="display:none;"><tbody id="desc-tbody"></tbody></table>
         <div class="detail-actions">
@@ -216,6 +286,11 @@ var _deleteUrl = '{{ delete_image_url|escapejs }}';
 var _moveToArchiveUrl = '{{ move_to_archive_url|default:""|escapejs }}';
 var _moveToGalleryUrl = '{{ move_to_gallery_url|default:""|escapejs }}';
 var _activeCategory = '{{ active_category|default:""|escapejs }}';
+var _galleryProjectMoveUrl = '{{ gallery_project_move_url|default:""|escapejs }}';
+var _galleryCreateProjectUrl = '{{ gallery_create_project_url|default:""|escapejs }}';
+var _currentSubdir = '{{ subdir|escapejs }}';
+var _galleryUrl = '{{ gallery_url|escapejs }}';
+var _dragIdx = -1;
 
 var _categorySelect = document.getElementById('gallery-category-select');
 if (_categorySelect) {
@@ -241,6 +316,64 @@ function deleteSelectedCategory() {
   if (!confirm('Delete category "' + select.options[select.selectedIndex].text + '"?')) return false;
   document.getElementById('delete-category-id').value = select.value;
   return true;
+}
+
+function thumbDragStart(event, idx) {
+  _dragIdx = idx;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', String(idx));
+}
+
+async function dirDrop(event, el, targetSubdir) {
+  event.preventDefault();
+  el.classList.remove('drag-over');
+  if (_dragIdx < 0 || _dragIdx >= _items.length) return;
+  var item = _items[_dragIdx];
+  if ((item.subdir || '') === targetSubdir) return;
+  if (!_galleryProjectMoveUrl) return;
+  try {
+    var resp = await fetch(_galleryProjectMoveUrl, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+      body: JSON.stringify({filename: item.fname, from_subdir: item.subdir || '', to_subdir: targetSubdir}),
+    });
+    var data = await resp.json();
+    if (data.error) { alert('Move failed: ' + data.error); return; }
+  } catch (e) {
+    alert('Move failed: ' + e.message); return;
+  }
+  window.location.reload();
+}
+
+function createProjectShow() {
+  document.getElementById('new-project-btn').style.display = 'none';
+  document.getElementById('create-project-form').style.display = 'inline-flex';
+  document.getElementById('create-project-name').value = '';
+  document.getElementById('create-project-name').focus();
+  document.getElementById('create-project-status').textContent = '';
+}
+
+function createProjectHide() {
+  document.getElementById('create-project-form').style.display = 'none';
+  document.getElementById('new-project-btn').style.display = '';
+}
+
+async function createProject() {
+  var name = document.getElementById('create-project-name').value.trim();
+  if (!name || !_galleryCreateProjectUrl) return;
+  var status = document.getElementById('create-project-status');
+  try {
+    var resp = await fetch(_galleryCreateProjectUrl, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+      body: JSON.stringify({subdir: _currentSubdir, name: name}),
+    });
+    var data = await resp.json();
+    if (data.error) { status.textContent = 'Error: ' + data.error; return; }
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message; return;
+  }
+  window.location.reload();
 }
 
 function row(label, value) {
@@ -276,6 +409,7 @@ function videoGenOpen(item) {
   var sc = item.sidecar || {};
   var url = new URL(_videoGenUrl, window.location.href);
   url.searchParams.set('fname', item.fname);
+  if (item.subdir) url.searchParams.set('output_subdir', item.subdir);
   if (sc.provider) url.searchParams.set('provider', sc.provider);
   if (sc.api) url.searchParams.set('api', sc.api);
   var modelParam = modelParamFromMeta(sc);
@@ -324,6 +458,8 @@ function descShow(idx) {
   }
 
   document.getElementById('desc-fname').textContent = _item.fname;
+  var projEl = document.getElementById('desc-project');
+  if (projEl) projEl.textContent = _item.subdir ? 'Project: ' + _item.subdir : '';
   var tbody = document.getElementById('desc-tbody');
   tbody.innerHTML = '';
   var sc = _item.sidecar;
@@ -464,7 +600,7 @@ async function descDelete() {
     var resp = await fetch(_deleteUrl, {
       method:  'POST',
       headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
-      body:    JSON.stringify({filename: fname}),
+      body:    JSON.stringify({filename: fname, subdir: _item.subdir || ''}),
     });
     var data = await resp.json();
     if (data.error) { alert('Delete failed: ' + data.error); return; }
@@ -481,7 +617,7 @@ async function doMove(url, destName) {
     var resp = await fetch(url, {
       method:  'POST',
       headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
-      body:    JSON.stringify({filename: _item.fname}),
+      body:    JSON.stringify({filename: _item.fname, subdir: _item.subdir || ''}),
     });
     var data = await resp.json();
     if (data.error) { alert('Move failed: ' + data.error); return; }
@@ -503,6 +639,7 @@ function genOpen(idx) {
 
   var url  = new URL(_genUrl, window.location.href);
   url.searchParams.set('fname', item.fname);
+  if (item.subdir) url.searchParams.set('output_subdir', item.subdir);
   if (sc) {
     if (sc.provider)                  url.searchParams.set('provider',          sc.provider);
     if (sc.prompt)                    url.searchParams.set('prompt',            sc.prompt);

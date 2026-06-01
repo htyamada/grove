@@ -74,7 +74,7 @@
 {% else %}
 
 <div class="sd-breadcrumb">
-  <a href="{{ source_dirs_url }}">Source Dirs</a>
+  <a href="{{ source_dirs_url }}">Input files</a>
   <span class="sep">›</span>
   <a href="{{ source_dirs_url }}?nick={{ nick|urlencode }}">{{ nick }}</a>
   {% for crumb in breadcrumb %}
@@ -158,7 +158,7 @@ var _sdItem = null;
 function sdShow(idx) {
   _sdIdx = (idx + _sdItems.length) % _sdItems.length;
   _sdItem = _sdItems[_sdIdx];
-  document.getElementById('sd-thumb').src = _sdItem.thumb_url;
+  document.getElementById('sd-thumb').src = _sdItem.large_thumb_url || _sdItem.thumb_url;
   document.getElementById('sd-thumb').alt = _sdItem.fname;
   document.getElementById('sd-fname').textContent = _sdItem.fname;
   document.getElementById('sd-path').textContent = _sdItem.rp;

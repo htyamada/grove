@@ -9,6 +9,8 @@ from django.urls import reverse  # type: ignore[import-untyped]
 from .media_utils import ensure_media_thumbnail
 from .storage import CategoryStore
 
+_RESERVED_GALLERY_DIRS: frozenset[str] = frozenset({'thumbnails', 'thumbnails_large', 'db'})
+
 
 class MediaGenViewSetBase:
     """Base class for media generation view sets (image and video)."""
@@ -83,6 +85,37 @@ class MediaGenViewSetBase:
         if not media_dir:
             media_dir = self._gallery_dir()
         return os.path.join(media_dir, 'thumbnails') if media_dir else ''
+
+    @staticmethod
+    def _safe_subdir(raw: str) -> str:
+        """Validate and normalise a gallery project subdir path. Returns '' for root."""
+        if not raw:
+            return ''
+        parts = raw.replace('\\', '/').split('/')
+        clean = []
+        for part in parts:
+            if not part or part == '.':
+                continue
+            if part == '..':
+                raise ValueError('path traversal not allowed')
+            clean.append(part)
+        return '/'.join(clean)
+
+    def _validated_project_dir(self, gallery_dir: str, subdir: str) -> 'str | None':
+        """Return the resolved absolute path for a gallery project subdir, or None if invalid."""
+        if not subdir or not gallery_dir:
+            return None
+        for part in subdir.split('/'):
+            if part in _RESERVED_GALLERY_DIRS:
+                return None
+        project_dir = os.path.normpath(os.path.join(gallery_dir, *subdir.split('/')))
+        gallery_real = os.path.realpath(gallery_dir)
+        project_real = os.path.realpath(project_dir)
+        if not project_real.startswith(gallery_real + os.sep):
+            return None
+        if not os.path.isdir(project_dir):
+            return None
+        return project_dir
 
     def _large_thumb_dir(self, media_dir: str = '') -> str:
         """Get large thumbnail directory for a media directory."""

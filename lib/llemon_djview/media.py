@@ -35,7 +35,7 @@ class _MediaNavMixin:
             ('video_creator', 'Video Creator'),
             ('gallery', 'Gallery'),
             ('archive', 'Archive'),
-            ('source_dirs', 'Source Dirs'),
+            ('source_dirs', 'Input files'),
         ]
         nav = []
         for route_name, label in items:
@@ -120,10 +120,16 @@ class LLemonMediaViewSet:
 
         self.gallery = self._image.gallery
         self.archive = self._image.archive
+        self.gallery_project_file        = self._image.gallery_project_file
+        self.gallery_project_thumb       = self._image.gallery_project_thumb
+        self.gallery_project_large_thumb = self._image.gallery_project_large_thumb
+        self.gallery_create_project      = self._image.gallery_create_project
+        self.gallery_project_move        = self._image.gallery_project_move
 
         self.source_dirs = self._source_dirs
         self.source_dirs_file = self._source_dirs_file
         self.source_dirs_thumb = self._source_dirs_thumb
+        self.source_dirs_large_thumb = self._source_dirs_large_thumb
         self.source_dirs_json = self._source_dirs_json
         self.source_dirs_copy_to_gallery = csrf_exempt(
             require_POST(self._source_dirs_copy_to_gallery)
@@ -246,7 +252,7 @@ class LLemonMediaViewSet:
     def _source_dirs(self, request):
         from .sourcedirs import (
             get_source_dirs, validate_nickname, validate_subdir,
-            get_real_path, ensure_source_thumbnail,
+            get_real_path, ensure_source_thumbnail, ensure_source_large_thumbnail,
         )
 
         source_dirs_cfg = get_source_dirs()
@@ -326,13 +332,20 @@ class LLemonMediaViewSet:
                     thumb_url = self._u('source_dirs_thumb', nick, rp)
                 except Exception:
                     continue
+                large_thumb_url = ''
                 if thumb_base:
                     ensure_source_thumbnail(current_dir, thumb_base, nick, subdir, entry)
+                    if ensure_source_large_thumbnail(current_dir, thumb_base, nick, subdir, entry):
+                        try:
+                            large_thumb_url = self._u('source_dirs_large_thumb', nick, rp)
+                        except Exception:
+                            pass
                 images.append({
                     'fname': entry,
                     'rp': rp,
                     'url': file_url,
                     'thumb_url': thumb_url,
+                    'large_thumb_url': large_thumb_url,
                 })
 
         try:
@@ -423,6 +436,45 @@ class LLemonMediaViewSet:
         mime, _ = mimetypes.guess_type(thumb_path)
         return FileResponse(open(thumb_path, 'rb'), content_type=mime or 'image/jpeg')
 
+    def _source_dirs_large_thumb(self, request, nick: str, rp: str):
+        from .sourcedirs import (
+            get_source_dirs, validate_nickname, validate_subdir,
+            safe_source_filename, get_real_path, ensure_source_large_thumbnail,
+            source_large_thumb_dir,
+        )
+
+        source_dirs_cfg = get_source_dirs()
+        try:
+            sd_entry = validate_nickname(nick, source_dirs_cfg)
+        except ValueError:
+            raise Http404
+
+        if '/' in rp:
+            subdir_part, fname = rp.rsplit('/', 1)
+        else:
+            subdir_part, fname = '', rp
+
+        try:
+            subdir_part = validate_subdir(subdir_part)
+            fname = safe_source_filename(fname)
+            current_dir = get_real_path(sd_entry['path'], subdir_part)
+        except ValueError:
+            raise Http404
+
+        thumb_base = self._source_thumb_base()
+        if not thumb_base:
+            raise Http404
+
+        if not ensure_source_large_thumbnail(current_dir, thumb_base, nick, subdir_part, fname):
+            raise Http404
+
+        t_dir = source_large_thumb_dir(thumb_base, nick, subdir_part)
+        thumb_path = os.path.join(t_dir, fname)
+        if not os.path.isfile(thumb_path):
+            raise Http404
+
+        mime, _ = mimetypes.guess_type(thumb_path)
+        return FileResponse(open(thumb_path, 'rb'), content_type=mime or 'image/jpeg')
 
     def _source_dirs_copy_to_gallery(self, request):
         """Copy a source directory image into the gallery (read-only source is never modified)."""
@@ -556,9 +608,16 @@ def bind_llemon_views(namespace: dict, persona_viewset, media_viewset) -> None:
         'video_model_note': media_viewset.video_model_note,
         'video_models_json': media_viewset.video_models_json,
 
+        'gallery_project_file':        media_viewset.gallery_project_file,
+        'gallery_project_thumb':       media_viewset.gallery_project_thumb,
+        'gallery_project_large_thumb': media_viewset.gallery_project_large_thumb,
+        'gallery_create_project':      media_viewset.gallery_create_project,
+        'gallery_project_move':        media_viewset.gallery_project_move,
+
         'source_dirs': media_viewset.source_dirs,
         'source_dirs_file': media_viewset.source_dirs_file,
         'source_dirs_thumb': media_viewset.source_dirs_thumb,
+        'source_dirs_large_thumb': media_viewset.source_dirs_large_thumb,
         'source_dirs_json': media_viewset.source_dirs_json,
         'source_dirs_copy_to_gallery': media_viewset.source_dirs_copy_to_gallery,
     })
@@ -619,6 +678,24 @@ def media_urlpatterns(views_module):
         path('media/video/model-note/', views_module.video_model_note, name='video_model_note'),
         path('media/video/models-json/', views_module.video_models_json, name='video_models_json'),
 
+        path(
+            'media/gallery/project-file/<path:subpath>',
+            views_module.gallery_project_file,
+            name='gallery_project_file',
+        ),
+        path(
+            'media/gallery/project-thumb/<path:subpath>',
+            views_module.gallery_project_thumb,
+            name='gallery_project_thumb',
+        ),
+        path(
+            'media/gallery/project-thumb-large/<path:subpath>',
+            views_module.gallery_project_large_thumb,
+            name='gallery_project_large_thumb',
+        ),
+        path('media/gallery/create-project/', views_module.gallery_create_project, name='gallery_create_project'),
+        path('media/gallery/project-move/', views_module.gallery_project_move, name='gallery_project_move'),
+
         path('media/source-dirs/', views_module.source_dirs, name='source_dirs'),
         path('media/source-dirs/json/', views_module.source_dirs_json, name='source_dirs_json'),
         path(
@@ -630,6 +707,11 @@ def media_urlpatterns(views_module):
             'media/source-dirs/thumb/<str:nick>/<path:rp>',
             views_module.source_dirs_thumb,
             name='source_dirs_thumb',
+        ),
+        path(
+            'media/source-dirs/thumb-large/<str:nick>/<path:rp>',
+            views_module.source_dirs_large_thumb,
+            name='source_dirs_large_thumb',
         ),
         path(
             'media/source-dirs/copy-to-gallery/',

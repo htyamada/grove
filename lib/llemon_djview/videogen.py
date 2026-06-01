@@ -7,7 +7,7 @@ import mimetypes
 import os
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlencode, urlsplit
 
 from django.conf import settings  # type: ignore[import-untyped]
 from django.http import FileResponse, Http404, JsonResponse  # type: ignore[import-untyped]
@@ -48,7 +48,7 @@ from .storage import (
     write_video_sidecar,
 )
 from .media_utils import ensure_media_thumbnail, is_video
-from .base_viewset import MediaGenViewSetBase
+from .base_viewset import MediaGenViewSetBase, _RESERVED_GALLERY_DIRS
 from hty7.llemon.mediagen.videogen.venice import (
     VIDEO_MODEL_TYPE_SUFFIXES as VENICE_VIDEO_MODEL_TYPE_SUFFIXES,
     video_model_allows_reference_images as venice_model_allows_reference_images,
@@ -162,8 +162,33 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                                 status=502)
         model_ids = [opt['id'] for opt in model_options]
         notes_load_errors = get_notes_load_errors()
+
+        output_subdir_raw = request.GET.get('output_subdir', '').strip()
+        try:
+            output_subdir = self._safe_subdir(output_subdir_raw)
+        except ValueError:
+            output_subdir = ''
+        if output_subdir:
+            gallery_dir_c = self._gallery_dir()
+            if not gallery_dir_c or not self._validated_project_dir(gallery_dir_c, output_subdir):
+                output_subdir = ''
+        if output_subdir:
+            video_file_url = self._u('gallery_project_file', f'{output_subdir}/PLACEHOLDER')
+            video_large_thumbnail_url = self._u('gallery_project_large_thumb', f'{output_subdir}/PLACEHOLDER')
+            creator_self_url = self._u('video_creator') + '?' + urlencode({'output_subdir': output_subdir})
+            gallery_back_url = self._u(self.route_gallery) + '?' + urlencode({'subdir': output_subdir})
+            nav = self._nav_prefix + [
+                {'name': 'Video creator', 'url': creator_self_url},
+                {'name': 'Gallery', 'url': gallery_back_url},
+                {'name': 'Archive', 'url': self._u(self.route_archive)},
+            ]
+        else:
+            video_file_url = self._u(self.route_video_file, 'PLACEHOLDER')
+            video_large_thumbnail_url = self._u(self.route_video_large_thumbnail, 'PLACEHOLDER')
+            nav = self._nav('creator')
+
         return render(request, self._t('video.html'), self._ctx(
-            'LLemon Video Creator', self._nav('creator'), {
+            'LLemon Video Creator', nav, {
                 'providers':        PROVIDERS,
                 'provider':         provider,
                 'api':              api,
@@ -179,12 +204,13 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                 'reverse_tags':     [] if notes_load_errors else get_reverse_tags(),
                 'notes_load_errors': notes_load_errors,
                 'active_notes_slot': get_notes_slot(),
+                'output_subdir':    output_subdir,
                 'generate_url':     self._u('video_generate'),
                 'model_note_url':   self._u('video_model_note'),
                 'models_json_url':  self._u('video_models_json'),
-                'video_file_url':              self._u(self.route_video_file, 'PLACEHOLDER'),
-                'video_large_thumbnail_url':   self._u(self.route_video_large_thumbnail, 'PLACEHOLDER'),
-                'gallery_images':   self._gallery_picker_items(),
+                'video_file_url':              video_file_url,
+                'video_large_thumbnail_url':   video_large_thumbnail_url,
+                'gallery_images':   self._gallery_picker_items(output_subdir),
                 'source_dirs_json_url': self._source_dirs_json_url(),
             },
         ))
@@ -352,11 +378,31 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
     def _source_dirs_json_url(self) -> str:
         return ''
 
-    def _gallery_picker_items(self) -> list[dict[str, str]]:
+    def _gallery_picker_items(self, output_subdir: str = '') -> list[dict[str, str]]:
         gallery_dir = self._gallery_dir()
         if not gallery_dir or not os.path.isdir(gallery_dir):
             return []
         result = []
+        if output_subdir:
+            project_dir = self._validated_project_dir(gallery_dir, output_subdir)
+            if project_dir and os.path.isdir(project_dir):
+                for fname in sorted(os.listdir(project_dir), reverse=True):
+                    ext = os.path.splitext(fname)[1].lower()
+                    if ext not in IMAGE_EXTS or not os.path.isfile(os.path.join(project_dir, fname)):
+                        continue
+                    rp = f'{output_subdir}/{fname}'
+                    try:
+                        url = self._u('gallery_project_file', rp)
+                        thumb_url = self._u('gallery_project_thumb', rp)
+                        large_thumb_url = self._u('gallery_project_large_thumb', rp)
+                    except Exception:
+                        continue
+                    result.append({
+                        'fname': fname,
+                        'url': url,
+                        'thumb_url': thumb_url,
+                        'large_thumb_url': large_thumb_url,
+                    })
         for fname in sorted(os.listdir(gallery_dir), reverse=True):
             ext = os.path.splitext(fname)[1].lower()
             path = os.path.join(gallery_dir, fname)
@@ -452,6 +498,17 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         gallery_dir = self._gallery_dir()
         if not gallery_dir:
             return JsonResponse({'error': 'video output directory is not configured'}, status=500)
+        output_subdir_raw = str(data.get('output_subdir') or '').strip()
+        try:
+            output_subdir = self._safe_subdir(output_subdir_raw)
+        except ValueError:
+            return JsonResponse({'error': 'invalid output_subdir'}, status=400)
+        if output_subdir:
+            save_dir = self._validated_project_dir(gallery_dir, output_subdir)
+            if not save_dir:
+                return JsonResponse({'error': 'invalid output_subdir'}, status=400)
+        else:
+            save_dir = gallery_dir
         duration = data.get('duration') or default_duration(provider, api)
         if provider == 'openrouter':
             try:
@@ -627,7 +684,7 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         videos = result.get('videos') or []
         if not videos:
             return JsonResponse({'error': 'generation returned no videos'}, status=502)
-        saved = save_generated_videos(videos, gallery_dir)
+        saved = save_generated_videos(videos, save_dir)
         actual_model = result.get('model') or model
         meta = {
             'provider': provider,
@@ -645,13 +702,19 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             meta['request_id'] = result['id']
         if result.get('job_id'):
             meta['job_id'] = result['job_id']
-        write_video_sidecar(gallery_dir, saved[0], meta)
+        write_video_sidecar(save_dir, saved[0], meta)
+        if output_subdir:
+            file_url = self._u('gallery_project_file', f'{output_subdir}/{saved[0]}')
+            gallery_url_result = self._u(self.route_gallery) + '?' + urlencode({'subdir': output_subdir})
+        else:
+            file_url = self._u(self.route_video_file, saved[0])
+            gallery_url_result = self._u(self.route_gallery)
         return JsonResponse({
             'ok': True,
             'files': saved,
             'file': saved[0],
-            'url': self._u(self.route_video_file, saved[0]),
-            'gallery_url': self._u(self.route_gallery),
+            'url': file_url,
+            'gallery_url': gallery_url_result,
             'meta': meta,
             'summary': self._summary_from_video_metadata(meta, saved[0]),
         })
@@ -752,6 +815,27 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                 continue
             if path == expected_path:
                 return os.path.join(directory, fname), fname
+
+        # Check for project gallery file URL
+        try:
+            from django.urls import resolve, Resolver404
+            match = resolve(path)
+            if match.url_name == 'gallery_project_file' and match.namespace == self._ns:
+                subpath = match.kwargs.get('subpath', '')
+                if '/' in subpath:
+                    subdir_part, fname_part = subpath.rsplit('/', 1)
+                    try:
+                        clean_subdir = self._safe_subdir(subdir_part)
+                        clean_fname = self._safe_name(fname_part)
+                    except ValueError:
+                        return None
+                    project_dir = self._validated_project_dir(self._gallery_dir(), clean_subdir)
+                    if project_dir:
+                        file_path = os.path.join(project_dir, clean_fname)
+                        if os.path.isfile(file_path):
+                            return file_path, clean_fname
+        except Exception:
+            pass
         return None
 
     def _file_response(self, directory: str, filename: str, allowed_exts: set[str]):
@@ -836,12 +920,26 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         thumb_dir: str = '',
         large_thumb_dir: str = '',
         cleanup_categories: bool = False,
+        allow_subdir: bool = False,
     ):
         try:
             data = json.loads(request.body)
             fname = self._safe_name(data.get('filename') or '')
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
             return JsonResponse({'error': str(e)}, status=400)
+        if allow_subdir:
+            raw_subdir = str(data.get('subdir') or '').strip()
+            if raw_subdir:
+                try:
+                    subdir = self._safe_subdir(raw_subdir)
+                except ValueError:
+                    return JsonResponse({'error': 'invalid subdir'}, status=400)
+                project_dir = self._validated_project_dir(directory, subdir)
+                if not project_dir:
+                    return JsonResponse({'error': 'invalid subdir'}, status=400)
+                directory = project_dir
+                thumb_dir = self._video_thumb_dir(project_dir)
+                large_thumb_dir = self._video_large_thumb_dir(project_dir)
         ext = os.path.splitext(fname)[1].lower()
         if ext not in allowed_exts:
             return JsonResponse({'error': 'file not found'}, status=404)
@@ -871,6 +969,7 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             self._video_thumb_dir(gallery_dir),
             self._video_large_thumb_dir(gallery_dir),
             cleanup_categories=True,
+            allow_subdir=True,
         )
 
     def _delete_archive_video(self, request):
@@ -899,19 +998,41 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         gallery_dir = self._gallery_dir()
         if not gallery_dir:
             return JsonResponse({'error': 'media_dir not configured'}, status=500)
+        subdir_raw = request.POST.get('subdir', '').strip()
+        if subdir_raw:
+            try:
+                subdir = self._safe_subdir(subdir_raw)
+            except ValueError:
+                return JsonResponse({'error': 'invalid subdir'}, status=400)
+            upload_dir = self._validated_project_dir(gallery_dir, subdir)
+            if not upload_dir:
+                return JsonResponse({'error': 'invalid subdir'}, status=400)
+        else:
+            upload_dir = gallery_dir
         files = request.FILES.getlist('images')
         if not files:
             return JsonResponse({'error': 'no files uploaded'}, status=400)
-        saved, errors = save_uploaded_image_files(files, gallery_dir)
-        self._write_upload_sidecars(gallery_dir, saved)
+        saved, errors = save_uploaded_image_files(files, upload_dir)
+        self._write_upload_sidecars(upload_dir, saved)
         return JsonResponse({'files': saved, 'errors': errors})
 
-    def _move_file(self, request, src_dir: str, dst_dir: str):
+    def _move_file(self, request, src_dir: str, dst_dir: str, allow_from_subdir: bool = False):
         try:
             data = json.loads(request.body)
             fname = self._safe_name(data.get('filename') or '')
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
             return JsonResponse({'error': str(e)}, status=400)
+        if allow_from_subdir:
+            raw_subdir = str(data.get('subdir') or '').strip()
+            if raw_subdir:
+                try:
+                    subdir = self._safe_subdir(raw_subdir)
+                except ValueError:
+                    return JsonResponse({'error': 'invalid subdir'}, status=400)
+                project_dir = self._validated_project_dir(src_dir, subdir)
+                if not project_dir:
+                    return JsonResponse({'error': 'invalid subdir'}, status=400)
+                src_dir = project_dir
         ext = os.path.splitext(fname)[1].lower()
         try:
             if ext in VIDEO_EXTS:
@@ -939,7 +1060,8 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         return JsonResponse({'ok': True})
 
     def _move_to_archive(self, request):
-        return self._move_file(request, self._gallery_dir(), self._archive_dir())
+        return self._move_file(request, self._gallery_dir(), self._archive_dir(),
+                               allow_from_subdir=True)
 
     def _move_to_gallery(self, request):
         return self._move_file(request, self._archive_dir(), self._gallery_dir())

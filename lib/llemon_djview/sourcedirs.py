@@ -101,6 +101,15 @@ def source_thumb_dir(thumb_base: str, nickname: str, subdir: str) -> str:
     return os.path.join(*parts)
 
 
+def source_large_thumb_dir(thumb_base: str, nickname: str, subdir: str) -> str:
+    """Return the large thumbnail cache directory for nickname + subdir."""
+    parts: list[str] = [thumb_base, nickname]
+    if subdir:
+        parts.extend(subdir.split('/'))
+    parts.append('thumbnails_large')
+    return os.path.join(*parts)
+
+
 def ensure_source_thumbnail(
     current_dir: str,
     thumb_base: str,
@@ -111,6 +120,19 @@ def ensure_source_thumbnail(
 ) -> bool:
     """Ensure a 160-px thumbnail exists for a source dir image. Returns True if available."""
     t_dir = source_thumb_dir(thumb_base, nickname, subdir)
+    return ensure_thumbnail(current_dir, t_dir, fname, size)
+
+
+def ensure_source_large_thumbnail(
+    current_dir: str,
+    thumb_base: str,
+    nickname: str,
+    subdir: str,
+    fname: str,
+    size: int = 600,
+) -> bool:
+    """Ensure a 600-px large thumbnail exists for a source dir image. Returns True if available."""
+    t_dir = source_large_thumb_dir(thumb_base, nickname, subdir)
     return ensure_thumbnail(current_dir, t_dir, fname, size)
 
 

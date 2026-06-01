@@ -12,6 +12,7 @@ import queue
 import re
 import threading
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 from typing import Any
 
 from django.conf import settings  # type: ignore[import-untyped]
@@ -59,8 +60,8 @@ from .storage import (
     video_thumb_name,
     write_operation_sidecar,
 )
-from .media_utils import is_video
-from .base_viewset import MediaGenViewSetBase
+from .media_utils import ensure_media_thumbnail, is_video
+from .base_viewset import MediaGenViewSetBase, _RESERVED_GALLERY_DIRS
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         self.edit_archive_image  = csrf_exempt(require_POST(self._edit_archive_image))
         self.move_to_archive     = csrf_exempt(require_POST(self._move_to_archive))
         self.move_to_gallery     = csrf_exempt(require_POST(self._move_to_gallery))
+        self.gallery_project_file       = self._gallery_project_file
+        self.gallery_project_thumb      = self._gallery_project_thumb
+        self.gallery_project_large_thumb = self._gallery_project_large_thumb
+        self.gallery_create_project     = csrf_exempt(require_POST(self._gallery_create_project))
+        self.gallery_project_move       = csrf_exempt(require_POST(self._gallery_project_move))
 
     def _media_dir(self):
         return getattr(settings, 'LLEMON_IMAGEGEN_MEDIA_DIR', '')
@@ -203,18 +209,40 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             provider, [opt['id'] for opt in model_options],
         )
 
-        nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
-               {'name': 'Gallery', 'url': self._u('gallery')}]
-        try:
-            nav.append({'name': 'Archive', 'url': self._u('archive')})
-        except Exception:
-            pass
         notes_load_errors = get_notes_load_errors()
         def _safe_url(name: str) -> str | None:
             try:
                 return self._u(name)
             except Exception:
                 return None
+
+        output_subdir_raw = request.GET.get('output_subdir', '').strip()
+        try:
+            output_subdir = self._safe_subdir(output_subdir_raw)
+        except ValueError:
+            output_subdir = ''
+        if output_subdir:
+            gallery_dir_c = self._gallery_dir()
+            if not gallery_dir_c or not self._validated_project_dir(gallery_dir_c, output_subdir):
+                output_subdir = ''
+        if output_subdir:
+            image_file_url = self._u('gallery_project_file', f'{output_subdir}/PLACEHOLDER')
+            large_thumbnail_file_url = self._u('gallery_project_large_thumb', f'{output_subdir}/PLACEHOLDER')
+            creator_self_url = self._u('image_creator') + '?' + urlencode({'output_subdir': output_subdir})
+            gallery_back_url = self._u('gallery') + '?' + urlencode({'subdir': output_subdir})
+        else:
+            image_file_url = self._u('image_file', 'PLACEHOLDER')
+            large_thumbnail_file_url = self._u('large_thumbnail', 'PLACEHOLDER')
+            creator_self_url = self._u('image_creator')
+            gallery_back_url = self._u('gallery')
+
+        nav = [{'name': 'Image creator', 'url': creator_self_url},
+               {'name': 'Gallery', 'url': gallery_back_url}]
+        try:
+            nav.append({'name': 'Archive', 'url': self._u('archive')})
+        except Exception:
+            pass
+
         return render(request, self._t('image.html'), self._ctx(
             'LLemon Image Creator', nav, {
                 'providers':          PROVIDERS,
@@ -235,9 +263,10 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'reverse_tags':        [] if notes_load_errors else get_reverse_tags(),
                 'notes_load_errors':   notes_load_errors,
                 'active_notes_slot':   get_notes_slot(),
+                'output_subdir':       output_subdir,
                 'generate_url':            self._u('generate'),
-                'image_file_url':          self._u('image_file', 'PLACEHOLDER'),
-                'large_thumbnail_file_url': self._u('large_thumbnail', 'PLACEHOLDER'),
+                'image_file_url':          image_file_url,
+                'large_thumbnail_file_url': large_thumbnail_file_url,
                 'model_note_url':          self._u('model_note'),
                 'models_json_url':    self._u('models_json'),
                 'upscale_url':              _safe_url('upscale'),
@@ -255,49 +284,128 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
     def gallery(self, request):
         gallery_dir = self._gallery_dir()
-        categories, category_ids_by_file, active_category, category_filter = self._process_categories(request)
-        items = []
-        if gallery_dir and os.path.isdir(gallery_dir):
-            for fname in sorted(os.listdir(gallery_dir), reverse=True):
-                if os.path.splitext(fname)[1].lower() not in _MEDIA_EXTS:
+
+        raw_subdir = request.GET.get('subdir', '').strip()
+        try:
+            subdir = self._safe_subdir(raw_subdir)
+        except ValueError:
+            raise Http404
+
+        categories, category_ids_by_file, active_category, category_filter = \
+            self._process_categories(request, category_enabled=(not subdir))
+
+        if subdir:
+            current_dir = self._validated_project_dir(gallery_dir, subdir)
+            if not current_dir:
+                raise Http404
+        else:
+            current_dir = gallery_dir
+
+        try:
+            gallery_base_url = self._u('gallery')
+        except Exception:
+            gallery_base_url = ''
+
+        parts = subdir.split('/') if subdir else []
+        breadcrumb = [
+            {'name': part, 'url': gallery_base_url + '?' + urlencode({'subdir': '/'.join(parts[:i + 1])})}
+            for i, part in enumerate(parts)
+        ]
+        if parts:
+            parent_subdir = '/'.join(parts[:-1])
+            parent_url = (gallery_base_url + '?' + urlencode({'subdir': parent_subdir})
+                          if parent_subdir else gallery_base_url)
+        else:
+            parent_subdir = ''
+            parent_url = None
+
+        subdirs_list: list[dict] = []
+        items: list[dict] = []
+        if current_dir and os.path.isdir(current_dir):
+            for entry in sorted(os.listdir(current_dir), reverse=True):
+                if entry.startswith('.') or entry in _RESERVED_GALLERY_DIRS:
                     continue
-                if active_category == 'none' and category_ids_by_file.get(fname):
+                entry_path = os.path.join(current_dir, entry)
+                if os.path.isdir(entry_path):
+                    entry_subdir = f'{subdir}/{entry}' if subdir else entry
+                    subdirs_list.append({
+                        'name': entry,
+                        'subdir': entry_subdir,
+                        'url': gallery_base_url + '?' + urlencode({'subdir': entry_subdir}),
+                    })
                     continue
-                if active_category != 'none' and category_filter is not None and fname not in category_filter:
+                if not os.path.isfile(entry_path):
                     continue
-                has_thumb = self._ensure_thumbnail(fname)
-                has_large_thumb = self._ensure_large_thumbnail(fname)
+                if os.path.splitext(entry)[1].lower() not in _MEDIA_EXTS:
+                    continue
+                if not subdir:
+                    if active_category == 'none' and category_ids_by_file.get(entry):
+                        continue
+                    if active_category != 'none' and category_filter is not None and entry not in category_filter:
+                        continue
+                try:
+                    if subdir:
+                        rp = f'{subdir}/{entry}'
+                        file_url = self._u('gallery_project_file', rp)
+                        thumb_url = self._u('gallery_project_thumb', rp)
+                        large_thumb_url = self._u('gallery_project_large_thumb', rp)
+                        ensure_media_thumbnail(current_dir, self._thumb_dir(current_dir), entry, 160)
+                        ensure_media_thumbnail(current_dir, self._large_thumb_dir(current_dir), entry, 600)
+                    else:
+                        file_url = self._u('image_file', entry)
+                        thumb_url = self._u('thumbnail', entry)
+                        large_thumb_url = self._u('large_thumbnail', entry)
+                        self._ensure_thumbnail(entry)
+                        self._ensure_large_thumbnail(entry)
+                except Exception:
+                    continue
                 items.append({
-                    'fname':           fname,
-                    'type':            'video' if is_video(fname) else 'image',
-                    'url':             self._u('image_file', fname),
-                    'thumb_url':       self._u('thumbnail', fname),
-                    'large_thumb_url': self._u('large_thumbnail', fname),
-                    'sidecar':         self._find_sidecar(gallery_dir, fname),
-                    'category_ids':    sorted(category_ids_by_file.get(fname, [])),
+                    'fname':           entry,
+                    'subdir':          subdir,
+                    'type':            'video' if is_video(entry) else 'image',
+                    'url':             file_url,
+                    'thumb_url':       thumb_url,
+                    'large_thumb_url': large_thumb_url,
+                    'sidecar':         self._find_sidecar(current_dir, entry),
+                    'category_ids':    sorted(category_ids_by_file.get(entry, [])) if not subdir else [],
                 })
+
+        subdirs_list.sort(key=lambda d: d['name'].lower())
+
         def _safe_url(name: str) -> str | None:
             try:
                 return self._u(name)
             except Exception:
                 return None
 
-        nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
+        def _creator_url(name: str) -> str:
+            base = self._u(name)
+            return (base + '?' + urlencode({'output_subdir': subdir})) if subdir else base
+
+        nav = [{'name': 'Image creator', 'url': _creator_url('image_creator')},
                {'name': 'Gallery', 'url': self._u('gallery')}]
         archive_url = _safe_url('archive')
         if archive_url:
             nav.append({'name': 'Archive', 'url': archive_url})
         return render(request, self._t('gallery.html'), self._ctx(
             'LLemon Image Gallery', nav, {
-                'images':              items,
-                'generate_url':        self._u('image_creator'),
-                'video_generate_url':  _safe_url('video_creator'),
-                'upload_url':          _safe_url('upload'),
-                'delete_image_url':    self._u('delete_image'),
-                'move_to_archive_url': _safe_url('move_to_archive'),
-                'category_enabled':    True,
-                'categories':          categories,
-                'active_category':     active_category,
+                'images':                    items,
+                'subdirs':                   subdirs_list,
+                'subdir':                    subdir,
+                'parent_url':                parent_url,
+                'parent_subdir':             parent_subdir,
+                'breadcrumb':                breadcrumb,
+                'gallery_url':               gallery_base_url,
+                'generate_url':              _creator_url('image_creator'),
+                'video_generate_url':        _creator_url('video_creator') if _safe_url('video_creator') else None,
+                'upload_url':                _safe_url('upload'),
+                'delete_image_url':          self._u('delete_image'),
+                'move_to_archive_url':       _safe_url('move_to_archive'),
+                'gallery_project_move_url':  _safe_url('gallery_project_move'),
+                'gallery_create_project_url': _safe_url('gallery_create_project'),
+                'category_enabled':          not subdir,
+                'categories':                categories,
+                'active_category':           active_category,
             },
         ))
 
@@ -354,8 +462,15 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         provider: str,
         api: str,
         extra_params: dict[str, Any] | None = None,
+        output_subdir: str = '',
     ) -> tuple[dict[str, Any], int]:
         gallery_dir = self._gallery_dir()
+        if output_subdir:
+            save_dir = self._validated_project_dir(gallery_dir, output_subdir)
+            if not save_dir:
+                return {'error': 'invalid output_subdir'}, 400
+        else:
+            save_dir = gallery_dir
         try:
             backend_cls = make_imagegen_backend(provider, api)
             backend = backend_cls(model=model, log_dir=self._log_dir())
@@ -390,7 +505,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             files, desc_file = save_operation_images(
                 backend_cls.write_images,
                 images,
-                gallery_dir,
+                save_dir,
                 datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S'),
             )
         except Exception as e:
@@ -400,7 +515,10 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         usage = result.get('usage') or {}
         cost  = usage.get('cost')
         for _fname in files:
-            self._ensure_large_thumbnail(_fname)
+            if output_subdir and save_dir:
+                ensure_media_thumbnail(save_dir, self._large_thumb_dir(save_dir), _fname, 600)
+            else:
+                self._ensure_large_thumbnail(_fname)
         actual_model = result.get('model') or model
         metadata_system = system if system is not None else result.get('system')
         metadata_system_force = (
@@ -460,6 +578,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         provider: str,
         api: str,
         extra_params: dict[str, Any] | None = None,
+        output_subdir: str = '',
     ):
         q: queue.Queue[dict[str, Any]] = queue.Queue()
 
@@ -468,7 +587,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 payload, status = self._generate_result(
                     prompt, model, aspect_ratio, image_size, temperature,
                     temperature_force, system, system_force, provider, api,
-                    extra_params,
+                    extra_params, output_subdir,
                 )
                 q.put({'event': 'done', 'status': status, **payload})
             except Exception as e:
@@ -585,12 +704,22 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         if not self._media_dir():
             return JsonResponse({'error': 'media_dir not configured'}, status=500)
 
+        output_subdir_raw = str(data.get('output_subdir') or '').strip()
+        try:
+            output_subdir = self._safe_subdir(output_subdir_raw)
+        except ValueError:
+            return JsonResponse({'error': 'invalid output_subdir'}, status=400)
+        if output_subdir:
+            gallery_dir_check = self._gallery_dir()
+            if not gallery_dir_check or not self._validated_project_dir(gallery_dir_check, output_subdir):
+                return JsonResponse({'error': 'invalid output_subdir'}, status=400)
+
         if data.get('stream'):
             resp = StreamingHttpResponse(
                 self._generate_stream(
                     prompt, model, aspect_ratio, image_size, temperature,
                     temperature_force, system, system_force, provider, api,
-                    extra_params or None,
+                    extra_params or None, output_subdir,
                 ),
                 content_type='application/x-ndjson',
             )
@@ -601,7 +730,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         payload, status = self._generate_result(
             prompt, model, aspect_ratio, image_size, temperature,
             temperature_force, system, system_force, provider, api,
-            extra_params or None,
+            extra_params or None, output_subdir,
         )
         return JsonResponse(payload, status=status)
 
@@ -704,6 +833,19 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
 
+        raw_subdir = str(data.get('subdir') or '').strip()
+        if raw_subdir:
+            try:
+                subdir = self._safe_subdir(raw_subdir)
+            except ValueError:
+                return JsonResponse({'error': 'invalid subdir'}, status=400)
+            project_dir = self._validated_project_dir(media_dir, subdir)
+            if not project_dir:
+                return JsonResponse({'error': 'invalid subdir'}, status=400)
+            media_dir = project_dir
+            thumb_dir = self._thumb_dir(project_dir)
+            large_thumb_dir = self._large_thumb_dir(project_dir)
+
         if not media_dir:
             return JsonResponse({'error': 'media_dir not configured'}, status=500)
 
@@ -743,16 +885,28 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         if not gallery_dir:
             return JsonResponse({'error': 'media_dir not configured'}, status=500)
 
+        subdir_raw = request.POST.get('subdir', '').strip()
+        if subdir_raw:
+            try:
+                subdir = self._safe_subdir(subdir_raw)
+            except ValueError:
+                return JsonResponse({'error': 'invalid subdir'}, status=400)
+            upload_dir = self._validated_project_dir(gallery_dir, subdir)
+            if not upload_dir:
+                return JsonResponse({'error': 'invalid subdir'}, status=400)
+        else:
+            upload_dir = gallery_dir
+
         files = request.FILES.getlist('images')
         if not files:
             return JsonResponse({'error': 'no files uploaded'}, status=400)
 
         try:
-            saved, errors = save_uploaded_image_files(files, gallery_dir)
+            saved, errors = save_uploaded_image_files(files, upload_dir)
         except OSError as e:
             return JsonResponse({'error': f'could not create gallery directory: {e}'}, status=500)
 
-        self._write_upload_sidecars(gallery_dir, saved)
+        self._write_upload_sidecars(upload_dir, saved)
 
         return JsonResponse({'files': saved, 'errors': errors})
 
@@ -1104,6 +1258,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         src_dir: str, dst_dir: str,
         src_thumb_dir: str, dst_thumb_dir: str,
         src_large_thumb_dir: str = '', dst_large_thumb_dir: str = '',
+        allow_from_subdir: bool = False,
     ):
         try:
             data = json.loads(request.body)
@@ -1114,6 +1269,21 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             filename = self._safe_filename(str(data.get('filename') or ''))
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
+
+        if allow_from_subdir:
+            raw_subdir = str(data.get('subdir') or '').strip()
+            if raw_subdir:
+                try:
+                    subdir = self._safe_subdir(raw_subdir)
+                except ValueError:
+                    return JsonResponse({'error': 'invalid subdir'}, status=400)
+                project_dir = self._validated_project_dir(src_dir, subdir)
+                if not project_dir:
+                    return JsonResponse({'error': 'invalid subdir'}, status=400)
+                src_dir = project_dir
+                src_thumb_dir = self._thumb_dir(project_dir)
+                src_large_thumb_dir = self._large_thumb_dir(project_dir)
+
         if not src_dir or not dst_dir:
             return JsonResponse({'error': 'media_dir not configured'}, status=500)
 
@@ -1147,6 +1317,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             src_thumb_dir=self._thumb_dir(), dst_thumb_dir=self._archive_thumb_dir(),
             src_large_thumb_dir=self._large_thumb_dir(),
             dst_large_thumb_dir=self._archive_large_thumb_dir(),
+            allow_from_subdir=True,
         )
 
     def _move_to_gallery(self, request):
@@ -1157,3 +1328,146 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             src_large_thumb_dir=self._archive_large_thumb_dir(),
             dst_large_thumb_dir=self._large_thumb_dir(),
         )
+
+    def _gallery_project_file(self, request, subpath: str):
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir or '/' not in subpath:
+            raise Http404
+        subdir, fname = subpath.rsplit('/', 1)
+        try:
+            subdir = self._safe_subdir(subdir)
+            fname = self._safe_filename(fname)
+        except ValueError:
+            raise Http404
+        project_dir = self._validated_project_dir(gallery_dir, subdir)
+        if not project_dir:
+            raise Http404
+        file_path = os.path.join(project_dir, fname)
+        if not os.path.isfile(file_path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(file_path)
+        return FileResponse(open(file_path, 'rb'), content_type=mime or 'application/octet-stream')
+
+    def _gallery_project_thumb(self, request, subpath: str):
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir or '/' not in subpath:
+            raise Http404
+        subdir, fname = subpath.rsplit('/', 1)
+        try:
+            subdir = self._safe_subdir(subdir)
+            fname = self._safe_filename(fname)
+        except ValueError:
+            raise Http404
+        project_dir = self._validated_project_dir(gallery_dir, subdir)
+        if not project_dir:
+            raise Http404
+        thumb_dir = self._thumb_dir(project_dir)
+        if not ensure_media_thumbnail(project_dir, thumb_dir, fname, 160):
+            raise Http404
+        thumb_fname = fname if not is_video(fname) else video_thumb_name(fname)
+        path = os.path.join(thumb_dir, thumb_fname)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'), content_type=mime or 'image/jpeg')
+
+    def _gallery_project_large_thumb(self, request, subpath: str):
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir or '/' not in subpath:
+            raise Http404
+        subdir, fname = subpath.rsplit('/', 1)
+        try:
+            subdir = self._safe_subdir(subdir)
+            fname = self._safe_filename(fname)
+        except ValueError:
+            raise Http404
+        project_dir = self._validated_project_dir(gallery_dir, subdir)
+        if not project_dir:
+            raise Http404
+        large_thumb_dir = self._large_thumb_dir(project_dir)
+        if not ensure_media_thumbnail(project_dir, large_thumb_dir, fname, 600):
+            raise Http404
+        thumb_fname = fname if not is_video(fname) else video_thumb_name(fname)
+        path = os.path.join(large_thumb_dir, thumb_fname)
+        if not os.path.isfile(path):
+            raise Http404
+        mime, _ = mimetypes.guess_type(path)
+        return FileResponse(open(path, 'rb'), content_type=mime or 'image/jpeg')
+
+    def _gallery_create_project(self, request):
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir:
+            return JsonResponse({'error': 'gallery not configured'}, status=500)
+        name = str(data.get('name') or '').strip()
+        if not name or '/' in name or '\\' in name or name.startswith('.') or name in _RESERVED_GALLERY_DIRS:
+            return JsonResponse({'error': 'invalid project name'}, status=400)
+        raw_subdir = str(data.get('subdir') or '').strip()
+        if raw_subdir:
+            try:
+                subdir = self._safe_subdir(raw_subdir)
+            except ValueError:
+                return JsonResponse({'error': 'invalid subdir'}, status=400)
+            parent_dir = self._validated_project_dir(gallery_dir, subdir)
+            if not parent_dir:
+                return JsonResponse({'error': 'invalid subdir'}, status=400)
+        else:
+            parent_dir = gallery_dir
+        new_dir = os.path.join(parent_dir, name)
+        try:
+            os.makedirs(new_dir, exist_ok=False)
+        except FileExistsError:
+            return JsonResponse({'error': 'project already exists'}, status=409)
+        except OSError as e:
+            return JsonResponse({'error': str(e)}, status=500)
+        return JsonResponse({'created': name})
+
+    def _gallery_project_move(self, request):
+        try:
+            data = json.loads(request.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir:
+            return JsonResponse({'error': 'gallery not configured'}, status=500)
+        try:
+            filename = self._safe_filename(str(data.get('filename') or ''))
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        try:
+            from_subdir = self._safe_subdir(str(data.get('from_subdir') or ''))
+            to_subdir = self._safe_subdir(str(data.get('to_subdir') or ''))
+        except ValueError:
+            return JsonResponse({'error': 'invalid subdir'}, status=400)
+        if from_subdir == to_subdir:
+            return JsonResponse({'error': 'source and destination are the same'}, status=400)
+        src_dir = self._validated_project_dir(gallery_dir, from_subdir) if from_subdir else gallery_dir
+        if not src_dir:
+            return JsonResponse({'error': 'invalid from_subdir'}, status=400)
+        dst_dir = self._validated_project_dir(gallery_dir, to_subdir) if to_subdir else gallery_dir
+        if not dst_dir:
+            return JsonResponse({'error': 'invalid to_subdir'}, status=400)
+        ext = os.path.splitext(filename)[1].lower()
+        try:
+            if ext in VIDEO_EXTS:
+                dst_fname = move_video_asset(
+                    src_dir, dst_dir, filename,
+                    self._thumb_dir(src_dir), self._thumb_dir(dst_dir),
+                    self._large_thumb_dir(src_dir), self._large_thumb_dir(dst_dir),
+                )
+            else:
+                dst_fname = move_image_asset(
+                    src_dir, dst_dir, filename,
+                    self._thumb_dir(src_dir), self._thumb_dir(dst_dir),
+                    self._large_thumb_dir(src_dir), self._large_thumb_dir(dst_dir),
+                )
+        except FileNotFoundError:
+            return JsonResponse({'error': 'file not found'}, status=404)
+        except (ValueError, FileExistsError) as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        except OSError as e:
+            return JsonResponse({'error': str(e)}, status=500)
+        return JsonResponse({'moved': dst_fname})

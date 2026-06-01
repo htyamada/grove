@@ -1,4 +1,5 @@
 {% extends 'base/base.html' %}
+{% block heading %}{{ site_name }}: {{ title }}{% if output_subdir %} / {{ output_subdir }}{% endif %}{% endblock %}
 {% block extra_head %}
 <style>
   /* Two-column page layout */
@@ -94,6 +95,11 @@
 </style>
 {% endblock %}
 {% block content %}
+{% if output_subdir %}
+<div style="background:#e8f4e8; border:1px solid #9c9; border-radius:3px; padding:0.4em 0.9em; margin-bottom:0.8em; font-size:0.9em; color:#363;">
+  Saving to project: <strong>{{ output_subdir }}</strong>
+</div>
+{% endif %}
 <div class="page-layout">
   <div class="page-left">
     <div class="page-left-main">
@@ -304,6 +310,7 @@ document.addEventListener('keydown', function(e) {
   const generateUrl           = '{{ generate_url|escapejs }}';
   const imageFileUrl          = '{{ image_file_url|escapejs }}';
   const largeThumbnailFileUrl = '{{ large_thumbnail_file_url|escapejs }}';
+  const outputSubdir          = '{{ output_subdir|default:""|escapejs }}';
   const modelNoteUrl   = '{{ model_note_url|escapejs }}';
   const modelsJsonUrl  = '{{ models_json_url|escapejs }}';
   const REVERSE_FILTER_TAGS = new Set(JSON.parse(document.getElementById('reverse-tags-data').textContent));
@@ -1054,6 +1061,7 @@ document.addEventListener('keydown', function(e) {
         }
       }
     }
+    if (outputSubdir) body.output_subdir = outputSubdir;
 
     try {
       const resp = await fetch(generateUrl, {
@@ -1142,7 +1150,7 @@ document.addEventListener('keydown', function(e) {
   <div id="image-picker-box">
     <div id="image-picker-header">
       <strong>Select source image</strong>
-      {% if source_dirs_json_url %}<div id="image-picker-tabs"><button type="button" id="picker-tab-gallery" class="picker-tab active">Gallery</button><button type="button" id="picker-tab-source" class="picker-tab">Source Dirs</button></div>{% endif %}
+      {% if source_dirs_json_url %}<div id="image-picker-tabs"><button type="button" id="picker-tab-gallery" class="picker-tab active">Gallery</button><button type="button" id="picker-tab-source" class="picker-tab">Input files</button></div>{% endif %}
       <button type="button" id="image-picker-close">Close</button>
     </div>
     <div id="image-picker-grid">
@@ -1311,7 +1319,7 @@ document.addEventListener('keydown', function(e) {
   }
   function renderSdPicker(data) {
     if (!sdPickerGrid || !sdPickerNav) return;
-    let nav = '<span class="sd-pick-nav" data-nick="" data-subdir="">Source Dirs</span>';
+    let nav = '<span class="sd-pick-nav" data-nick="" data-subdir="">Input files</span>';
     if (data.type === 'dir') {
       nav += ' › <span class="sd-pick-nav" data-nick="' + esc(data.nick) + '" data-subdir="">' + esc(data.nick) + '</span>';
       if (data.subdir) {
