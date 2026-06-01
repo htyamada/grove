@@ -52,6 +52,10 @@
 {% endblock %}
 {% block content %}
 
+{% if destination_label %}
+<p style="color:#666; font-size:0.92em; margin-bottom:0.8em;">Copy destination: <strong>{{ destination_label }}</strong></p>
+{% endif %}
+
 {% if mode == 'list' %}
 
 {% if source_dirs %}
@@ -192,6 +196,7 @@ function sdDownload() {
 
 {% if copy_to_gallery_url %}
 var _copyUrl = '{{ copy_to_gallery_url|escapejs }}';
+var _destSubdir = '{{ dest_subdir|default:""|escapejs }}';
 function sdCopyToGallery() {
   if (!_sdItem) return;
   var btn = document.getElementById('sd-copy-btn');
@@ -201,7 +206,7 @@ function sdCopyToGallery() {
   fetch(_copyUrl, {
     method: 'POST',
     headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
-    body: JSON.stringify({nick: _sdItem.nick, rp: _sdItem.rp}),
+    body: JSON.stringify({nick: _sdItem.nick, rp: _sdItem.rp, dest_subdir: _destSubdir}),
   }).then(function(r) { return r.json(); }).then(function(d) {
     if (d.error) {
       status.textContent = 'Error: ' + d.error;

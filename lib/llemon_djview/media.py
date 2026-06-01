@@ -46,12 +46,22 @@ class _MediaNavMixin:
                 pass
         return nav
 
-    def _media_nav(self):
+    def _media_nav(self, overrides=None):
         nav = self._media_pages()
+        if overrides:
+            by_name = {
+                str(item.get('name', '')).lower(): item
+                for item in overrides
+                if item.get('url')
+            }
+            for item in nav:
+                override = by_name.get(str(item.get('name', '')).lower())
+                if override:
+                    item['url'] = override['url']
         return self._nav_prefix + nav
 
     def _ctx(self, title, nav, extra):
-        ctx = {'title': title, 'nav': self._media_nav()}
+        ctx = {'title': title, 'nav': self._media_nav(nav)}
         if self._base_nav is not None:
             ctx['base_nav'] = self._base_nav
         ctx.update(extra)
@@ -259,6 +269,18 @@ class LLemonMediaViewSet:
         source_dirs_cfg = get_source_dirs()
         nick = request.GET.get('nick', '').strip()
         raw_subdir = request.GET.get('subdir', '').strip()
+        raw_dest_subdir = request.GET.get('dest_subdir', '').strip()
+        try:
+            dest_subdir = self._image._safe_subdir(raw_dest_subdir)
+        except ValueError:
+            raise Http404
+        gallery_dir = self._image._gallery_dir()
+        if dest_subdir and (
+            not gallery_dir
+            or not self._image._validated_project_dir(gallery_dir, dest_subdir)
+        ):
+            raise Http404
+        destination_label = f'Gallery / {dest_subdir}' if dest_subdir else 'Gallery'
 
         try:
             base_url = self._u('source_dirs')
@@ -269,7 +291,23 @@ class LLemonMediaViewSet:
             params: dict = {'nick': n}
             if sd:
                 params['subdir'] = sd
+            if dest_subdir:
+                params['dest_subdir'] = dest_subdir
             return base_url + '?' + urlencode(params)
+
+        nav_overrides = []
+        if dest_subdir:
+            try:
+                nav_overrides.append({
+                    'name': 'Gallery',
+                    'url': self._u('gallery') + '?' + urlencode({'subdir': dest_subdir}),
+                })
+                nav_overrides.append({
+                    'name': 'Input files',
+                    'url': base_url + '?' + urlencode({'dest_subdir': dest_subdir}),
+                })
+            except Exception:
+                nav_overrides = []
 
         if not nick:
             items = []
@@ -279,10 +317,12 @@ class LLemonMediaViewSet:
                     continue
                 items.append({'name': name, 'url': _browse_url(name)})
             return render(request, self._t('source_dirs.html'), self._ctx(
-                'Source Dirs', [], {
+                f'Input files -> {destination_label}', nav_overrides, {
                     'mode': 'list',
                     'source_dirs': items,
                     'source_dirs_url': base_url,
+                    'dest_subdir': dest_subdir,
+                    'destination_label': destination_label,
                 },
             ))
 
@@ -309,7 +349,9 @@ class LLemonMediaViewSet:
         if parts:
             parent_url = _browse_url(nick, '/'.join(parts[:-1]))
         else:
-            parent_url = base_url
+            parent_url = base_url + (
+                '?' + urlencode({'dest_subdir': dest_subdir}) if dest_subdir else ''
+            )
 
         # List directory contents
         try:
@@ -343,6 +385,7 @@ class LLemonMediaViewSet:
                             pass
                 images.append({
                     'fname': entry,
+                    'nick': nick,
                     'rp': rp,
                     'url': file_url,
                     'thumb_url': thumb_url,
@@ -355,10 +398,12 @@ class LLemonMediaViewSet:
             copy_url = ''
 
         return render(request, self._t('source_dirs.html'), self._ctx(
-            f'Source: {nick}', [], {
+            f'Source: {nick} -> {destination_label}', nav_overrides, {
                 'mode': 'browse',
                 'nick': nick,
                 'subdir': subdir,
+                'dest_subdir': dest_subdir,
+                'destination_label': destination_label,
                 'breadcrumb': breadcrumb,
                 'parent_url': parent_url,
                 'subdirs': subdirs_list,
@@ -492,6 +537,7 @@ class LLemonMediaViewSet:
 
         nick = (data.get('nick') or '').strip()
         rp = (data.get('rp') or '').strip()
+        raw_dest_subdir = (data.get('dest_subdir') or '').strip()
 
         source_dirs_cfg = get_source_dirs()
         try:
@@ -517,19 +563,29 @@ class LLemonMediaViewSet:
         gallery_dir = self._image._gallery_dir()
         if not gallery_dir:
             return JsonResponse({'error': 'gallery not configured'}, status=500)
+        try:
+            dest_subdir = self._image._safe_subdir(raw_dest_subdir)
+        except ValueError:
+            return JsonResponse({'error': 'invalid destination gallery'}, status=400)
+        if dest_subdir:
+            dest_dir = self._image._validated_project_dir(gallery_dir, dest_subdir)
+            if not dest_dir:
+                return JsonResponse({'error': 'invalid destination gallery'}, status=400)
+        else:
+            dest_dir = gallery_dir
 
         dest_fname = fname
-        dest_path = os.path.join(gallery_dir, dest_fname)
+        dest_path = os.path.join(dest_dir, dest_fname)
         if os.path.exists(dest_path):
             stem, ext = os.path.splitext(dest_fname)
             i = 1
             while os.path.exists(dest_path):
                 dest_fname = f'{stem}_{i}{ext}'
-                dest_path = os.path.join(gallery_dir, dest_fname)
+                dest_path = os.path.join(dest_dir, dest_fname)
                 i += 1
 
         try:
-            os.makedirs(gallery_dir, exist_ok=True)
+            os.makedirs(dest_dir, exist_ok=True)
             shutil.copy2(file_path, dest_path)
         except OSError as e:
             return JsonResponse({'error': f'could not copy file: {e}'}, status=500)
@@ -551,6 +607,7 @@ class LLemonMediaViewSet:
             'source': 'source_dir',
             'source_nick': nick,
             'source_rp': rp,
+            'gallery_subdir': dest_subdir,
             'timestamp': timestamp,
             'files': [dest_fname],
         })
@@ -559,7 +616,7 @@ class LLemonMediaViewSet:
         except OSError:
             pass
 
-        return JsonResponse({'file': dest_fname})
+        return JsonResponse({'file': dest_fname, 'subdir': dest_subdir})
 
 
 def bind_llemon_views(namespace: dict, persona_viewset, media_viewset) -> None:

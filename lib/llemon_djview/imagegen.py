@@ -238,10 +238,22 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         nav = [{'name': 'Image creator', 'url': creator_self_url},
                {'name': 'Gallery', 'url': gallery_back_url}]
+        video_creator_url = _safe_url('video_creator')
+        if video_creator_url and output_subdir:
+            nav.append({
+                'name': 'Video Creator',
+                'url': video_creator_url + '?' + urlencode({'output_subdir': output_subdir}),
+            })
         try:
             nav.append({'name': 'Archive', 'url': self._u('archive')})
         except Exception:
             pass
+        source_dirs_url = _safe_url('source_dirs')
+        if source_dirs_url and output_subdir:
+            nav.append({
+                'name': 'Input files',
+                'url': source_dirs_url + '?' + urlencode({'dest_subdir': output_subdir}),
+            })
 
         return render(request, self._t('image.html'), self._ctx(
             'LLemon Image Creator', nav, {
@@ -305,6 +317,10 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             gallery_base_url = self._u('gallery')
         except Exception:
             gallery_base_url = ''
+        active_gallery_url = (
+            gallery_base_url + '?' + urlencode({'subdir': subdir})
+            if subdir else gallery_base_url
+        )
 
         parts = subdir.split('/') if subdir else []
         breadcrumb = [
@@ -383,10 +399,18 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return (base + '?' + urlencode({'output_subdir': subdir})) if subdir else base
 
         nav = [{'name': 'Image creator', 'url': _creator_url('image_creator')},
-               {'name': 'Gallery', 'url': self._u('gallery')}]
+               {'name': 'Gallery', 'url': active_gallery_url}]
+        video_creator_url = _safe_url('video_creator')
+        if video_creator_url:
+            nav.append({'name': 'Video Creator', 'url': _creator_url('video_creator')})
         archive_url = _safe_url('archive')
         if archive_url:
             nav.append({'name': 'Archive', 'url': archive_url})
+        source_dirs_url = _safe_url('source_dirs')
+        if source_dirs_url:
+            if subdir:
+                source_dirs_url += '?' + urlencode({'dest_subdir': subdir})
+            nav.append({'name': 'Input files', 'url': source_dirs_url})
         return render(request, self._t('gallery.html'), self._ctx(
             'LLemon Image Gallery', nav, {
                 'images':                    items,

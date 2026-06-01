@@ -172,6 +172,11 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             gallery_dir_c = self._gallery_dir()
             if not gallery_dir_c or not self._validated_project_dir(gallery_dir_c, output_subdir):
                 output_subdir = ''
+        def _safe_url(name: str) -> str | None:
+            try:
+                return self._u(name)
+            except Exception:
+                return None
         if output_subdir:
             video_file_url = self._u('gallery_project_file', f'{output_subdir}/PLACEHOLDER')
             video_large_thumbnail_url = self._u('gallery_project_large_thumb', f'{output_subdir}/PLACEHOLDER')
@@ -180,8 +185,22 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             nav = self._nav_prefix + [
                 {'name': 'Video creator', 'url': creator_self_url},
                 {'name': 'Gallery', 'url': gallery_back_url},
-                {'name': 'Archive', 'url': self._u(self.route_archive)},
             ]
+            image_creator_url = _safe_url('image_creator')
+            if image_creator_url:
+                nav.append({
+                    'name': 'Image Creator',
+                    'url': image_creator_url + '?' + urlencode({'output_subdir': output_subdir}),
+                })
+            archive_url = _safe_url(self.route_archive)
+            if archive_url:
+                nav.append({'name': 'Archive', 'url': archive_url})
+            source_dirs_url = _safe_url('source_dirs')
+            if source_dirs_url:
+                nav.append({
+                    'name': 'Input files',
+                    'url': source_dirs_url + '?' + urlencode({'dest_subdir': output_subdir}),
+                })
         else:
             video_file_url = self._u(self.route_video_file, 'PLACEHOLDER')
             video_large_thumbnail_url = self._u(self.route_video_large_thumbnail, 'PLACEHOLDER')

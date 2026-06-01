@@ -118,6 +118,78 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         self.assertFalse(hasattr(view, 'video_archive'))
         self.assertFalse(hasattr(view, 'video_file'))
 
+    def test_source_dirs_items_include_nick_for_copy_to_gallery(self) -> None:
+        fake_django = self._fake_django_modules(render=lambda request, template, context: context)
+        with mock.patch.dict(sys.modules, fake_django):
+            from llemon_djview.media import LLemonMediaViewSet
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gallery = Path(tmp) / 'gallery'
+            project = gallery / 'project-a'
+            project.mkdir(parents=True)
+            source = Path(tmp) / 'source'
+            source.mkdir()
+            (source / 'photo.png').write_bytes(b'png')
+            view = LLemonMediaViewSet('llemon_image', 'llemon_media')
+            request = types.SimpleNamespace(
+                GET={'nick': 'Inputs', 'subdir': '', 'dest_subdir': 'project-a'},
+            )
+
+            with mock.patch('llemon_djview.sourcedirs.get_source_dirs', return_value=[{'name': 'Inputs', 'path': str(source)}]):
+                with mock.patch.object(view._image, '_media_dir', return_value=tmp):
+                    with mock.patch.object(view, '_source_thumb_base', return_value=''):
+                        with mock.patch.object(view, '_u', side_effect=lambda name, *args: f'/{name}/' + '/'.join(args)):
+                            ctx = view._source_dirs(request)
+
+        self.assertEqual(ctx['title'], 'Source: Inputs -> Gallery / project-a')
+        self.assertEqual(ctx['dest_subdir'], 'project-a')
+        self.assertEqual(ctx['destination_label'], 'Gallery / project-a')
+        self.assertEqual(ctx['images'][0]['nick'], 'Inputs')
+        self.assertEqual(ctx['images'][0]['rp'], 'photo.png')
+        nav_urls = {item['name']: item['url'] for item in ctx['nav']}
+        self.assertEqual(nav_urls['Gallery'], '/gallery/?subdir=project-a')
+        self.assertEqual(nav_urls['Input files'], '/source_dirs/?dest_subdir=project-a')
+
+    def test_source_dirs_copy_to_gallery_uses_destination_project(self) -> None:
+        class FakeJsonResponse:
+            def __init__(self, data, status=200):
+                self.data = data
+                self.status_code = status
+
+        fake_django = self._fake_django_modules()
+        fake_django['django.http'] = types.SimpleNamespace(
+            FileResponse=object,
+            Http404=RuntimeError,
+            JsonResponse=FakeJsonResponse,
+            StreamingHttpResponse=object,
+        )
+        with mock.patch.dict(sys.modules, fake_django):
+            from llemon_djview.media import LLemonMediaViewSet
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gallery = Path(tmp) / 'gallery'
+            project = gallery / 'project-a'
+            project.mkdir(parents=True)
+            source = Path(tmp) / 'source'
+            source.mkdir()
+            (source / 'photo.png').write_bytes(b'png')
+            view = LLemonMediaViewSet('llemon_image', 'llemon_media')
+            request = types.SimpleNamespace(
+                body=json.dumps({
+                    'nick': 'Inputs',
+                    'rp': 'photo.png',
+                    'dest_subdir': 'project-a',
+                }).encode('utf-8'),
+            )
+
+            with mock.patch('llemon_djview.sourcedirs.get_source_dirs', return_value=[{'name': 'Inputs', 'path': str(source)}]):
+                with mock.patch.object(view._image, '_gallery_dir', return_value=str(gallery)):
+                    resp = view._source_dirs_copy_to_gallery(request)
+
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.data, {'file': 'photo.png', 'subdir': 'project-a'})
+            self.assertTrue((project / 'photo.png').is_file())
+
     def test_mediagen_backends_read_media_dir_from_shared_section(self) -> None:
         from hty7.llemon.mediagen import imagegen, videogen
 
@@ -333,6 +405,28 @@ class DjviewMediaSettingsTests(unittest.TestCase):
 
         self.assertEqual(ctx['upload_url'], '/upload/')
 
+    def test_project_gallery_nav_links_return_to_project_gallery(self) -> None:
+        fake_django = self._fake_django_modules(render=lambda request, template, context: context)
+        with mock.patch.dict(sys.modules, fake_django):
+            from llemon_djview.imagegen import LLemonImageGenViewSet
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gallery = Path(tmp) / 'gallery'
+            project = gallery / 'project-a'
+            project.mkdir(parents=True)
+            view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
+            request = types.SimpleNamespace(GET={'subdir': 'project-a'}, method='GET')
+
+            with mock.patch.object(view, '_media_dir', return_value=tmp):
+                with mock.patch.object(view, '_u', side_effect=lambda name, *args: f'/{name}/' + '/'.join(args)):
+                    ctx = view.gallery(request)
+
+        nav_urls = {item['name']: item['url'] for item in ctx['nav']}
+        self.assertEqual(nav_urls['Image creator'], '/image_creator/?output_subdir=project-a')
+        self.assertEqual(nav_urls['Video Creator'], '/video_creator/?output_subdir=project-a')
+        self.assertEqual(nav_urls['Gallery'], '/gallery/?subdir=project-a')
+        self.assertEqual(nav_urls['Input files'], '/source_dirs/?dest_subdir=project-a')
+
     def test_image_creator_picker_uses_gallery_images(self) -> None:
         fake_django = self._fake_django_modules()
         with mock.patch.dict(sys.modules, fake_django):
@@ -463,6 +557,46 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         self.assertEqual(items[0]['url'], '/video_file/reference.jpg')
         self.assertEqual(items[0]['thumb_url'], '/video_thumbnail/reference.jpg')
         self.assertEqual(items[0]['large_thumb_url'], '/video_large_thumbnail/reference.jpg')
+
+    def test_video_creator_project_nav_links_return_to_project_gallery(self) -> None:
+        fake_django = self._fake_django_modules(render=lambda request, template, context: context)
+        with mock.patch.dict(sys.modules, fake_django):
+            from llemon_djview.videogen import LLemonVideoGenViewSet
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gallery = Path(tmp) / 'gallery'
+            project = gallery / 'project-a'
+            project.mkdir(parents=True)
+            view = LLemonVideoGenViewSet('llemon_video', 'llemon_video')
+            request = types.SimpleNamespace(GET={'output_subdir': 'project-a'})
+            model_row = {'id': 'video-model-a', 'display': 'Video Model A'}
+
+            with mock.patch.object(view, '_media_dir', return_value=tmp):
+                with mock.patch.object(view, '_u', side_effect=lambda name, *args: f'/{name}/' + '/'.join(args)):
+                    with mock.patch.object(view, '_model_options', return_value=[model_row]):
+                        with mock.patch.object(view, '_model_tag_states', return_value={}):
+                            with mock.patch.object(view, '_gallery_picker_items', return_value=[]):
+                                with mock.patch.object(view, '_source_dirs_json_url', return_value='/source_dirs_json/'):
+                                    with mock.patch.dict(
+                                        view.video_creator.__globals__,
+                                        {
+                                            'normalize_provider_api': mock.Mock(return_value=('provider-a', 'api-a')),
+                                            'get_notes_load_errors': mock.Mock(return_value=[]),
+                                            'get_tags': mock.Mock(return_value=[]),
+                                            'get_reverse_tags': mock.Mock(return_value=[]),
+                                            'get_notes_slot': mock.Mock(return_value=''),
+                                            'default_video_model': mock.Mock(return_value='video-model-a'),
+                                            'default_duration': mock.Mock(return_value='5'),
+                                        },
+                                    ):
+                                        ctx = view.video_creator(request)
+
+        nav_urls = {item['name']: item['url'] for item in ctx['nav']}
+        self.assertEqual(ctx['output_subdir'], 'project-a')
+        self.assertEqual(nav_urls['Video creator'], '/video_creator/?output_subdir=project-a')
+        self.assertEqual(nav_urls['Gallery'], '/video_gallery/?subdir=project-a')
+        self.assertEqual(nav_urls['Image Creator'], '/image_creator/?output_subdir=project-a')
+        self.assertEqual(nav_urls['Input files'], '/source_dirs/?dest_subdir=project-a')
 
     def test_shared_media_root_lists_gallery_and_archive_image_and_video_formats(self) -> None:
         """Unified gallery: gallery and archive list both image and video formats."""
