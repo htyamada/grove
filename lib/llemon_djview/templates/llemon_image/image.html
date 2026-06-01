@@ -1142,7 +1142,7 @@ document.addEventListener('keydown', function(e) {
   <div id="image-picker-box">
     <div id="image-picker-header">
       <strong>Select source image</strong>
-      {% if source_dirs_json_url %}<div id="image-picker-tabs"><button type="button" id="picker-tab-uploads" class="picker-tab active">Uploads</button><button type="button" id="picker-tab-source" class="picker-tab">Source Dirs</button></div>{% endif %}
+      {% if source_dirs_json_url %}<div id="image-picker-tabs"><button type="button" id="picker-tab-gallery" class="picker-tab active">Gallery</button><button type="button" id="picker-tab-source" class="picker-tab">Source Dirs</button></div>{% endif %}
       <button type="button" id="image-picker-close">Close</button>
     </div>
     <div id="image-picker-grid">
@@ -1151,7 +1151,7 @@ document.addEventListener('keydown', function(e) {
         <img class="image-thumb" src="{{ item.thumb_url }}" alt="{{ item.fname }}" loading="lazy">
       </div>
       {% empty %}
-      <div style="color:#777; padding:0.5em;">No uploaded images available.</div>
+      <div style="color:#777; padding:0.5em;">No gallery images available.</div>
       {% endfor %}
     </div>
     <div id="sd-picker-nav" style="display:none;font-size:0.85em;color:#555;margin-bottom:0.4em;"></div>
@@ -1362,21 +1362,21 @@ document.addEventListener('keydown', function(e) {
       imagePickerGrid.style.display = 'none';
       sdPickerNav.style.display = '';
       sdPickerGrid.style.display = 'flex';
-      document.getElementById('picker-tab-uploads').classList.remove('active');
+      document.getElementById('picker-tab-gallery').classList.remove('active');
       document.getElementById('picker-tab-source').classList.add('active');
       if (!sdPickerLoaded) sdPickerFetch('', '');
     } else {
       imagePickerGrid.style.display = '';
       sdPickerNav.style.display = 'none';
       sdPickerGrid.style.display = 'none';
-      document.getElementById('picker-tab-uploads').classList.add('active');
+      document.getElementById('picker-tab-gallery').classList.add('active');
       document.getElementById('picker-tab-source').classList.remove('active');
     }
   }
   if (sdJsonUrl) {
-    const tabUploads = document.getElementById('picker-tab-uploads');
+    const tabGallery = document.getElementById('picker-tab-gallery');
     const tabSource = document.getElementById('picker-tab-source');
-    if (tabUploads) tabUploads.addEventListener('click', function() { showPickerTab('uploads'); });
+    if (tabGallery) tabGallery.addEventListener('click', function() { showPickerTab('gallery'); });
     if (tabSource) tabSource.addEventListener('click', function() { showPickerTab('source'); });
   }
 

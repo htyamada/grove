@@ -19,13 +19,12 @@ Python venv: `~/opt/web` (created by `~/src/hty7/set-up-system/250-python-web.sh
 ### LLemon Media App
 
 LLemon exposes a single Media app at `/llemon/media/`. Image Creator and
-Video Creator are separate pages within that app, while gallery, archive, and
-uploads are shared. Media pages automatically detect file type and apply
+Video Creator are separate pages within that app, while gallery and archive are
+shared. Media pages automatically detect file type and apply
 appropriate tools:
 
 - **Gallery**: Browse all media (images and videos) with lazy-loaded thumbnails, categories, and full-screen viewers
 - **Archive**: Move media out of active gallery
-- **Uploads**: User-uploaded media with browsing interface
 - **Image Creator**: Generate, upscale, or edit images
 - **Video Creator**: Generate videos with text-to-video APIs
 

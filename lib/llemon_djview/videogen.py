@@ -12,18 +12,9 @@ from urllib.parse import unquote, urlsplit
 from django.conf import settings  # type: ignore[import-untyped]
 from django.http import FileResponse, Http404, JsonResponse  # type: ignore[import-untyped]
 from django.shortcuts import render  # type: ignore[import-untyped]
-from django.urls import reverse  # type: ignore[import-untyped]
 from django.views.decorators.csrf import csrf_exempt  # type: ignore[import-untyped]
 from django.views.decorators.http import require_POST  # type: ignore[import-untyped]
 
-from hty7.llemon.mediagen.gallery import (
-    CategoryStore,
-    delete_media_file,
-    file_as_data_url,
-    safe_name,
-    sanitize_metadata_data_urls,
-)
-from hty7.llemon.mediagen.imagegen.gallery import LARGE_THUMB_SIZE, delete_image_asset, ensure_thumbnail, move_image_asset
 from hty7.llemon.mediagen.videogen import (
     PROVIDERS,
     default_duration,
@@ -39,15 +30,20 @@ from hty7.llemon.mediagen.videogen import (
     model_display,
     normalize_provider_api,
 )
-from hty7.llemon.mediagen.videogen.gallery import (
+from .storage import (
     IMAGE_EXTS,
     VIDEO_EXTS,
+    delete_media_file,
+    file_as_data_url,
+    safe_name,
+    sanitize_metadata_data_urls,
+    delete_image_asset,
     delete_video_asset,
-    ensure_video_thumbnail,
+    move_image_asset,
     move_video_asset,
-    read_sidecar as read_video_sidecar,
+    read_video_sidecar,
     save_generated_videos,
-    save_uploaded_reference_images,
+    save_uploaded_image_files,
     video_thumb_name,
     write_video_sidecar,
 )
@@ -77,20 +73,15 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
 
     route_gallery = 'video_gallery'
     route_archive = 'video_archive'
-    route_uploads = 'video_uploads'
     route_video_file = 'video_file'
     route_video_thumbnail = 'video_thumbnail'
     route_video_large_thumbnail = 'video_large_thumbnail'
     route_archive_file = 'video_archive_file'
     route_archive_thumbnail = 'video_archive_thumbnail'
     route_archive_large_thumbnail = 'video_archive_large_thumbnail'
-    route_uploads_file = 'video_uploads_image_file'
-    route_uploads_thumbnail = 'video_uploads_thumbnail'
-    route_uploads_large_thumbnail = 'video_uploads_large_thumbnail'
     route_delete = 'video_delete'
     route_archive_delete = 'video_archive_delete'
-    route_uploads_delete = 'video_uploads_delete'
-    route_upload_uploads = 'video_upload_uploads'
+    route_upload = 'video_upload'
     route_move_to_archive = 'video_move_to_archive'
     route_move_to_gallery = 'video_move_to_gallery'
 
@@ -110,13 +101,9 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         self.video_large_thumbnail   = self._video_large_thumbnail
         self.archive_video_thumbnail = self._archive_video_thumbnail
         self.archive_video_large_thumbnail = self._archive_video_large_thumbnail
-        self.uploads_image_file  = self._uploads_image_file
-        self.uploads_thumbnail   = self._uploads_thumbnail
-        self.uploads_large_thumbnail = self._uploads_large_thumbnail
-        self.upload_uploads      = csrf_exempt(require_POST(self._upload_uploads))
+        self.upload              = csrf_exempt(require_POST(self._upload))
         self.delete_video        = csrf_exempt(require_POST(self._delete_video))
         self.delete_archive_video = csrf_exempt(require_POST(self._delete_archive_video))
-        self.delete_uploads_image = csrf_exempt(require_POST(self._delete_uploads_image))
         self.move_to_archive     = csrf_exempt(require_POST(self._move_to_archive))
         self.move_to_gallery     = csrf_exempt(require_POST(self._move_to_gallery))
 
@@ -147,7 +134,6 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         items = [
             ('video_creator', 'Video creator'),
             (self.route_gallery, 'Gallery'),
-            (self.route_uploads, 'Uploads'),
             (self.route_archive, 'Archive'),
         ]
         return self._nav_prefix + [{'name': label, 'url': self._u(name)} for name, label in items]
@@ -156,7 +142,6 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         pages = [
             {'name': 'Video creator', 'url': self._u('video_creator')},
             {'name': 'Gallery', 'url': self._u(self.route_gallery)},
-            {'name': 'Uploads', 'url': self._u(self.route_uploads)},
             {'name': 'Archive', 'url': self._u(self.route_archive)},
         ]
         return render(request, self._t('index.html'), self._ctx(
@@ -199,8 +184,7 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                 'models_json_url':  self._u('video_models_json'),
                 'video_file_url':              self._u(self.route_video_file, 'PLACEHOLDER'),
                 'video_large_thumbnail_url':   self._u(self.route_video_large_thumbnail, 'PLACEHOLDER'),
-                'uploads_url':      self._u(self.route_uploads),
-                'uploads':          self._list_uploads(request),
+                'gallery_images':   self._gallery_picker_items(),
                 'source_dirs_json_url': self._source_dirs_json_url(),
             },
         ))
@@ -259,41 +243,6 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             category_enabled=False,
         )
 
-    def uploads(self, request):
-        uploads_dir = self._uploads_dir()
-        items = []
-        if uploads_dir and os.path.isdir(uploads_dir):
-            for fname in sorted(os.listdir(uploads_dir), reverse=True):
-                ext = os.path.splitext(fname)[1].lower()
-                if ext not in _MEDIA_EXTS:
-                    continue
-                path = os.path.join(uploads_dir, fname)
-                if os.path.isfile(path):
-                    has_thumb = self._ensure_uploads_thumbnail(fname)
-                    has_large_thumb = self._ensure_uploads_large_thumbnail(fname)
-                    try:
-                        url = self._u(self.route_uploads_file, fname)
-                        thumb_url = self._u(self.route_uploads_thumbnail, fname) if has_thumb else url
-                        large_thumb_url = self._u(self.route_uploads_large_thumbnail, fname) if has_large_thumb else url
-                    except Exception:
-                        continue
-                    items.append({
-                        'fname': fname,
-                        'type': 'video' if is_video(fname) else 'image',
-                        'url': url,
-                        'thumb_url': thumb_url,
-                        'large_thumb_url': large_thumb_url,
-                        'sidecar': self._read_sidecar(uploads_dir, fname),
-                    })
-        return render(request, self._shared_gallery_template('uploads.html'), self._ctx(
-            'LLemon Video Uploads', self._nav('uploads'), {
-                'images': items,
-                'upload_url': self._u(self.route_upload_uploads),
-                'delete_image_url': self._u(self.route_uploads_delete),
-                'video_generate_url': self._u('video_creator'),
-            },
-        ))
-
     def _media_page(
         self,
         request,
@@ -327,6 +276,7 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             'empty': empty,
             'generate_url': generate_url,
             'video_generate_url': self._u('video_creator'),
+            'upload_url': self._u(self.route_upload),
             'category_enabled': category_enabled,
             'categories': categories,
             'active_category': active_category,
@@ -402,24 +352,24 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
     def _source_dirs_json_url(self) -> str:
         return ''
 
-    def _list_uploads(self, request=None) -> list[dict[str, str]]:
-        uploads_dir = self._uploads_dir()
-        if not uploads_dir or not os.path.isdir(uploads_dir):
+    def _gallery_picker_items(self) -> list[dict[str, str]]:
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir or not os.path.isdir(gallery_dir):
             return []
         result = []
-        for fname in sorted(os.listdir(uploads_dir), reverse=True):
+        for fname in sorted(os.listdir(gallery_dir), reverse=True):
             ext = os.path.splitext(fname)[1].lower()
-            path = os.path.join(uploads_dir, fname)
+            path = os.path.join(gallery_dir, fname)
             if ext in IMAGE_EXTS and os.path.isfile(path):
-                url = self._u(self.route_uploads_file, fname)
-                has_thumb = self._ensure_uploads_thumbnail(fname)
-                has_large_thumb = self._ensure_uploads_large_thumbnail(fname)
+                url = self._u(self.route_video_file, fname)
+                has_thumb = self._ensure_thumbnail(fname)
+                has_large_thumb = self._ensure_large_thumbnail(fname)
                 try:
-                    thumb_url = self._u(self.route_uploads_thumbnail, fname) if has_thumb else url
+                    thumb_url = self._u(self.route_video_thumbnail, fname) if has_thumb else url
                 except Exception:
                     thumb_url = url
                 try:
-                    large_thumb_url = self._u(self.route_uploads_large_thumbnail, fname) if has_large_thumb else url
+                    large_thumb_url = self._u(self.route_video_large_thumbnail, fname) if has_large_thumb else url
                 except Exception:
                     large_thumb_url = url
                 result.append({
@@ -790,7 +740,6 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             return None
 
         route_dirs = (
-            (self.route_uploads_file, self._uploads_dir()),
             (self.route_video_file, self._gallery_dir()),
             (self.route_archive_file, self._archive_dir()),
         )
@@ -864,20 +813,6 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
     def _archive_video_large_thumbnail(self, request, filename):
         return self._video_large_thumbnail_response(self._archive_dir(), filename)
 
-    def _uploads_image_file(self, request, filename):
-        return self._file_response(self._uploads_dir(), filename, IMAGE_EXTS)
-
-    def _uploads_thumbnail(self, request, filename):
-        return self._image_thumbnail_response(
-            self._uploads_dir(), self._uploads_thumb_dir(), filename, self._ensure_uploads_thumbnail,
-        )
-
-    def _uploads_large_thumbnail(self, request, filename):
-        return self._image_thumbnail_response(
-            self._uploads_dir(), self._uploads_large_thumb_dir(), filename,
-            self._ensure_uploads_large_thumbnail,
-        )
-
     def _image_thumbnail_response(self, media_dir: str, thumb_dir: str, filename: str, ensure_thumb):
         try:
             fname = self._safe_name(filename)
@@ -946,23 +881,29 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             self._video_large_thumb_dir(archive_dir),
         )
 
-    def _delete_uploads_image(self, request):
-        return self._delete_from_dir(
-            request,
-            self._uploads_dir(),
-            IMAGE_EXTS,
-            self._uploads_thumb_dir(),
-            self._uploads_large_thumb_dir(),
-        )
+    def _write_upload_sidecars(self, media_dir: str, saved: list[str]) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        for fname in saved:
+            payload = {
+                'source': 'upload',
+                'timestamp': timestamp,
+                'uploaded_at': timestamp,
+                'files': [fname],
+            }
+            try:
+                write_video_sidecar(media_dir, fname, payload)
+            except OSError as e:
+                logger.warning('could not write upload metadata for %s: %s', fname, e)
 
-    def _upload_uploads(self, request):
-        uploads_dir = self._uploads_dir()
-        if not uploads_dir:
+    def _upload(self, request):
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir:
             return JsonResponse({'error': 'media_dir not configured'}, status=500)
         files = request.FILES.getlist('images')
         if not files:
             return JsonResponse({'error': 'no files uploaded'}, status=400)
-        saved, errors = save_uploaded_reference_images(files, uploads_dir)
+        saved, errors = save_uploaded_image_files(files, gallery_dir)
+        self._write_upload_sidecars(gallery_dir, saved)
         return JsonResponse({'files': saved, 'errors': errors})
 
     def _move_file(self, request, src_dir: str, dst_dir: str):

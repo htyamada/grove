@@ -1,10 +1,10 @@
 """llemon_djview.media -- combined LLemon media Django views.
 
 The media app keeps separate image and video creator endpoints, but shares the
-gallery, uploads, and archive pages.
+gallery and archive pages.
 
-Source directories are read-only image libraries that supplement the uploads
-directory. Configure via source_dirs / source_thumb_dir in llemon.conf under
+Source directories are read-only image libraries that supplement the gallery
+image picker. Configure via source_dirs / source_thumb_dir in llemon.conf under
 [*.llemon.mediagen]; see sourcedirs.py for details.
 """
 
@@ -28,7 +28,6 @@ class _MediaNavMixin:
             ('image_creator', 'Image Creator'),
             ('video_creator', 'Video Creator'),
             ('gallery', 'Gallery'),
-            ('uploads', 'Uploads'),
             ('archive', 'Archive'),
             ('source_dirs', 'Source Dirs'),
         ]
@@ -67,20 +66,15 @@ class _MediaVideoViewSet(_MediaNavMixin, LLemonVideoGenViewSet):
 
     route_gallery = 'gallery'
     route_archive = 'archive'
-    route_uploads = 'uploads'
     route_video_file = 'image_file'
     route_video_thumbnail = 'thumbnail'
     route_video_large_thumbnail = 'large_thumbnail'
     route_archive_file = 'archive_image_file'
     route_archive_thumbnail = 'archive_thumbnail'
     route_archive_large_thumbnail = 'archive_large_thumbnail'
-    route_uploads_file = 'uploads_image_file'
-    route_uploads_thumbnail = 'uploads_thumbnail'
-    route_uploads_large_thumbnail = 'uploads_large_thumbnail'
     route_delete = 'delete_image'
     route_archive_delete = 'delete_archive_image'
-    route_uploads_delete = 'delete_uploads_image'
-    route_upload_uploads = 'upload_uploads'
+    route_upload = 'upload'
     route_move_to_archive = 'move_to_archive'
     route_move_to_gallery = 'move_to_gallery'
 
@@ -108,7 +102,7 @@ class LLemonMediaViewSet:
 
     - ``media`` for the app index
     - ``image_creator`` and ``video_creator`` for the creator pages
-    - ``gallery``, ``uploads``, and ``archive`` for shared media pages
+    - ``gallery`` and ``archive`` for shared media pages
     """
 
     def __init__(
@@ -138,7 +132,6 @@ class LLemonMediaViewSet:
         self.video_creator = self._video.video_creator
 
         self.gallery = self._image.gallery
-        self.uploads = self._image.uploads
         self.archive = self._image.archive
 
         self.source_dirs = self._source_dirs
@@ -157,22 +150,16 @@ class LLemonMediaViewSet:
         self.image_file = self._image.image_file
         self.thumbnail = self._image.thumbnail
         self.large_thumbnail = self._image.large_thumbnail
-        self.uploads_image_file = self._image.uploads_image_file
-        self.uploads_thumbnail = self._image.uploads_thumbnail
-        self.uploads_large_thumbnail = self._image.uploads_large_thumbnail
         self.archive_image_file = self._image.archive_image_file
         self.archive_thumbnail = self._image.archive_thumbnail
         self.archive_large_thumbnail = self._image.archive_large_thumbnail
 
         self.delete_image = self._image.delete_image
-        self.delete_uploads_image = self._image.delete_uploads_image
         self.delete_archive_image = self._image.delete_archive_image
-        self.upload_uploads = self._image.upload_uploads
+        self.upload = self._image.upload
         self.upscale = self._image.upscale
-        self.upscale_uploads = self._image.upscale_uploads
         self.upscale_archive = self._image.upscale_archive
         self.edit_image = self._image.edit_image
-        self.edit_uploads_image = self._image.edit_uploads_image
         self.edit_archive_image = self._image.edit_archive_image
         self.move_to_archive = self._image.move_to_archive
         self.move_to_gallery = self._image.move_to_gallery
@@ -463,7 +450,6 @@ def bind_llemon_views(namespace: dict, persona_viewset, media_viewset) -> None:
         'image_creator': media_viewset.image_creator,
         'video_creator': media_viewset.video_creator,
         'gallery': media_viewset.gallery,
-        'uploads': media_viewset.uploads,
         'archive': media_viewset.archive,
 
         'generate': media_viewset.generate,
@@ -475,13 +461,7 @@ def bind_llemon_views(namespace: dict, persona_viewset, media_viewset) -> None:
         'delete_image': media_viewset.delete_image,
         'upscale': media_viewset.upscale,
         'edit_image': media_viewset.edit_image,
-        'uploads_image_file': media_viewset.uploads_image_file,
-        'uploads_thumbnail': media_viewset.uploads_thumbnail,
-        'uploads_large_thumbnail': media_viewset.uploads_large_thumbnail,
-        'delete_uploads_image': media_viewset.delete_uploads_image,
-        'upscale_uploads': media_viewset.upscale_uploads,
-        'edit_uploads_image': media_viewset.edit_uploads_image,
-        'upload_uploads': media_viewset.upload_uploads,
+        'upload': media_viewset.upload,
         'archive_image_file': media_viewset.archive_image_file,
         'archive_thumbnail': media_viewset.archive_thumbnail,
         'archive_large_thumbnail': media_viewset.archive_large_thumbnail,
@@ -512,7 +492,6 @@ def media_urlpatterns(views_module):
         path('media/image-creator/', views_module.image_creator, name='image_creator'),
         path('media/video-creator/', views_module.video_creator, name='video_creator'),
         path('media/gallery/', views_module.gallery, name='gallery'),
-        path('media/uploads/', views_module.uploads, name='uploads'),
         path('media/archive/', views_module.archive, name='archive'),
 
         path('media/image/generate/', views_module.generate, name='generate'),
@@ -528,29 +507,7 @@ def media_urlpatterns(views_module):
         path('media/image/delete/', views_module.delete_image, name='delete_image'),
         path('media/image/upscale/', views_module.upscale, name='upscale'),
         path('media/image/edit/', views_module.edit_image, name='edit_image'),
-        path(
-            'media/uploads/file/<str:filename>',
-            views_module.uploads_image_file,
-            name='uploads_image_file',
-        ),
-        path(
-            'media/uploads/thumbnails/<str:filename>',
-            views_module.uploads_thumbnail,
-            name='uploads_thumbnail',
-        ),
-        path(
-            'media/uploads/thumbnails-large/<str:filename>',
-            views_module.uploads_large_thumbnail,
-            name='uploads_large_thumbnail',
-        ),
-        path(
-            'media/uploads/delete/',
-            views_module.delete_uploads_image,
-            name='delete_uploads_image',
-        ),
-        path('media/uploads/upscale/', views_module.upscale_uploads, name='upscale_uploads'),
-        path('media/uploads/edit/', views_module.edit_uploads_image, name='edit_uploads_image'),
-        path('media/uploads/upload/', views_module.upload_uploads, name='upload_uploads'),
+        path('media/gallery/upload/', views_module.upload, name='upload'),
         path(
             'media/archive/file/<str:filename>',
             views_module.archive_image_file,

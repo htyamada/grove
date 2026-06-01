@@ -6,22 +6,21 @@
 
 | File | Role |
 |------|------|
-| `lib/llemon_djview/media.py` | Combined Media app view set: Image Creator, Video Creator, shared gallery, archive, uploads, source dirs |
+| `lib/llemon_djview/media.py` | Combined Media app view set: Image Creator, Video Creator, shared gallery, archive, source dirs |
 | `lib/llemon_djview/sourcedirs.py` | Source directory browser utilities: validation, thumbnail cache, URL resolution |
-| `lib/llemon_djview/imagegen.py` | Django view set for unified media: gallery, archive, uploads with type-aware operations |
-| `lib/llemon_djview/videogen.py` | Django view set for unified media: gallery, archive, uploads with type-aware operations |
-| `lib/llemon_djview/templates/llemon_image/` | Shared Media gallery/archive/uploads/source-dirs templates plus Image Creator |
+| `lib/llemon_djview/imagegen.py` | Django view set for unified media: gallery and archive with type-aware operations |
+| `lib/llemon_djview/videogen.py` | Django view set for unified media: gallery and archive with type-aware operations |
+| `lib/llemon_djview/storage.py` | Django-owned media storage, sidecar, category, thumbnail, upload, and move/delete helpers |
+| `lib/llemon_djview/templates/llemon_image/` | Shared Media gallery/archive/source-dirs templates plus Image Creator |
 | `lib/llemon_djview/templates/llemon_video/` | Video Creator and video index templates |
-| `hty7/llemon/mediagen/imagegen/gallery.py` | Image asset management |
-| `hty7/llemon/mediagen/videogen/gallery.py` | Video asset management |
 
 ## Overview
 
 The media gallery system is unified across image and video generation. Host
 Django front ends expose a single Media app with separate Image Creator and
 Video Creator pages. There is no distinction between "image gallery" and
-"video gallery" at the storage or organizational level. Gallery, archive, and
-uploads display the same media from the same directories, and operations are
+"video gallery" at the storage or organizational level. Gallery and archive
+display media from shared directories, and operations are
 type-aware: operations available to a specific file depend on its type (image
 or video), not which creator generated it.
 
@@ -31,7 +30,6 @@ or video), not which creator generated it.
 |------|-----------|
 | Gallery | Shared across image & video: `{LLEMON_GALLERY_DIR}` or `{media_dir}/gallery` |
 | Archive | Shared across image & video: `{LLEMON_ARCHIVE_DIR}` or `{media_dir}/archive` |
-| Uploads | Shared across image & video: `{LLEMON_UPLOADS_DIR}` or `{media_dir}/uploads` |
 | Categories DB | Single unified database at `gallery/db/gallery.db` |
 | Notes DB | Shared by image & video at `notes_dir/notes.db` |
 
@@ -40,7 +38,7 @@ The distinction is only in what operations can be performed based on file type.
 
 ### Supported Media Types
 
-Gallery, archive, and uploads display both image and video files:
+Gallery and archive display both image and video files:
 
 | Type | Extensions |
 |------|-----------|
@@ -56,8 +54,8 @@ Both images and videos are accepted for upload. Files must have an image or vide
 The Media gallery lists image and video files from the same directory:
 
 - Thumbnails cached in `gallery/thumbnails/` (160px) and `gallery/thumbnails_large/` (LARGE_THUMB_SIZE)
-- Image thumbnails: `ensure_thumbnail()` from `imagegen.gallery`
-- Video thumbnails: `ensure_video_thumbnail()` from `videogen.gallery`, frame at 1s or fallback to 0.1s/0s
+- Image thumbnails: `llemon_djview.storage.ensure_thumbnail()`
+- Video thumbnails: `llemon_djview.storage.ensure_video_thumbnail()`, frame at 1s or fallback to 0.1s/0s
 - File metadata (sidecar JSON) loaded and displayed based on file type
 
 ## Category System
@@ -94,7 +92,6 @@ All operations modify the shared database.
 File serving validates against all media types (`_MEDIA_EXTS`):
 - `image_file()` serves gallery files (both image and video types)
 - `archive_image_file()` serves archive files (both image and video types)
-- `uploads_image_file()` serves upload files (both image and video types)
 
 MIME types are guessed from extension and returned as the response content type.
 
@@ -102,7 +99,6 @@ MIME types are guessed from extension and returned as the response content type.
 
 - `delete_image()` — DELETE from gallery (works on any media type)
 - `delete_archive_image()` — DELETE from archive (works on any media type)
-- `delete_uploads_image()` — DELETE from uploads (images only, enforced by upload validation)
 
 ### Moving Between Gallery and Archive
 
@@ -117,8 +113,8 @@ These operations are only available for image files:
 
 | Operation | Requirement |
 |-----------|-------------|
-| Upscale (`upscale`, `upscale_uploads`, `upscale_archive`) | File must be an image (checked by filename extension) |
-| Edit (`edit_image`, `edit_uploads_image`, `edit_archive_image`) | File must be an image (checked by filename extension) |
+| Upscale (`upscale`, `upscale_archive`) | File must be an image (checked by filename extension) |
+| Edit (`edit_image`, `edit_archive_image`) | File must be an image (checked by filename extension) |
 
 Attempting these operations on video files results in a validation error.
 
@@ -128,9 +124,9 @@ Video generation accepts image files as reference images:
 
 | Reference Type | Source |
 |----------------|--------|
-| Start image | gallery, archive, uploads, or source dirs (image files only) |
-| End image | gallery, archive, uploads, or source dirs (image files only) |
-| Reference images (ordered) | gallery, archive, uploads, or source dirs (image files only) |
+| Start image | gallery, archive, or source dirs (image files only) |
+| End image | gallery, archive, or source dirs (image files only) |
+| Reference images (ordered) | gallery, archive, or source dirs (image files only) |
 
 All media URLs are converted to `data:` URLs server-side before sending to the provider API.
 
@@ -142,8 +138,8 @@ Notes and tags are model-scoped (provider:model) and are independent of whether 
 
 ## Source Directories
 
-Source directories are read-only image libraries that supplement the uploads
-directory. They are configured in `llemon.conf` and are never modified by
+Source directories are read-only image libraries that supplement the gallery
+picker. They are configured in `llemon.conf` and are never modified by
 the application.
 
 ### Configuration
@@ -183,7 +179,7 @@ The source dirs browser (`/media/source-dirs/`) has two modes:
 
 Source dir images are available directly in the image picker used by the
 Image Creator (source image selection) and the Video Creator (start, end,
-and reference image selection). The picker shows an **Uploads** tab (default)
+and reference image selection). The picker shows a **Gallery** tab (default)
 and a **Source Dirs** tab. The Source Dirs tab is only shown when
 `source_dirs_json_url` is present in the template context, which requires
 `source_dirs` to be configured.
@@ -229,14 +225,13 @@ Host front ends should expose a single Media app route group:
 /llemon/media/video-creator/                         → Video Creator
 /llemon/media/gallery/                               → gallery display (both media types)
 /llemon/media/archive/                               → archive display (both media types)
-/llemon/media/uploads/                               → uploads display (both media types)
 /llemon/media/source-dirs/                           → source dir browser
 /llemon/media/source-dirs/json/                      → source dir JSON API (picker navigation)
 /llemon/media/source-dirs/file/<nick>/<path>         → serve source dir image (read-only)
 /llemon/media/source-dirs/thumb/<nick>/<path>        → serve source dir thumbnail (cached)
 ```
 
-Gallery, archive, uploads, and file operations use the canonical Media URL
+Gallery, archive, and file operations use the canonical Media URL
 names. Video-specific URL names are reserved for Video Creator endpoints such
 as generation, model notes, and model-list refresh.
 
@@ -244,7 +239,7 @@ as generation, model notes, and model-list refresh.
 
 | Condition | Behaviour |
 |-----------|-----------|
-| Media directory not configured | Gallery/archive/uploads show empty with error message |
+| Media directory not configured | Gallery/archive show empty with error message |
 | Invalid filename | File serving returns 404 |
 | File not found | File serving returns 404 |
 | Category database error | Category operations return error; gallery still displays without categories |

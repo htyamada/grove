@@ -6,13 +6,13 @@
 
 ### Note on Unified Gallery
 
-The video and image galleries, archives, uploads, and category systems are unified. See [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md) for the complete gallery and archive specification. This document focuses on video-generation-specific features (creator, video-to-video mode inference, reference images).
+The video and image galleries, archives, and category systems are unified. See [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md) for the complete gallery and archive specification. This document focuses on video-generation-specific features (creator, video-to-video mode inference, reference images).
 
 | File | Role |
 |------|------|
-| `lib/llemon_djview/videogen.py` | Django view set for video generation, gallery, uploads, archive, notes/tags |
+| `lib/llemon_djview/videogen.py` | Django view set for video generation, gallery, archive, notes/tags |
 | `lib/llemon_djview/templates/llemon_video/` | Templates for video index and Video Creator |
-| `lib/llemon_djview/templates/llemon_image/` | Shared Media gallery/archive/uploads templates |
+| `lib/llemon_djview/templates/llemon_image/` | Shared Media gallery/archive templates |
 | `hty7/llemon/mediagen/__init__.py` + `hty7/llemon/mediagen/videogen/__init__.py` | Shared mediagen config loading plus video-generation config accessors for `media_dir`, `notes_dir`, tags, and notes slot |
 | `hty7/llemon/core/notes_db.py` | Package-neutral SQLite notes/tag store |
 
@@ -24,12 +24,10 @@ The video-generation Django UI is integrated with the unified media gallery syst
 |------|-----------|--------|
 | Gallery | `{LLEMON_GALLERY_DIR}` (configurable) or `{media_dir}/gallery` | Yes |
 | Archive | `{LLEMON_ARCHIVE_DIR}` (configurable) or `{media_dir}/archive` | Yes |
-| Uploads | `{LLEMON_UPLOADS_DIR}` (configurable) or `{media_dir}/uploads` | Yes |
 | Categories | `gallery/db/gallery.db` | Yes |
 | Notes DB | `notes_dir/notes.db` | Yes (with image generation) |
 
-Uploads are shared by the Media app and can display both image and video files.
-Video Creator uses image files from uploads, gallery, or archive as start
+Video Creator uses image files from gallery, archive, or source dirs as start
 images, end images, and reference images for video models.
 
 ## Routes
@@ -47,7 +45,7 @@ view/URL wrappers for the deployed LLemon UI.
 | `nav` | Right-side navbar items prepended before the section-specific links on every page; optional |
 
 The section-specific right-side links are Image Creator, Video Creator,
-Gallery, Uploads, and Archive. They are appended after any items supplied via
+Gallery and Archive. They are appended after any items supplied via
 `nav`.
 
 | URL name | Method | Purpose |
@@ -56,21 +54,20 @@ Gallery, Uploads, and Archive. They are appended after any items supplied via
 | `video_creator` | GET | Video Creator form |
 | `gallery` | GET | Shared Media gallery |
 | `archive` | GET | Shared Media archive |
-| `uploads` | GET | Shared Media uploads |
 | `video_generate` | POST | Submit a video generation request |
 | `video_model_note` | GET/POST JSON | Read/write model notes and tag state |
 | `video_models_json` | GET JSON | Refresh provider model list |
 
 Shared file, thumbnail, upload, delete, and archive/move operations use the
-canonical Media URL names (`image_file`, `thumbnail`, `uploads_image_file`,
-`archive_image_file`, `delete_image`, `move_to_archive`, etc.) because those
+canonical Media URL names (`image_file`, `thumbnail`, `archive_image_file`,
+`delete_image`, `move_to_archive`, etc.) because those
 operations are type-aware.
 
 ## Creator
 
 The creator page follows the image-generation page structure: a left result preview and
 form area, a narrow model tag filter column, and a right sidebar for model notes
-and uploaded source/reference image selection. It selects provider, model,
+and gallery/source-reference image selection. It selects provider, model,
 duration, prompt, and Venice-specific fields. Model notes and tri-state tags
 follow the image-generation interaction model: textarea blur saves notes, tag clicks
 save immediately, and the special `block` reverse-tag is used by model
@@ -91,15 +88,15 @@ Yes/No choices are sent. Some Venice video models reject requests that include
 default-valued optional parameters, so omitting them is the safe default.
 
 The image picker (start, end, reference, and generic image buttons) provides
-two tabs: **Uploads** and **Source Dirs**. The Uploads tab lists files from the
-uploads directory. The Source Dirs tab is shown when source directories are
+two tabs: **Gallery** and **Source Dirs**. The Gallery tab lists image files from
+the gallery. The Source Dirs tab is shown when source directories are
 configured (via `source_dirs` in `llemon.conf`) and provides an in-picker
 navigable browser backed by the `/media/source-dirs/json/` API. See
 [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md) §Source
 Directories for configuration.
 
 For requests that include media, djview must not send its private HTTP(S) media
-URLs to the provider. Uploaded/gallery/archive/source-dir media selected in the
+URLs to the provider. Gallery/archive/source-dir media selected in the
 UI is converted server-side to `data:<mime>;base64,...` before calling the
 backend. This applies to all providers and to all data-bearing fields: start
 images, end images, reference images, scene images, audio inputs, and video
@@ -184,10 +181,6 @@ Video-specific details:
 - Data URLs in metadata are truncated to 30 characters in display; options must not contain any `data:` URL longer than 30 characters
 - Generation responses return the sidecar object as `meta` plus a label/value `summary` for immediate creator display
 - The detail overlay includes a Generate button (when creator URL is available) that opens the video creator with parameters from the sidecar
-
-## Uploads
-
-Uploads are part of the unified media system (see [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md)). Only image files (`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`) are accepted. Creator-page image choices use local media URLs; the server converts those local references into data URLs before sending them to provider APIs.
 
 ## Notes and Tags
 

@@ -187,7 +187,7 @@ DOM element: `data-selectedFname` (filename) and `data-selectedUrl` (full URL).
 This decouples state from global variables.
 
 The image picker modal displays a grid of 120×120 mini-thumbnails from the
-uploads folder, rendered using `appendImageThumb()` (matching the video creator
+gallery, rendered using `appendImageThumb()` (matching the video creator
 pattern). Selected images show a blue border. Clicking an image or the Close
 button dismisses the modal and updates the source-image label.
 
@@ -228,12 +228,12 @@ The `image_creator()` view adds to the template context:
 
 - `upscale_url`: URL path or `None`
 - `edit_image_url`: URL path or `None`
-- `picker_images`: list of dicts with `fname` and `thumb_url` from uploads
+- `picker_images`: list of dicts with `fname` and `thumb_url` from gallery
 - `edit_models`: list of edit model identifiers
 - `default_edit_model`: default selected edit model
 - `edit_aspect_ratios`: list prefixed with empty string for "(source)"
 
-The `_uploads_picker_items()` private method scans the uploads directory for
+The `_gallery_picker_items()` private method scans the gallery directory for
 image files (extensions: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) and returns
 a sorted list of dicts with `fname` and `thumb_url`. Does not call
 `_ensure_thumbnail()` on page load for performance; uses pre-existing thumbnails.

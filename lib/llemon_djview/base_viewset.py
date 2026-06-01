@@ -6,8 +6,8 @@ from typing import Any
 from django.conf import settings  # type: ignore[import-untyped]
 from django.urls import reverse  # type: ignore[import-untyped]
 
-from hty7.llemon.mediagen.gallery import CategoryStore
 from .media_utils import ensure_media_thumbnail
+from .storage import CategoryStore
 
 
 class MediaGenViewSetBase:
@@ -59,14 +59,6 @@ class MediaGenViewSetBase:
         media_dir = self._media_dir()
         return os.path.join(media_dir, 'archive') if media_dir else ''
 
-    def _uploads_dir(self) -> str:
-        """Get the uploads directory, with fallback to media_dir/uploads."""
-        uploads_dir = getattr(settings, 'LLEMON_UPLOADS_DIR', '')
-        if uploads_dir:
-            return uploads_dir
-        media_dir = self._media_dir()
-        return os.path.join(media_dir, 'uploads') if media_dir else ''
-
     def _gallery_category_db(self) -> CategoryStore:
         """Open the gallery category database."""
         return CategoryStore(self._gallery_dir())
@@ -98,16 +90,6 @@ class MediaGenViewSetBase:
             media_dir = self._gallery_dir()
         return os.path.join(media_dir, 'thumbnails_large') if media_dir else ''
 
-    def _uploads_thumb_dir(self) -> str:
-        """Get uploads thumbnail directory."""
-        uploads_dir = self._uploads_dir()
-        return os.path.join(uploads_dir, 'thumbnails') if uploads_dir else ''
-
-    def _uploads_large_thumb_dir(self) -> str:
-        """Get uploads large thumbnail directory."""
-        uploads_dir = self._uploads_dir()
-        return os.path.join(uploads_dir, 'thumbnails_large') if uploads_dir else ''
-
     def _archive_thumb_dir(self) -> str:
         """Get archive thumbnail directory."""
         archive_dir = self._archive_dir()
@@ -125,16 +107,6 @@ class MediaGenViewSetBase:
     def _ensure_large_thumbnail(self, fname: str, size: int = 600) -> bool:
         """Create large thumbnail for a gallery file."""
         return ensure_media_thumbnail(self._gallery_dir(), self._large_thumb_dir(), fname, size)
-
-    def _ensure_uploads_thumbnail(self, fname: str, size: int = 160) -> bool:
-        """Create thumbnail for an uploads file."""
-        return ensure_media_thumbnail(self._uploads_dir(), self._uploads_thumb_dir(), fname, size)
-
-    def _ensure_uploads_large_thumbnail(self, fname: str, size: int = 600) -> bool:
-        """Create large thumbnail for an uploads file."""
-        return ensure_media_thumbnail(
-            self._uploads_dir(), self._uploads_large_thumb_dir(), fname, size
-        )
 
     def _ensure_archive_thumbnail(self, fname: str, size: int = 160) -> bool:
         """Create thumbnail for an archive file."""

@@ -3,8 +3,7 @@
 import os
 from typing import Any
 
-from hty7.llemon.mediagen.imagegen.gallery import ensure_thumbnail
-from hty7.llemon.mediagen.videogen.gallery import VIDEO_EXTS, IMAGE_EXTS, ensure_video_thumbnail
+from .storage import IMAGE_EXTS, VIDEO_EXTS, ensure_thumbnail, ensure_video_thumbnail
 
 
 def ensure_media_thumbnail(media_dir: str, thumb_dir: str, fname: str, size: int, *, quality: str = '3') -> bool:

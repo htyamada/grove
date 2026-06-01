@@ -14,7 +14,7 @@ source_thumb_dir (or {media_dir}/source_thumbs/). Originals are never modified.
 
 import os
 
-from hty7.llemon.mediagen.imagegen.gallery import IMAGE_EXTS, ensure_thumbnail
+from .storage import IMAGE_EXTS, ensure_thumbnail
 
 
 def get_source_dirs() -> list[dict]:

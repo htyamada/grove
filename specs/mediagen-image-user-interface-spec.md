@@ -8,7 +8,7 @@
 
 ### Note on Unified Gallery
 
-The image and video galleries, archives, uploads, and category systems are unified. See [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md) for the complete gallery and archive specification. This document focuses on image-generation-specific features (creator, notes/tags, upscaling, editing).
+The image and video galleries, archives, and category systems are unified. See [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md) for the complete gallery and archive specification. This document focuses on image-generation-specific features (creator, notes/tags, upscaling, editing).
 
 | File | Role |
 |------|------|
@@ -198,7 +198,7 @@ view/URL wrappers for the deployed LLemon UI.
 | `nav` | Right-side navbar items prepended before the section-specific links on every page; optional |
 
 The section-specific right-side links are Image Creator, Video Creator,
-Gallery, Uploads, and Archive. They are appended after any items supplied via
+Gallery and Archive. They are appended after any items supplied via
 `nav`.
 
 ### 5.1 Template Context
@@ -209,8 +209,8 @@ The Image Creator view passes the following to `image.html`:
 |-----|-------|
 | `available_tags` | `get_tags()` — list of currently visible/editable tag label strings |
 | `active_notes_slot` | `get_notes_slot()` — slot identifier or `''` |
-| `picker_images` | List of `{fname, url, thumb_url}` dicts for the uploads image picker |
-| `source_dirs_json_url` | URL of the source dirs JSON API, or `''` if not available. When non-empty, a Source Dirs tab is shown in the image picker alongside Uploads. See [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md) §Source Directories. |
+| `picker_images` | List of `{fname, url, thumb_url}` dicts for the gallery image picker |
+| `source_dirs_json_url` | URL of the source dirs JSON API, or `''` if not available. When non-empty, a Source Dirs tab is shown in the image picker alongside Gallery. See [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md) §Source Directories. |
 
 ### 5.2 `model_note` Endpoint
 

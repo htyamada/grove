@@ -17,11 +17,9 @@ from typing import Any
 from django.conf import settings  # type: ignore[import-untyped]
 from django.http import FileResponse, Http404, JsonResponse, StreamingHttpResponse  # type: ignore[import-untyped]
 from django.shortcuts import render  # type: ignore[import-untyped]
-from django.urls import reverse  # type: ignore[import-untyped]
 from django.views.decorators.csrf import csrf_exempt  # type: ignore[import-untyped]
 from django.views.decorators.http import require_POST  # type: ignore[import-untyped]
 
-from hty7.llemon.mediagen.gallery import CategoryStore, sanitize_metadata_data_urls
 from hty7.llemon.mediagen.imagegen import (
     aspect_ratios,
     default_aspect_ratio,
@@ -46,25 +44,22 @@ from hty7.llemon.mediagen.imagegen import (
     PROVIDERS,
     write_image_metadata,
 )
-from hty7.llemon.mediagen.imagegen.gallery import (
-    LARGE_THUMB_SIZE,
+from hty7.llemon.mediagen.imagegen.venice import DEFAULT_EDIT_MODEL, EDIT_ASPECT_RATIOS
+from .storage import (
+    VIDEO_EXTS,
     delete_image_asset,
-    ensure_thumbnail,
+    delete_video_asset,
     image_as_data_url,
     move_image_asset,
-    read_sidecar as read_image_sidecar,
+    move_video_asset,
+    read_image_sidecar,
     save_operation_images,
-    save_uploaded_images,
+    save_uploaded_image_files,
+    sanitize_metadata_data_urls,
+    video_thumb_name,
     write_operation_sidecar,
 )
-from hty7.llemon.mediagen.imagegen.venice import DEFAULT_EDIT_MODEL, EDIT_ASPECT_RATIOS
-from hty7.llemon.mediagen.videogen.gallery import (
-    VIDEO_EXTS,
-    delete_video_asset,
-    move_video_asset,
-    video_thumb_name,
-)
-from .media_utils import ensure_media_thumbnail, is_video
+from .media_utils import is_video
 from .base_viewset import MediaGenViewSetBase
 
 logger = logging.getLogger(__name__)
@@ -95,13 +90,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         self.models_json         = self._models_json
         self.upscale             = csrf_exempt(require_POST(self._upscale))
         self.edit_image          = csrf_exempt(require_POST(self._edit_image))
-        self.uploads_image_file        = self._uploads_image_file
-        self.uploads_thumbnail         = self._uploads_thumbnail
-        self.uploads_large_thumbnail   = self._uploads_large_thumbnail
-        self.delete_uploads_image = csrf_exempt(require_POST(self._delete_uploads_image))
-        self.upscale_uploads     = csrf_exempt(require_POST(self._upscale_uploads))
-        self.edit_uploads_image  = csrf_exempt(require_POST(self._edit_uploads_image))
-        self.upload_uploads      = csrf_exempt(require_POST(self._upload_uploads))
+        self.upload              = csrf_exempt(require_POST(self._upload))
         self.archive_image_file        = self._archive_image_file
         self.archive_thumbnail         = self._archive_thumbnail
         self.archive_large_thumbnail   = self._archive_large_thumbnail
@@ -138,20 +127,20 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
     def _source_dirs_json_url(self) -> str:
         return ''
 
-    def _uploads_picker_items(self) -> list[dict]:
-        """Return a compact list of uploaded images for the creator image picker."""
-        uploads_dir = self._uploads_dir()
-        if not uploads_dir or not os.path.isdir(uploads_dir):
+    def _gallery_picker_items(self) -> list[dict]:
+        """Return a compact list of gallery images for creator source-image pickers."""
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir or not os.path.isdir(gallery_dir):
             return []
         items = []
-        thumb_dir = self._uploads_thumb_dir()
-        for fname in sorted(os.listdir(uploads_dir), reverse=True):
-            if os.path.splitext(fname)[1].lower() not in _MEDIA_EXTS:
+        thumb_dir = self._thumb_dir()
+        for fname in sorted(os.listdir(gallery_dir), reverse=True):
+            if os.path.splitext(fname)[1].lower() not in _IMAGE_EXTS:
                 continue
             has_thumb = bool(thumb_dir) and os.path.isfile(os.path.join(thumb_dir, fname))
             try:
-                url = self._u('uploads_image_file', fname)
-                thumb_url = self._u('uploads_thumbnail', fname) if has_thumb else url
+                url = self._u('image_file', fname)
+                thumb_url = self._u('thumbnail', fname) if has_thumb else url
             except Exception:
                 continue
             items.append({
@@ -174,9 +163,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             {'name': 'Image creator', 'url': self._u('image_creator')},
             {'name': 'Gallery', 'url': self._u('gallery')},
         ]
-        uploads_url = _safe_url('uploads')
-        if uploads_url:
-            pages.append({'name': 'Uploads', 'url': uploads_url})
         archive_url = _safe_url('archive')
         if archive_url:
             pages.append({'name': 'Archive', 'url': archive_url})
@@ -220,10 +206,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
                {'name': 'Gallery', 'url': self._u('gallery')}]
         try:
-            nav.append({'name': 'Uploads', 'url': self._u('uploads')})
-        except Exception:
-            pass
-        try:
             nav.append({'name': 'Archive', 'url': self._u('archive')})
         except Exception:
             pass
@@ -258,9 +240,9 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'large_thumbnail_file_url': self._u('large_thumbnail', 'PLACEHOLDER'),
                 'model_note_url':          self._u('model_note'),
                 'models_json_url':    self._u('models_json'),
-                'upscale_url':              _safe_url('upscale_uploads'),
-                'edit_image_url':           _safe_url('edit_uploads_image'),
-                'picker_images':            self._uploads_picker_items(),
+                'upscale_url':              _safe_url('upscale'),
+                'edit_image_url':           _safe_url('edit_image'),
+                'picker_images':            self._gallery_picker_items(),
                 'source_dirs_json_url':     self._source_dirs_json_url(),
                 'edit_models':              ['firered-image-edit', 'qwen-edit', 'grok-imagine-edit', 'flux-2-max-edit'],
                 'default_edit_model':       DEFAULT_EDIT_MODEL,
@@ -302,9 +284,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
                {'name': 'Gallery', 'url': self._u('gallery')}]
-        uploads_url = _safe_url('uploads')
-        if uploads_url:
-            nav.append({'name': 'Uploads', 'url': uploads_url})
         archive_url = _safe_url('archive')
         if archive_url:
             nav.append({'name': 'Archive', 'url': archive_url})
@@ -313,53 +292,12 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'images':              items,
                 'generate_url':        self._u('image_creator'),
                 'video_generate_url':  _safe_url('video_creator'),
+                'upload_url':          _safe_url('upload'),
                 'delete_image_url':    self._u('delete_image'),
                 'move_to_archive_url': _safe_url('move_to_archive'),
                 'category_enabled':    True,
                 'categories':          categories,
                 'active_category':     active_category,
-            },
-        ))
-
-    def uploads(self, request):
-        uploads_dir = self._uploads_dir()
-        items = []
-        if uploads_dir and os.path.isdir(uploads_dir):
-            for fname in sorted(os.listdir(uploads_dir), reverse=True):
-                if os.path.splitext(fname)[1].lower() not in _MEDIA_EXTS:
-                    continue
-                has_thumb = self._ensure_uploads_thumbnail(fname)
-                has_large_thumb = self._ensure_uploads_large_thumbnail(fname)
-                items.append({
-                    'fname':           fname,
-                    'type':            'video' if is_video(fname) else 'image',
-                    'url':             self._u('uploads_image_file', fname),
-                    'thumb_url':       self._u('uploads_thumbnail', fname),
-                    'large_thumb_url': self._u('uploads_large_thumbnail', fname),
-                    'sidecar':         self._find_sidecar(uploads_dir, fname),
-                })
-
-        def _safe_url(name: str) -> str | None:
-            try:
-                return self._u(name)
-            except Exception:
-                return None
-
-        nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
-               {'name': 'Gallery', 'url': self._u('gallery')}]
-        uploads_url = _safe_url('uploads')
-        if uploads_url:
-            nav.append({'name': 'Uploads', 'url': uploads_url})
-        archive_url = _safe_url('archive')
-        if archive_url:
-            nav.append({'name': 'Archive', 'url': archive_url})
-
-        return render(request, self._t('uploads.html'), self._ctx(
-            'LLemon Image Uploads', nav, {
-                'images':            items,
-                'upload_url':        _safe_url('upload_uploads'),
-                'video_generate_url': _safe_url('video_creator'),
-                'delete_image_url':  self._u('delete_uploads_image'),
             },
         ))
 
@@ -389,9 +327,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         nav = [{'name': 'Image creator', 'url': self._u('image_creator')},
                {'name': 'Gallery', 'url': self._u('gallery')}]
-        uploads_url = _safe_url('uploads')
-        if uploads_url:
-            nav.append({'name': 'Uploads', 'url': uploads_url})
         archive_url = _safe_url('archive')
         if archive_url:
             nav.append({'name': 'Archive', 'url': archive_url})
@@ -789,13 +724,23 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         return self._do_delete_image(request, self._gallery_dir(), self._thumb_dir(),
                                      self._large_thumb_dir())
 
-    def _delete_uploads_image(self, request):
-        return self._do_delete_image(request, self._uploads_dir(), self._uploads_thumb_dir(),
-                                     self._uploads_large_thumb_dir())
+    def _write_upload_sidecars(self, media_dir: str, saved: list[str]) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        for fname in saved:
+            payload = {
+                'source': 'upload',
+                'timestamp': timestamp,
+                'uploaded_at': timestamp,
+                'files': [fname],
+            }
+            try:
+                write_operation_sidecar(os.path.join(media_dir, fname), payload)
+            except OSError as e:
+                logger.warning('could not write upload metadata for %s: %s', fname, e)
 
-    def _upload_uploads(self, request):
-        uploads_dir = self._uploads_dir()
-        if not uploads_dir:
+    def _upload(self, request):
+        gallery_dir = self._gallery_dir()
+        if not gallery_dir:
             return JsonResponse({'error': 'media_dir not configured'}, status=500)
 
         files = request.FILES.getlist('images')
@@ -803,9 +748,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return JsonResponse({'error': 'no files uploaded'}, status=400)
 
         try:
-            saved, errors = save_uploaded_images(files, uploads_dir)
+            saved, errors = save_uploaded_image_files(files, gallery_dir)
         except OSError as e:
-            return JsonResponse({'error': f'could not create uploads directory: {e}'}, status=500)
+            return JsonResponse({'error': f'could not create gallery directory: {e}'}, status=500)
+
+        self._write_upload_sidecars(gallery_dir, saved)
 
         return JsonResponse({'files': saved, 'errors': errors})
 
@@ -964,9 +911,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
     def _upscale(self, request):
         return self._do_upscale(request, self._gallery_dir())
 
-    def _upscale_uploads(self, request):
-        return self._do_upscale(request, self._uploads_dir(), self._gallery_dir())
-
     def _upscale_archive(self, request):
         return self._do_upscale(request, self._archive_dir(), self._gallery_dir())
 
@@ -1070,9 +1014,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
     def _edit_image(self, request):
         return self._do_edit_image(request, self._gallery_dir())
 
-    def _edit_uploads_image(self, request):
-        return self._do_edit_image(request, self._uploads_dir(), self._gallery_dir())
-
     def _edit_archive_image(self, request):
         return self._do_edit_image(request, self._archive_dir(), self._gallery_dir())
 
@@ -1096,31 +1037,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         # For videos, the thumbnail has a different name
         thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
         path = os.path.join(self._thumb_dir(), thumb_filename)
-        if not os.path.isfile(path):
-            raise Http404
-        mime, _ = mimetypes.guess_type(path)
-        return FileResponse(open(path, 'rb'),
-                            content_type=mime or 'application/octet-stream')
-
-    def _uploads_image_file(self, request, filename):
-        try:
-            filename = self._safe_filename(filename)
-        except ValueError:
-            raise Http404
-        path = os.path.join(self._uploads_dir(), filename)
-        if not os.path.isfile(path):
-            raise Http404
-        mime, _ = mimetypes.guess_type(filename)
-        return FileResponse(open(path, 'rb'),
-                            content_type=mime or 'application/octet-stream')
-
-    def _uploads_thumbnail(self, request, filename):
-        if '/' in filename or filename.startswith('.'):
-            raise Http404
-        if not self._ensure_uploads_thumbnail(filename):
-            raise Http404
-        thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
-        path = os.path.join(self._uploads_thumb_dir(), thumb_filename)
         if not os.path.isfile(path):
             raise Http404
         mime, _ = mimetypes.guess_type(path)
@@ -1160,19 +1076,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         # For videos, the thumbnail has a different name
         thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
         path = os.path.join(self._large_thumb_dir(), thumb_filename)
-        if not os.path.isfile(path):
-            raise Http404
-        mime, _ = mimetypes.guess_type(path)
-        return FileResponse(open(path, 'rb'),
-                            content_type=mime or 'application/octet-stream')
-
-    def _uploads_large_thumbnail(self, request, filename):
-        if '/' in filename or filename.startswith('.'):
-            raise Http404
-        if not self._ensure_uploads_large_thumbnail(filename):
-            raise Http404
-        thumb_filename = filename if not is_video(filename) else video_thumb_name(filename)
-        path = os.path.join(self._uploads_large_thumb_dir(), thumb_filename)
         if not os.path.isfile(path):
             raise Http404
         mime, _ = mimetypes.guess_type(path)

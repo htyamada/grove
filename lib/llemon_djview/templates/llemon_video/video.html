@@ -81,8 +81,8 @@
     border:1px solid #ddd; padding:0.4em 0.5em; background:#fafafa;
     font-size:0.85em; color:#444; line-height:1.5;
   }
-  #uploads-section { margin-top:0.8em; flex:1; min-height:0; display:flex; flex-direction:column; }
-  #uploads-section .section-heading { font-weight:bold; margin-bottom:0.25em; }
+  #reference-settings-section { margin-top:0.8em; flex:1; min-height:0; display:flex; flex-direction:column; }
+  #reference-settings-section .section-heading { font-weight:bold; margin-bottom:0.25em; }
   .asset-list { flex:1; min-height:0; overflow:auto; border:1px solid #ddd; padding:0.45em; background:#fafafa; }
   .asset-list label { display:block; font-weight:normal; font-size:0.9em; margin:0.18em 0; }
   .image-btn-row { display:flex; align-items:center; gap:0.5em; }
@@ -226,7 +226,7 @@
       <label>Model description</label>
       <div id="model-description"></div>
     </div>
-    <div id="uploads-section">
+    <div id="reference-settings-section">
       <div id="negative-prompt-row" style="display:none; margin-bottom:0.5em;">
         <label for="negative_prompt">Negative prompt</label>
         <input id="negative_prompt" style="width:100%; box-sizing:border-box; font-size:1em;">
@@ -295,16 +295,16 @@
   <div id="image-picker-box">
     <div id="image-picker-header">
       <strong id="image-picker-title"></strong>
-      {% if source_dirs_json_url %}<div id="image-picker-tabs"><button type="button" id="picker-tab-uploads" class="picker-tab active">Uploads</button><button type="button" id="picker-tab-source" class="picker-tab">Source Dirs</button></div>{% endif %}
+      {% if source_dirs_json_url %}<div id="image-picker-tabs"><button type="button" id="picker-tab-gallery" class="picker-tab active">Gallery</button><button type="button" id="picker-tab-source" class="picker-tab">Source Dirs</button></div>{% endif %}
       <button type="button" id="image-picker-close">Close</button>
     </div>
     <div id="image-picker-grid">
-      {% for item in uploads %}
+      {% for item in gallery_images %}
       <div class="image-thumb-wrap" data-url="{{ item.url }}" data-fname="{{ item.fname }}" title="{{ item.fname }}">
         <img class="image-thumb" src="{{ item.thumb_url }}" alt="{{ item.fname }}" loading="lazy">
       </div>
       {% empty %}
-      <div style="color:#777; padding:0.5em;">No uploaded images.</div>
+      <div style="color:#777; padding:0.5em;">No gallery images.</div>
       {% endfor %}
     </div>
     <div id="sd-picker-nav" style="display:none;font-size:0.85em;color:#555;margin-bottom:0.4em;"></div>
@@ -1212,26 +1212,26 @@
     });
   }
   function showPickerTab(tab) {
-    const uploadsGrid = document.getElementById('image-picker-grid');
+    const galleryGrid = document.getElementById('image-picker-grid');
     const sdNav = document.getElementById('sd-picker-nav');
     const sdGrid = document.getElementById('sd-picker-grid');
     if (tab === 'source') {
-      uploadsGrid.style.display = 'none';
+      galleryGrid.style.display = 'none';
       sdNav.style.display = '';
       sdGrid.style.display = 'flex';
-      document.getElementById('picker-tab-uploads').classList.remove('active');
+      document.getElementById('picker-tab-gallery').classList.remove('active');
       document.getElementById('picker-tab-source').classList.add('active');
       if (!sdPickerLoaded) sdPickerFetch('', '');
     } else {
-      uploadsGrid.style.display = '';
+      galleryGrid.style.display = '';
       sdNav.style.display = 'none';
       sdGrid.style.display = 'none';
-      document.getElementById('picker-tab-uploads').classList.add('active');
+      document.getElementById('picker-tab-gallery').classList.add('active');
       document.getElementById('picker-tab-source').classList.remove('active');
     }
   }
   if (sdJsonUrl) {
-    document.getElementById('picker-tab-uploads').addEventListener('click', function() { showPickerTab('uploads'); });
+    document.getElementById('picker-tab-gallery').addEventListener('click', function() { showPickerTab('gallery'); });
     document.getElementById('picker-tab-source').addEventListener('click', function() { showPickerTab('source'); });
   }
   document.getElementById('videogen-form').addEventListener('submit', async function () {
