@@ -32,11 +32,13 @@ multi-deployment isolation.
 
 ## 2. Configuration
 
-### 2.1 Notes selector (`llemon.conf`)
+### 2.1 Notes selector
 
 The active notes slot is configured via `notes_selector` in the
-`[{variant}.llemon.mediagen]` section of `llemon.conf`.  The `.local` overlay
-can override it to select a different notes set without changing the base file.
+`[{variant}.llemon.mediagen]` section. In Django deployments, values can be
+provided by Grove's `etc/llemon_djview.conf` overlay, which is merged on top
+of the inherited `~/etc/llemon.conf` LLemon config. The overlay can select a
+different notes set without changing the base LLemon file.
 
 | Value | Behaviour |
 |-------|-----------|

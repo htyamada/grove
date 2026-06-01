@@ -1,6 +1,7 @@
 """llemon_djview.sourcedirs -- source directory browser utilities.
 
-Source directories are configured in llemon_djview.conf under [*.llemon.mediagen]:
+Source directories are configured in Grove's etc/llemon_djview.conf overlay
+under [*.llemon.mediagen]:
 
     input_files = [
         "Photos=~/Pictures",

@@ -212,6 +212,41 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         media_settings.assert_called_once_with(fake_appconfig)
         self.assertEqual(settings, {'LLEMON_IMAGEGEN_MEDIA_DIR': '/tmp/media'})
 
+    def test_django_settings_overlays_grove_local_djview_conf(self) -> None:
+        djview = self._import_djview()
+        fake_appconfig = types.SimpleNamespace(
+            _data={
+                'hty7.llemon.mediagen': {
+                    'media_dir': '/base/media',
+                    'log_dir': '/base/log',
+                },
+            },
+        )
+
+        with tempfile.NamedTemporaryFile('w', suffix='.conf') as conf:
+            conf.write(
+                '[hty7.llemon.mediagen]\n'
+                'media_dir = "~/overlay/media"\n'
+                'input_files = ["Pictures=/srv/pictures"]\n'
+            )
+            conf.flush()
+
+            with mock.patch.object(djview, '_AppConfig', return_value=fake_appconfig):
+                with mock.patch.object(djview, '_DEFAULT_DJVIEW_CONF', conf.name):
+                    with mock.patch.object(djview.discover, 'init'):
+                        with mock.patch.object(djview, 'media_settings', return_value={}) as media_settings:
+                            djview.django_settings('hty7')
+
+        media_settings.assert_called_once_with(fake_appconfig)
+        self.assertEqual(
+            fake_appconfig._data['hty7.llemon.mediagen'],
+            {
+                'media_dir': str(Path('~/overlay/media').expanduser()),
+                'log_dir': '/base/log',
+                'input_files': ['Pictures=/srv/pictures'],
+            },
+        )
+
     def test_videogen_empty_upload_matches_image_error_message(self) -> None:
         class FakeJsonResponse:
             def __init__(self, data, status=200):

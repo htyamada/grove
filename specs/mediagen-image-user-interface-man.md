@@ -4,8 +4,10 @@ The Django image-generator UI supports free-text per-model notes and
 tri-state tags for provider/model pairs. Tag visibility/editability is
 configured through `notes.json` files placed in any directory listed in
 `description_dirs` or `extra_dirs` under `[*.llemon.mediagen]` in the
-configuration file. The active free-text notes slot is configured with
-`notes_selector`.
+effective configuration. In Grove's Django deployment, that effective
+configuration is `~/etc/llemon.conf` plus the Grove-local
+`etc/llemon_djview.conf` overlay. The active free-text notes slot is
+configured with `notes_selector`.
 
 ---
 
@@ -95,7 +97,7 @@ directory containing a `notes.json`, the files are merged at startup:
 ## Placement
 
 Place `notes.json` in any directory listed in `description_dirs` or
-`extra_dirs` under the mediagen configuration section:
+`extra_dirs` under the effective mediagen configuration section:
 
 ```toml
 [hty7.llemon.mediagen]

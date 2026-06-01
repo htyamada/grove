@@ -6,7 +6,9 @@ Implementation decisions for `hty7/llemon/core/notes_db.py`,
 and the notes/tags handling in `lib/llemon_djview/imagegen.py`.
 The user-facing media UI contract is in
 `mediagen-image-user-interface-spec.md`; the notes data is loaded from the
-shared `[*.llemon.mediagen]` config described by `llemon-conf-spec.md`.
+shared `[*.llemon.mediagen]` config. In Grove's Django deployment,
+`lib/llemon_djview` inherits the base LLemon config from `~/etc/llemon.conf`
+and overlays Grove-local media UI values from `etc/llemon_djview.conf`.
 
 `core.notes_db` is a general utility. It does not own a global database path;
 the image-generation backend passes the path from `[*.llemon.mediagen].notes_dir`, and any other
@@ -23,7 +25,8 @@ makes each concern independently testable and avoids entangling the notes
 merge rules with quirks logic.
 
 `_load_notes()` only handles `tags`. The slot identifier is no longer read
-from `notes.json`; it comes from `notes_selector` in `llemon.conf` instead.
+from `notes.json`; it comes from `notes_selector` in `[*.llemon.mediagen]`
+instead.
 
 ---
 

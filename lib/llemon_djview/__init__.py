@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import tomllib
+from pathlib import Path
 import traceback
 from urllib.parse import urlencode
 
@@ -16,7 +18,7 @@ from django.views.decorators.csrf import csrf_exempt  # type: ignore[import-unty
 from django.views.decorators.http import require_POST  # type: ignore[import-untyped]
 
 from hty7.config import AppConfig as _AppConfig
-from hty7.config import _parser as _config_parser
+from hty7.config import ConfigError as _ConfigError
 
 from hty7.llemon.persona import attach_context_estimate, summarize_history_estimates
 from hty7.llemon.persona.config import Config, ConfigError
@@ -37,7 +39,10 @@ _md_doc = _markdown.Markdown(extensions=['fenced_code', 'tables'])
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONF = '~/etc/llemon.conf'
-_DEFAULT_DJVIEW_CONF = '~/etc/llemon_djview.conf'
+_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_DJVIEW_CONF = str(_ROOT / 'etc' / 'llemon_djview.conf')
+
+_ConfigValue = str | list[str | dict[str, str]] | bool
 
 
 def _render_md(text):
@@ -70,13 +75,73 @@ def media_settings(appconfig) -> dict[str, str | None]:
     }
 
 
+def _expand_djview_value(value: object, path: str, section: str, key: str) -> _ConfigValue:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return os.path.expanduser(value)
+    if isinstance(value, list):
+        items: list[str | dict[str, str]] = []
+        for item in value:
+            if isinstance(item, str):
+                items.append(os.path.expanduser(item))
+            elif isinstance(item, dict):
+                items.append({
+                    str(k): os.path.expanduser(v) if isinstance(v, str) else str(v)
+                    for k, v in item.items()
+                })
+            else:
+                raise _ConfigError(
+                    f"{path}: [{section}] {key!r}: list elements must be strings or inline tables"
+                )
+        return items
+    raise _ConfigError(
+        f"{path}: [{section}] {key!r}: value must be a string, array, or boolean"
+    )
+
+
+def _parse_djview_conf(path: str) -> dict[str, dict[str, _ConfigValue]]:
+    """Parse the grove-local llemon_djview.conf overlay."""
+    try:
+        with open(path, 'rb') as f:
+            nested = tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise _ConfigError(f"{path}: {e}") from e
+
+    parsed: dict[str, dict[str, _ConfigValue]] = {}
+    for variant, projects in nested.items():
+        if not isinstance(projects, dict):
+            raise _ConfigError(f"{path}: top-level key {variant!r} is not a table")
+        for project, layers in projects.items():
+            if not isinstance(layers, dict):
+                raise _ConfigError(f"{path}: [{variant}.{project}] is not a table")
+            for layer, values in layers.items():
+                if not isinstance(values, dict):
+                    raise _ConfigError(f"{path}: [{variant}.{project}.{layer}] is not a table")
+                section = f"{variant}.{project}.{layer}"
+                parsed[section] = {
+                    str(key): _expand_djview_value(value, path, section, str(key))
+                    for key, value in values.items()
+                }
+    return parsed
+
+
+def _merge_djview_conf(
+    base: dict[str, dict[str, _ConfigValue]],
+    overlay: dict[str, dict[str, _ConfigValue]],
+) -> dict[str, dict[str, _ConfigValue]]:
+    merged = {section: dict(values) for section, values in base.items()}
+    for section, values in overlay.items():
+        merged.setdefault(section, {}).update(values)
+    return merged
+
+
 def django_settings(variant: str, conf_path: str = _DEFAULT_CONF) -> dict[str, str | None]:
     """Load installed LLemon config for variant and return Django settings values."""
     appconfig = _AppConfig(os.path.expanduser(conf_path), variant)
-    djview_conf = os.path.expanduser(_DEFAULT_DJVIEW_CONF)
-    if os.path.exists(djview_conf):
-        overlay = _config_parser.parse(djview_conf)
-        appconfig._data = _config_parser.merge(appconfig._data, overlay)
+    if os.path.exists(_DEFAULT_DJVIEW_CONF):
+        overlay = _parse_djview_conf(_DEFAULT_DJVIEW_CONF)
+        appconfig._data = _merge_djview_conf(appconfig._data, overlay)
     discover.init(appconfig)
     return media_settings(appconfig)
 

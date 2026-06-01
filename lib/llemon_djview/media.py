@@ -4,8 +4,9 @@ The media app keeps separate image and video creator endpoints, but shares the
 gallery and archive pages.
 
 Source directories are read-only image libraries that can be browsed and copied
-into the gallery. Configure via input_files / source_thumb_dir in llemon_djview.conf
-under [*.llemon.mediagen]; see sourcedirs.py for details.
+into the gallery. Configure via input_files / source_thumb_dir in Grove's
+etc/llemon_djview.conf overlay under [*.llemon.mediagen]; see sourcedirs.py
+for details.
 """
 
 import json

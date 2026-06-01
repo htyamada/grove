@@ -448,25 +448,26 @@ active.
 ## Source Directories
 
 Source directories are read-only image libraries that can be browsed and
-copied into the gallery. They are configured in `llemon.conf` and are
-never modified by the application. Input files for generation, upscaling,
-and editing must come from the gallery.
+copied into the gallery. They are configured in Grove's
+`etc/llemon_djview.conf` overlay under `[*.llemon.mediagen]`; the overlay is
+merged on top of the inherited LLemon config from `~/etc/llemon.conf`.
+Source originals are never modified by the application. Input files for
+generation, upscaling, and editing must come from the gallery.
 
 ### Configuration
 
-Source directories are configured in `llemon.conf` under
-`[{variant}.llemon.mediagen]`:
+Source directories are configured with `input_files`:
 
 ```toml
 [hty7.llemon.mediagen]
-source_dirs = [
+input_files = [
     "Photos=~/Pictures",
     "Stock=/data/stock-images",
 ]
 source_thumb_dir = "~/var/hty7/llemon/mediagen/source_thumbs"  # optional
 ```
 
-Each `source_dirs` entry is a `"nickname=path"` string. `source_thumb_dir`
+Each `input_files` entry is a `"nickname=path"` string. `source_thumb_dir`
 is optional; if absent, thumbnails default to `{media_dir}/source_thumbs/`.
 
 ### Browser UI

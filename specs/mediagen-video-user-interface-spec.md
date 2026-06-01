@@ -91,7 +91,8 @@ default-valued optional parameters, so omitting them is the safe default.
 The image picker (start, end, reference, and generic image buttons) provides
 two tabs: **Gallery** and **Source Dirs**. The Gallery tab lists image files from
 the gallery. The Source Dirs tab is shown when source directories are
-configured (via `source_dirs` in `llemon.conf`) and provides an in-picker
+configured (via `input_files` in Grove's `etc/llemon_djview.conf` overlay)
+and provides an in-picker
 navigable browser backed by the `/media/source-dirs/json/` API. See
 [mediagen-unified-gallery-spec.md](mediagen-unified-gallery-spec.md) §Source
 Directories for configuration.
@@ -186,9 +187,10 @@ Video-specific details:
 ## Notes and Tags
 
 Video generation uses the shared `core.notes_db` schema and reads its database
-from `notes_dir`. In the current default `llemon.conf`, image and video
-generation share the same `notes_dir`, so they use the same `notes.db` unless
-an operator overrides one of the paths.
+from `notes_dir`. Image and video generation read the same effective
+`[*.llemon.mediagen]` settings after the inherited LLemon config and
+Grove-local `etc/llemon_djview.conf` overlay are merged, so they use the same
+`notes.db` unless an operator overrides one of the paths.
 
 `notes.json` supports two tag lists. Both are merged across all
 `description_dirs` / `extra_dirs` files in first-seen order:

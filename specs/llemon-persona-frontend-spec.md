@@ -119,6 +119,12 @@ loads LLemon settings at application startup through
 `llemon_djview.django_settings(<variant>)`, which initializes the configured
 variant and returns the Django settings required by the shared views.
 
+For Grove, `django_settings()` inherits the base LLemon values from
+`~/etc/llemon.conf` via `hty7.config.AppConfig`, then applies the independent
+Grove-local overlay at `~/prj/grove/etc/llemon_djview.conf` if it exists.
+The djview overlay parser is local to `lib/llemon_djview` and does not read
+`~/etc/llemon_djview.conf`.
+
 All `discover.*` discovery calls within `LLemonViewSet` use the standard
 discovery functions with no special arguments. CWD is never added to the
 search path implicitly; it is only searched if `"."` appears in the
