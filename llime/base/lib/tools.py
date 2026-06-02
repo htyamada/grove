@@ -14,7 +14,7 @@ def specs_nav_item(project):
     if project == 'llemon':
         return {
             'name': 'Specs',
-            'url': '/zorf/markdown/AUTO/prj/grove/specs/',
+            'url': '/zorf/markdown/AUTO/src/hty7/python3/prj/llemon/',
         }
     return {
         'name': 'Specs',
