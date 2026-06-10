@@ -439,6 +439,46 @@ function modelParamFromMeta(meta) {
   return match ? match[1] : meta.model;
 }
 
+function appendDescRows(rows) {
+  rows.forEach(function(pair) {
+    if (pair[1] === null || pair[1] === undefined || pair[1] === '') return;
+    row(pair[0], pair[1]);
+  });
+}
+
+function videoDescRows(sc, item) {
+  sc = sc || {};
+  var opts = sc.options || {};
+  var rows = [
+    ['Prompt', sc.prompt || ''],
+    ['Provider', sc.provider || ''],
+    ['API', sc.api || ''],
+    ['Model', sc.model_display || sc.model || ''],
+    ['Duration', sc.duration || ''],
+    ['Resolution', opts.resolution || sc.resolution || ''],
+    ['Aspect ratio', opts.aspect_ratio || sc.aspect_ratio || ''],
+    ['Audio', opts.audio === undefined ? '' : (opts.audio ? 'yes' : 'no')],
+    ['Video codec', sc.video_codec || ''],
+    ['Audio codec', sc.audio_codec || ''],
+    ['Format', sc.format_name || ''],
+    ['Created', sc.creation_time || sc.timestamp || ''],
+    ['Title', sc.title || ''],
+    ['Description', sc.description || sc.comment || ''],
+    ['File', item && item.fname ? item.fname : ''],
+  ];
+  var tags = sc.tags || {};
+  Object.keys(tags).sort().forEach(function(key) {
+    if (
+      key === 'title' ||
+      key === 'comment' ||
+      key === 'description' ||
+      key === 'creation_time'
+    ) return;
+    rows.push(['Tag: ' + key, tags[key]]);
+  });
+  return rows;
+}
+
 function videoGenOpen(item) {
   if (!item || !_videoGenUrl) return;
   var sc = item.sidecar || {};
@@ -498,13 +538,11 @@ function descShow(idx) {
   var tbody = document.getElementById('desc-tbody');
   tbody.innerHTML = '';
   var sc = _item.sidecar;
-  if (!sc) {
-    document.getElementById('desc-noprops').style.display = '';
-    document.getElementById('desc-table').style.display = 'none';
-  } else {
-    document.getElementById('desc-noprops').style.display = 'none';
-    document.getElementById('desc-table').style.display = '';
-    var rows = [
+  var rows = [];
+  if (_item.type === 'video' && sc) {
+    rows = videoDescRows(sc, _item);
+  } else if (sc) {
+    rows = [
       ['Prompt',       sc.prompt       || ''],
       ['Provider',     sc.provider     || ''],
       ['Model',        sc.model        || ''],
@@ -524,9 +562,17 @@ function descShow(idx) {
     if (sc.hide_watermark != null)    rows.push(['Hide watermark',  sc.hide_watermark ? 'yes' : 'no']);
     if (sc.output_format)             rows.push(['Output format',   sc.output_format]);
     if (sc.timestamp)                 rows.push(['Timestamp',       sc.timestamp]);
-    rows.forEach(function(pair) {
-      row(pair[0], pair[1]);
-    });
+  }
+  var visibleRows = rows.filter(function(pair) {
+    return pair[1] !== null && pair[1] !== undefined && pair[1] !== '';
+  });
+  if (!visibleRows.length) {
+    document.getElementById('desc-noprops').style.display = '';
+    document.getElementById('desc-table').style.display = 'none';
+  } else {
+    document.getElementById('desc-noprops').style.display = 'none';
+    document.getElementById('desc-table').style.display = '';
+    appendDescRows(rows);
   }
   document.getElementById('desc-overlay').style.display = 'flex';
 }

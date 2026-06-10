@@ -22,8 +22,8 @@ from django.views.decorators.csrf import csrf_exempt  # type: ignore[import-unty
 from django.views.decorators.http import require_POST  # type: ignore[import-untyped]
 
 from .imagegen import LLemonImageGenViewSet
-from .media_utils import is_image
-from .storage import write_operation_sidecar
+from .media_utils import is_image, is_video
+from .storage import read_video_sidecar, sanitize_metadata_data_urls, write_operation_sidecar
 from .videogen import LLemonVideoGenViewSet
 
 
@@ -69,6 +69,11 @@ class _MediaNavMixin:
 
 class _MediaImageViewSet(_MediaNavMixin, LLemonImageGenViewSet):
     """Image-generation view set with combined media navigation."""
+
+    def _find_sidecar(self, media_dir: str, fname: str) -> dict | None:
+        if is_video(fname):
+            return read_video_sidecar(media_dir, fname, sanitize_metadata_data_urls)
+        return super()._find_sidecar(media_dir, fname)
 
 
 class _MediaVideoViewSet(_MediaNavMixin, LLemonVideoGenViewSet):

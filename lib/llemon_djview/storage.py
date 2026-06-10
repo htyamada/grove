@@ -174,7 +174,7 @@ def read_video_sidecar(media_dir: str, fname: str, sanitize) -> dict[str, Any]:
         except FileNotFoundError:
             continue
         except Exception:
-            return {}
+            continue
     for name in (f'{stem}.properties', f'{fname}.properties'):
         path = os.path.join(media_dir, name)
         try:
@@ -190,8 +190,120 @@ def read_video_sidecar(media_dir: str, fname: str, sanitize) -> dict[str, Any]:
         except FileNotFoundError:
             continue
         except Exception:
-            return {}
-    return {}
+            continue
+    return sanitize(read_embedded_video_metadata(media_dir, fname))
+
+
+def _ffprobe_json(path: str) -> dict[str, Any]:
+    ffprobe = shutil.which('ffprobe')
+    if not ffprobe:
+        return {}
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                '-v', 'error',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
+                path,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return {}
+    try:
+        data = json.loads(result.stdout)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _coerce_tag_value(value: Any) -> str:
+    if value is None:
+        return ''
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _compact_dict(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item for key, item in value.items()
+        if item not in (None, '', [], {})
+    }
+
+
+def read_embedded_video_metadata(media_dir: str, fname: str) -> dict[str, Any]:
+    path = os.path.join(media_dir, fname)
+    if not os.path.isfile(path):
+        return {}
+
+    probed = _ffprobe_json(path)
+    if not probed:
+        return {}
+
+    format_info = probed.get('format') if isinstance(probed.get('format'), dict) else {}
+    stream_list = probed.get('streams') if isinstance(probed.get('streams'), list) else []
+    video_stream = next(
+        (
+            stream for stream in stream_list
+            if isinstance(stream, dict) and stream.get('codec_type') == 'video'
+        ),
+        {},
+    )
+    audio_stream = next(
+        (
+            stream for stream in stream_list
+            if isinstance(stream, dict) and stream.get('codec_type') == 'audio'
+        ),
+        {},
+    )
+
+    tags: dict[str, str] = {}
+    for source in (
+        format_info.get('tags'),
+        video_stream.get('tags') if isinstance(video_stream, dict) else None,
+        audio_stream.get('tags') if isinstance(audio_stream, dict) else None,
+    ):
+        if not isinstance(source, dict):
+            continue
+        for key, value in source.items():
+            clean_key = str(key).strip()
+            clean_value = _coerce_tag_value(value)
+            if clean_key and clean_value and clean_key not in tags:
+                tags[clean_key] = clean_value
+
+    width = video_stream.get('width') if isinstance(video_stream, dict) else None
+    height = video_stream.get('height') if isinstance(video_stream, dict) else None
+    resolution = ''
+    if width and height:
+        resolution = f'{width}x{height}'
+
+    creation_time = ''
+    for key in ('creation_time', 'date', 'com.apple.quicktime.creationdate'):
+        if tags.get(key):
+            creation_time = tags[key]
+            break
+
+    return _compact_dict({
+        'metadata_source': 'embedded',
+        'format_name': _coerce_tag_value(format_info.get('format_name')),
+        'duration': _coerce_tag_value(format_info.get('duration') or video_stream.get('duration')),
+        'bit_rate': _coerce_tag_value(format_info.get('bit_rate')),
+        'resolution': resolution,
+        'video_codec': _coerce_tag_value(video_stream.get('codec_name')),
+        'audio_codec': _coerce_tag_value(audio_stream.get('codec_name')),
+        'creation_time': creation_time,
+        'title': tags.get('title', ''),
+        'comment': tags.get('comment', ''),
+        'description': tags.get('description', ''),
+        'tags': tags,
+    })
 
 
 def ensure_thumbnail(src_dir: str, dst_dir: str, fname: str, size: int) -> bool:
