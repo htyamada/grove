@@ -146,12 +146,53 @@ def _merge_djview_conf(
     return merged
 
 
+def _setup_startup_logging(appconfig) -> None:
+    """Capture LLemon startup notifications (e.g. key-loading) in a log file.
+
+    Django applies its LOGGING dictConfig only after the settings module is
+    fully imported, but django_settings() loads API keys (via discover.init ->
+    core.init -> load_keys) during that import.  Without an early handler, the
+    key-loading notifications emitted by hty7.llemon.core.keys are lost (they
+    only reach stderr via Python's last-resort handler).  Attach a FileHandler
+    to the root logger -- before keys load -- so library loggers propagate into
+    a log file.  Django's later dictConfig replaces this handler for runtime.
+    """
+    if not hasattr(appconfig, 'get'):
+        return
+    log_dir = str(
+        appconfig.get('llemon', 'persona', 'log_dir')
+        or appconfig.get('llemon', 'core', 'log_dir')
+        or ''
+    )
+    if not log_dir:
+        return
+    try:
+        expanded = os.path.expanduser(log_dir)
+        os.makedirs(expanded, exist_ok=True)
+        handler = logging.FileHandler(
+            os.path.join(expanded, 'llemon-djview.log'), encoding='utf-8',
+        )
+        handler.setLevel(logging.WARNING)
+        handler.setFormatter(
+            logging.Formatter('%(asctime)s %(levelname)-8s %(name)s: %(message)s'),
+        )
+        root = logging.getLogger()
+        root.addHandler(handler)
+        if root.level == logging.NOTSET or root.level > logging.WARNING:
+            root.setLevel(logging.WARNING)
+    except OSError:
+        pass
+
+
 def django_settings(variant: str, conf_path: str = _DEFAULT_CONF) -> dict[str, str | None]:
     """Load installed LLemon config for variant and return Django settings values."""
     appconfig = _AppConfig(os.path.expanduser(conf_path), variant)
     if os.path.exists(_DEFAULT_DJVIEW_CONF):
         overlay = _parse_djview_conf(_DEFAULT_DJVIEW_CONF)
         appconfig._data = _merge_djview_conf(appconfig._data, overlay)
+    # Configure logging before discover.init() loads API keys, so key-loading
+    # notifications are captured rather than lost.
+    _setup_startup_logging(appconfig)
     discover.init(appconfig)
     return media_settings(appconfig)
 
