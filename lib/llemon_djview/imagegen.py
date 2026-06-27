@@ -715,6 +715,9 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             hw_val = data.get('hide_watermark')
             if hw_val is not None:
                 extra_params['hide_watermark'] = bool(hw_val)
+            exif_val = data.get('embed_exif_metadata')
+            if exif_val is not None:
+                extra_params['embed_exif_metadata'] = bool(exif_val)
             fmt_val = data.get('output_format')
             if isinstance(fmt_val, str) and fmt_val.strip():
                 extra_params['output_format'] = fmt_val.strip()
