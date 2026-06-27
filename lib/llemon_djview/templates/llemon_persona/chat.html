@@ -311,12 +311,12 @@
       const historyInit = writeHistory && historyFname;
       const initCommand = (
         historyInit
-          ? `/init history ${historyMacroName || historyFname}`
-          : (startMacroName ? `/init start ${startMacroName}` : '/init new')
+          ? `set start history ${historyMacroName || historyFname}`
+          : (startMacroName ? `set start file ${startMacroName}` : 'set start new')
       );
       const lines = [
-        `/macro id ${macroNamePart(configFname)}-${macroNamePart(serviceName)}`,
-        `/macro title ${pageTitle}`,
+        `set id ${macroNamePart(configFname)}-${macroNamePart(serviceName)}`,
+        `set title ${pageTitle}`,
         `set type ${typeId}`,
         `set config ${configId || configFname}`,
       ];
@@ -326,7 +326,7 @@
       lines.push(
         initCommand,
         `set service ${serviceName}`,
-        '/start',
+        'connect',
         '',
       );
       return lines.join('\n');

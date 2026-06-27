@@ -24,6 +24,10 @@ else:
 
 @unittest.skipIf(djview is None, f'djview import failed: {_IMPORT_ERROR}')
 class PersonaDjviewManualSelectionTests(unittest.TestCase):
+    def test_macro_route_command_uses_connect_not_start(self) -> None:
+        self.assertEqual(djview._macro_route_command('connect'), 'start')
+        self.assertIsNone(djview._macro_route_command('/start'))
+
     def test_load_persona_config_delegates_manual_provider_model_without_service(self) -> None:
         with mock.patch.object(djview, '_persona_load_persona_config', return_value='built') as load_config:
             config = djview._load_persona_config(

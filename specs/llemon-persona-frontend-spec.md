@@ -234,7 +234,7 @@ selection itself is handled by `Session.apply_setup_command()`.
 
 For play mode, `llemon-tui` may pre-populate setup from a macro file. The
 frontend passes the macro path to `Session.configure_from_macro_file()`. If
-the macro contained `start`, it enters `CursesChatView` with the resulting
+the macro contained `connect`, it enters `CursesChatView` with the resulting
 `Persona`; otherwise it shows the setup screen with the selected parameters.
 Macro-file resolution is persona-layer behavior; frontends must not duplicate
 config, history, or start-file lookup logic.
@@ -327,7 +327,7 @@ self.session = Session()
 ```
 
 The user selects parameters via commands (`set type`, `set config`,
-`set service`, `/init`) plus optional startup-only provider/model command-line
+`set service`, `set start`) plus optional startup-only provider/model command-line
 flags. `Session` stores the current selection
 and exposes listing helpers delegating to `discover`:
 
@@ -349,7 +349,7 @@ constructs a `Persona`.
 
 The Django setup UI is a browser-native version of the CLI/TUI setup flow.
 It uses stable GET-addressable pages, but once a config is selected it keeps
-the remaining setup on a single **Start Session** page so init mode and
+the remaining setup on a single **Connect Session** page so init mode and
 service can be chosen in either order:
 
 1. `index`: show a **Parameters** table with `Type` unset, then a
@@ -357,15 +357,15 @@ service can be chosen in either order:
 2. `configs?type=...`: show `Type` filled and `Config` unset, then a
    **Select config** table showing config name and title.
 3. `configs?type=...&config=...`: show `Type` and `Config` filled on a
-   three-column **Start Session** page. The left column contains
+   three-column **Connect Session** page. The left column contains
    **Parameters**, **Start mode**, and **Service**; the center column contains
    **Manual provider/model** selection; the right column contains **Options**
-   and the final **Start** action.
+   and the final **Connect** action.
 4. `configs?...&init=...`, `configs?...&service=...`,
    `configs?...&provider=...`, `configs?...&model=...`, or any combination of
-   those parameters: remain on the same **Start Session** page, updating the
+   those parameters: remain on the same **Connect Session** page, updating the
    selected values independently. Chat is not entered until the final
-   **Start** link is followed, and neither service-selection order nor
+   **Connect** link is followed, and neither service-selection order nor
    init-selection order is enforced.
 5. On first entry to `configs?type=...&config=...`, Django defaults the
    start-mode selection to `new` and, if there are no manual option
@@ -386,7 +386,7 @@ If any manual provider/model selection is present in the query, the service
 radio list must render with no active selection even if a service value is
 still present in the request state.
 
-On the merged **Start Session** page, the visible **Parameters** table shows
+On the merged **Connect Session** page, the visible **Parameters** table shows
 only `Type` and `Config`. Their row headers are navigation controls: `Type`
 returns to type selection and `Config` returns to config selection. This
 replaces separate back links.
@@ -423,16 +423,16 @@ view also lists macros discovered via
 view, which resolves the macro basename from `description_dirs` using
 `discover.resolve_path()`, then applies it with
 `Session.configure_from_macro_file()`. The persona-layer method uses the same
-slash-command parser as CLI/TUI, so valid display-only commands produce no
-output, parameter-setting commands for set type/set config/init/set service
+setup command parser as CLI/TUI, so valid display-only commands produce no
+output, parameter-setting commands for set type/set config/set start/set service
 must be in dependency order, later description-file selections may override
 earlier `set temperature`, `set write-history`, and `set debug` commands, and
-`start` stops macro processing. Errors are reported and terminate macro
+`connect` stops macro processing. Errors are reported and terminate macro
 execution. The `session` view redirects to the
 appropriate staged setup page for the parameters selected by the macro. If
-the macro selected an init mode or contained `start`, Django redirects to
-the final **Start Session** page rather than entering chat immediately; the
-user still clicks **Start**. Parser errors are reported as non-chat
+the macro selected an init mode or contained `connect`, Django redirects to
+the final **Connect Session** page rather than entering chat immediately; the
+user still clicks **Connect**. Parser errors are reported as non-chat
 `error-banner` messages.
 
 Django frontends must support the same restart metadata model as terminal
@@ -660,7 +660,7 @@ from ..persona import discover
 | Calls `discover.init()` | yes (via `cli.run_tui_app()`) | yes (via `cli.run_cli_app()`) | no (host's responsibility) |
 | Config selection | `Session` via curses setup or macro arg | `Session` via REPL or macro arg | Staged browser setup pages; macro via `index` + `session` view redirects into the same staged flow |
 | CWD in discovery | only if `"."` in `description_dirs` | only if `"."` in `description_dirs` | only if `"."` in `description_dirs` |
-| Persona lifetime | one per `start` command | one per `start` command | one per SSE request |
+| Persona lifetime | one per `connect` command | one per `connect` command | one per SSE request |
 | History authority | file | file | client (browser sends full list each request) |
 | Streaming transport | curses screen updates | `print()` with word wrap | Server-Sent Events |
 

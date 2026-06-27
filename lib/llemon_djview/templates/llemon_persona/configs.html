@@ -236,7 +236,7 @@
     {% endif %}
     <h2>Options</h2>
     {% if config.overrides %}
-    <form id="start-session-form" method="get" action="{% url 'llemon_persona:chat' %}">
+    <form id="connect-session-form" method="get" action="{% url 'llemon_persona:chat' %}">
       {% for name, value in config.selected_init.chat_params.items %}
       <input type="hidden" name="{{ name }}" value="{{ value }}">
       {% endfor %}
@@ -282,12 +282,12 @@
     {% else %}
     <p>Select a service or choose a provider and model manually to view and adjust session options.</p>
     {% endif %}
-    <h2>Start session</h2>
+    <h2>Connect session</h2>
     <table class="init-table">
       <tbody>
         <tr>
           <th>Action</th>
-          <td><button type="submit" form="start-session-form" {% if not config.overrides %}disabled{% endif %}>Start</button></td>
+          <td><button type="submit" form="connect-session-form" {% if not config.overrides %}disabled{% endif %}>Connect</button></td>
         </tr>
       </tbody>
     </table>

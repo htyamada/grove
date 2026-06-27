@@ -308,7 +308,7 @@ def _macro_route_command(command: str) -> str | None:
     cmd = command.strip()
     if cmd in ('/help', '/?'):
         return None
-    if cmd == '/start':
+    if cmd == 'connect':
         return 'start'
     if cmd.startswith('set type') and (len(cmd) == 8 or cmd[8] == ' '):
         return 'type' if cmd[8:].strip() else None
@@ -983,7 +983,7 @@ class LLemonViewSet:
         selected = config_list[0] if config_list else None
         page_title = 'LLemon Persona - Select config'
         if selected:
-            page_title = 'LLemon Persona — Start Session'
+            page_title = 'LLemon Persona — Connect Session'
         return render(request, self._t('configs.html'), self._ctx(page_title, {
             'type_id':      type_id,
             'type_display': type_display,
