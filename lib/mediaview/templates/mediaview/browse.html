@@ -1,6 +1,12 @@
 {% extends 'base/base.html' %}
 {% block extra_head %}
 <style>
+  :root {
+    --mv-thumb-width: {% if aspect %}{{ aspect.thumb_width }}px{% else %}160px{% endif %};
+    --mv-thumb-height: {% if aspect %}{{ aspect.thumb_height }}px{% else %}160px{% endif %};
+    --mv-desc-width: {% if aspect %}{{ aspect.desc_width }}px{% else %}300px{% endif %};
+    --mv-desc-height: {% if aspect %}{{ aspect.desc_height }}px{% else %}300px{% endif %};
+  }
   .mv-breadcrumbs { font-size:0.9em; color:#888; margin-bottom:0.7em; }
   .mv-breadcrumbs a { color:#888; }
   .mv-breadcrumbs a:hover { color:#333; }
@@ -9,17 +15,17 @@
   .dir-grid { display:flex; flex-wrap:wrap; gap:0.6em; margin-bottom:0.8em; }
   .dir-thumb {
     display:flex; flex-direction:column; align-items:center; justify-content:center;
-    width:160px; height:160px; background:#1a2233; color:#9ab; text-decoration:none;
+    width:var(--mv-thumb-width); height:var(--mv-thumb-height); background:#1a2233; color:#9ab; text-decoration:none;
     border:1px solid #345; box-sizing:border-box;
   }
   .dir-thumb:hover { background:#223344; color:#cde; border-color:#567; }
   .dir-thumb.drag-over { background:#334455; border-color:#7ac; color:#cef; }
   .dir-icon { font-size:2.8em; line-height:1; }
-  .dir-label { font-size:0.78em; margin-top:0.4em; max-width:148px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 0.4em; text-align:center; }
+  .dir-label { font-size:0.78em; margin-top:0.4em; max-width:calc(var(--mv-thumb-width) - 12px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 0.4em; text-align:center; }
   .dir-parent .dir-icon { font-size:2.2em; }
 
   .thumb-grid { display:flex; flex-wrap:wrap; gap:0.6em; }
-  .thumb { display:flex; align-items:center; justify-content:center; width:160px; height:160px; background:#111; color:#bbb; text-decoration:none; position:relative; border:1px solid #aaa; box-sizing:border-box; cursor:pointer; }
+  .thumb { display:flex; align-items:center; justify-content:center; width:var(--mv-thumb-width); height:var(--mv-thumb-height); background:#111; color:#bbb; text-decoration:none; position:relative; border:1px solid #aaa; box-sizing:border-box; cursor:pointer; }
   .thumb img { max-width:100%; max-height:100%; object-fit:contain; display:block; transition:opacity 0.15s; }
   .thumb:hover img { opacity:0.8; }
   .thumb.video::after {
@@ -28,7 +34,7 @@
     border-left:22px solid rgba(255,255,255,0.9); filter:drop-shadow(0 1px 3px rgba(0,0,0,0.7));
   }
   .thumb-fallback { display:none; height:100%; align-items:center; justify-content:center; font-size:0.8em; }
-  .thumb-label { font-size:0.7em; color:#555; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .thumb-label { font-size:0.7em; color:#555; max-width:var(--mv-thumb-width); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
   #desc-overlay {
     display:none; position:fixed; top:0; left:0; right:0; bottom:0;
@@ -46,7 +52,7 @@
   #desc-thumb-wrap {
     position:relative; flex-shrink:0; cursor:pointer;
     display:flex; align-items:center; justify-content:center;
-    width:300px; height:300px; box-sizing:border-box; border:1px solid #ccc; background:#111;
+    width:var(--mv-desc-width); height:var(--mv-desc-height); box-sizing:border-box; border:1px solid #ccc; background:#111;
   }
   #desc-thumb { max-height:100%; max-width:100%; object-fit:contain; display:block; }
   #desc-thumb-play {
@@ -168,6 +174,9 @@
 {% if root_name %}
 <div style="margin-bottom:0.7em;">
   <button type="button" onclick="mkdirPrompt();">&#x1F4C2; New Folder</button>
+  {% if aspect %}
+  <span style="margin-left:0.8em; color:#777; font-size:0.9em;">Aspect {{ aspect.aspect_width }}:{{ aspect.aspect_height }}</span>
+  {% endif %}
 </div>
 {% endif %}
 

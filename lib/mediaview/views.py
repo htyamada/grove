@@ -24,6 +24,7 @@ _RENAME_SUFFIX_ALIASES = {
     '.jpeg': '.jpg',
     '.tif': '.tiff',
 }
+_DEFAULT_ASPECT = (1, 1)
 
 
 def _prefix():
@@ -99,6 +100,65 @@ def _rename_suffix(path: Path) -> str | None:
     if suffix in _RENAME_IMAGE_SUFFIXES:
         return suffix
     return _RENAME_SUFFIX_ALIASES.get(suffix)
+
+
+def _parse_aspect_value(value: str) -> tuple[int, int] | None:
+    parts = value.strip().split(':', 1)
+    if len(parts) != 2:
+        return None
+    try:
+        width = int(parts[0].strip())
+        height = int(parts[1].strip())
+    except ValueError:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _media_aspect_for_dir(root: Path, directory: Path) -> tuple[int, int]:
+    current = directory
+    while True:
+        media_file = current / '.media'
+        try:
+            if media_file.is_file():
+                for raw_line in media_file.read_text(encoding='utf-8').splitlines():
+                    line = raw_line.strip()
+                    if not line or ':' not in line:
+                        continue
+                    key, value = line.split(':', 1)
+                    if key.strip().lower() != 'aspect':
+                        continue
+                    aspect = _parse_aspect_value(value)
+                    if aspect is not None:
+                        return aspect
+        except OSError:
+            pass
+
+        if current == root:
+            break
+        current = current.parent
+
+    return _DEFAULT_ASPECT
+
+
+def _aspect_style(width: int, height: int) -> dict[str, str | int | float]:
+    ratio = width / height
+    thumb_area = 160 * 160
+    desc_area = 300 * 300
+    thumb_width = max(96, round((thumb_area * ratio) ** 0.5))
+    thumb_height = max(96, round((thumb_area / ratio) ** 0.5))
+    desc_width = max(220, round((desc_area * ratio) ** 0.5))
+    desc_height = max(220, round((desc_area / ratio) ** 0.5))
+    return {
+        'aspect_width': width,
+        'aspect_height': height,
+        'aspect_ratio': ratio,
+        'thumb_width': thumb_width,
+        'thumb_height': thumb_height,
+        'desc_width': desc_width,
+        'desc_height': desc_height,
+    }
 
 
 def _item_for_file(root_name, root, entry):
@@ -227,6 +287,7 @@ def browse(request, root_name, subpath=''):
 
     parent_relpath = None if directory == root else '/'.join(rel.parts[:-1])
     current_relpath = '' if directory == root else str(rel)
+    aspect_width, aspect_height = _media_aspect_for_dir(root, directory)
 
     return render(request, _TEMPLATE, _ctx(f'Media — {root_name}', {
         'root_name': root_name,
@@ -243,6 +304,7 @@ def browse(request, root_name, subpath=''):
         'mkdir_url': _url(_APP, 'mkdir') + '/',
         'dir_list_url': _url(_APP, 'dirs', rn) + '/',
         'move_roots': _move_roots(conf.roots()),
+        'aspect': _aspect_style(aspect_width, aspect_height),
     }))
 
 
