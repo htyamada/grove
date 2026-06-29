@@ -551,7 +551,6 @@ function descShow(idx) {
       ['Cost',         sc.cost != null ? '$' + parseFloat(sc.cost).toFixed(6) : '—'],
     ];
     if (sc.system)                    rows.push(['System',          sc.system]);
-    if (sc.system_force)              rows.push(['System force',    sc.system_force]);
     if (sc.temperature != null)       rows.push(['Temperature',     sc.temperature]);
     if (sc.temperature_force != null) rows.push(['Force temp',      sc.temperature_force]);
     if (sc.negative_prompt)           rows.push(['Negative prompt', sc.negative_prompt]);
@@ -728,7 +727,6 @@ function genOpen(idx) {
     if (sc.aspect_ratio)              url.searchParams.set('aspect_ratio',      sc.aspect_ratio);
     if (sc.image_size)                url.searchParams.set('image_size',        sc.image_size);
     if (sc.system)                    url.searchParams.set('system',            sc.system);
-    if (sc.system_force)              url.searchParams.set('system_force',      sc.system_force);
     if (sc.temperature != null)       url.searchParams.set('temperature',       sc.temperature);
     if (sc.temperature_force != null) url.searchParams.set('temperature_force', sc.temperature_force);
     if (sc.cost != null)              url.searchParams.set('cost',              sc.cost);

@@ -177,7 +177,6 @@ function descShow(idx) {
       ['Cost',         sc.cost != null ? '$' + parseFloat(sc.cost).toFixed(6) : '—'],
     ];
     if (sc.system)                    rows.push(['System',          sc.system]);
-    if (sc.system_force)              rows.push(['System force',    sc.system_force]);
     if (sc.temperature != null)       rows.push(['Temperature',     sc.temperature]);
     if (sc.temperature_force != null) rows.push(['Force temp',      sc.temperature_force]);
     if (sc.negative_prompt)           rows.push(['Negative prompt', sc.negative_prompt]);

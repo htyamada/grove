@@ -48,7 +48,6 @@
   .image-select-row { display: flex; align-items: center; gap: 0.5em; margin: 0.4em 0; }
   #system-section { flex-shrink: 0; display: flex; flex-direction: column; margin-bottom: 0.8em; }
   #system-prompt { height: 6em; width: 100%; font-size: 0.9em; box-sizing: border-box; resize: vertical; }
-  #system-force-label { margin-top: 0.3em; font-size: 0.85em; }
   #system-prompt[readonly] { background: #f3f3f3; color: #444; }
   #notes-section { flex-shrink: 0; display: flex; flex-direction: column; }
   #notes-tags { column-count: 3; column-gap: 0.8em; margin: 0.25em 0 0.1em; }
@@ -63,8 +62,6 @@
   #description-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   #description-section:has(#model-description:empty) { display: none; }
   #model-description { flex: 1; min-height: 0; overflow-y: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid #ddd; padding: 0.4em 0.5em; background: #fafafa; font-size: 0.85em; color: #444; line-height: 1.5; }
-  #model-quirks-section { margin-top: 0.8em; flex-shrink: 0; }
-  #model-quirks { border: 1px solid #ddd; padding: 0.4em 0.5em; background: #fafafa; font-size: 0.85em; color: #444; line-height: 1.6; word-break: break-word; white-space: pre-line; height: calc(4 * 1.6em + 0.8em); box-sizing: border-box; overflow-y: auto; }
 
   /* Image picker overlay */
   #image-picker { position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:1000; display:flex; align-items:center; justify-content:center; }
@@ -228,7 +225,6 @@
     <div id="system-section">
       <label for="system-prompt">System prompt</label>
       <textarea id="system-prompt" placeholder="Optional system prompt"></textarea>
-      <label id="system-force-label" for="system_force" style="display:none;"><input type="checkbox" id="system_force"> Force</label>
     </div>
     <div id="notes-section">
       <label>Model notes</label>
@@ -251,10 +247,6 @@
         <label>Model description</label>
         <div id="model-description"></div>
       </div>
-      <div id="model-quirks-section">
-        <label>Model quirks</label>
-        <div id="model-quirks"></div>
-      </div>
       <div id="provider-options-section" style="display:none; margin-top: 0.8em; flex-shrink: 0;">
         <div id="provider-extra-fields"></div>
       </div>
@@ -273,8 +265,6 @@
 </div>
 
 {{ model_descriptions|json_script:"model-descriptions-data" }}
-{{ model_quirks|json_script:"model-quirks-data" }}
-{{ model_system_prompts|json_script:"model-system-prompts-data" }}
 {{ model_options|json_script:"model-options-data" }}
 {{ model_tag_states|json_script:"model-tag-states-data" }}
 {{ aspect_ratios|json_script:"aspect-ratios-data" }}
@@ -305,8 +295,6 @@ document.addEventListener('keydown', function(e) {
 <script>
 (function () {
   let MODEL_DESCRIPTIONS   = JSON.parse(document.getElementById('model-descriptions-data').textContent);
-  let MODEL_QUIRKS         = JSON.parse(document.getElementById('model-quirks-data').textContent);
-  let MODEL_SYSTEM_PROMPTS = JSON.parse(document.getElementById('model-system-prompts-data').textContent);
   let MODEL_OPTIONS        = JSON.parse(document.getElementById('model-options-data').textContent);
   let MODEL_TAG_STATES     = JSON.parse(document.getElementById('model-tag-states-data').textContent);
   let MODEL_QUALITIES      = JSON.parse(document.getElementById('model-qualities-data').textContent);
@@ -332,8 +320,6 @@ document.addEventListener('keydown', function(e) {
     model_options:        JSON.parse(document.getElementById('model-options-data').textContent),
     model_tag_states:     MODEL_TAG_STATES,
     model_descriptions:   MODEL_DESCRIPTIONS,
-    model_quirks:         MODEL_QUIRKS,
-    model_system_prompts: MODEL_SYSTEM_PROMPTS,
     model_qualities:      MODEL_QUALITIES,
     aspect_ratios:        JSON.parse(document.getElementById('aspect-ratios-data').textContent),
     image_sizes:          JSON.parse(document.getElementById('image-sizes-data').textContent),
@@ -355,16 +341,12 @@ document.addEventListener('keydown', function(e) {
   const notesStatus  = document.getElementById('notes-status');
   const modelSel     = document.getElementById('model');
   const modelDesc    = document.getElementById('model-description');
-  const quirksBox    = document.getElementById('model-quirks');
   const systemArea   = document.getElementById('system-prompt');
 
-  let _defaultSystem = '';
   let _noteLoadSeq = 0;
 
   function _applyProviderData(data) {
     MODEL_DESCRIPTIONS   = data.model_descriptions;
-    MODEL_QUIRKS         = data.model_quirks;
-    MODEL_SYSTEM_PROMPTS = data.model_system_prompts;
     MODEL_OPTIONS        = data.model_options || [];
     MODEL_TAG_STATES     = data.model_tag_states || {};
     MODEL_QUALITIES      = data.model_qualities || {};
@@ -553,7 +535,6 @@ document.addEventListener('keydown', function(e) {
       loadNote(modelSel.value);
     } else if (!modelSel.value) {
       modelDesc.textContent = '';
-      quirksBox.textContent = '';
       notesArea.value = '';
       for (const cb of _noteTagBoxes()) _setTristate(cb, _defaultTagState(cb.value));
     }
@@ -682,23 +663,7 @@ document.addEventListener('keydown', function(e) {
 
   function updateDescription(modelId) {
     modelDesc.textContent = MODEL_DESCRIPTIONS[modelId] || '';
-    const quirks = MODEL_QUIRKS[modelId] || [];
-    quirksBox.textContent = quirks.length > 0 ? quirks.join('\n') : 'none';
-    const forcedSystem = MODEL_SYSTEM_PROMPTS[modelId] || '';
-    _defaultSystem = forcedSystem;
-    const systemForceLbl = document.getElementById('system-force-label');
-    const systemForceCb  = document.getElementById('system_force');
-    if (forcedSystem !== '') {
-      systemArea.value    = forcedSystem;
-      systemArea.readOnly = true;
-      systemForceLbl.style.display = '';
-      systemForceCb.checked = false;
-    } else {
-      systemArea.value    = '';
-      systemArea.readOnly = false;
-      systemForceLbl.style.display = 'none';
-      systemForceCb.checked = false;
-    }
+    systemArea.value = '';
     _updateQualityRow(modelId);
   }
 
@@ -815,15 +780,6 @@ document.addEventListener('keydown', function(e) {
     _updateTemperatureState();
     if (this.checked) document.getElementById('temperature').focus();
   });
-  document.getElementById('system_force').addEventListener('change', function () {
-    if (this.checked) {
-      systemArea.readOnly = false;
-      systemArea.focus();
-    } else {
-      systemArea.value    = _defaultSystem;
-      systemArea.readOnly = true;
-    }
-  });
   // Apply initial provider_config (temperature/system visibility, extra fields).
   // This also calls updateDescription + loadNote via _applyProviderData.
   _applyProviderData(_providerCache[INITIAL_PROVIDER]);
@@ -854,15 +810,7 @@ document.addEventListener('keydown', function(e) {
       if (tempEl)  tempEl.value    = p.get('temperature');
       if (tempFCb) tempFCb.checked = false;
     }
-    const systemForceLbl = document.getElementById('system-force-label');
-    const systemForceCb  = document.getElementById('system_force');
-    if (p.has('system_force')) {
-      systemArea.value = p.get('system_force');
-      if (systemForceLbl.style.display !== 'none') {
-        systemForceCb.checked = true;
-        systemArea.readOnly   = false;
-      }
-    } else if (p.has('system') && !systemArea.readOnly) {
+    if (p.has('system')) {
       systemArea.value = p.get('system');
     }
     // Restore provider extra fields (e.g. Venice params).
@@ -1099,14 +1047,8 @@ document.addEventListener('keydown', function(e) {
       image_size:   document.getElementById('image_size').value,
       stream:       true,
     };
-    const systemForceLbl = document.getElementById('system-force-label');
-    const systemForceCb  = document.getElementById('system_force');
     const systemValue = systemArea.value.trim();
-    if (systemForceLbl.style.display !== 'none') {
-      if (systemForceCb.checked && systemValue !== '') body.system_force = systemValue;
-    } else {
-      if (systemValue !== '') body.system = systemValue;
-    }
+    if (systemValue !== '') body.system = systemValue;
     const temperatureEl     = document.getElementById('temperature');
     const temperatureValue  = temperatureEl && !temperatureEl.disabled ? temperatureEl.value : '';
     const temperatureForceCb = document.getElementById('temperature_force');

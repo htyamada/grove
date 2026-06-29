@@ -828,11 +828,6 @@
       startVisible = modelAllowsStartEndImages(modelSel.value);
       endVisible = modelAllowsStartEndImages(modelSel.value);
       refVisible = modelAllowsReferenceImages(modelSel.value);
-    } else if (currentProvider === 'openai') {
-      genericImagesVisible = false;
-      startVisible = true;
-      endVisible = false;
-      refVisible = false;
     } else if (currentProvider === 'openrouter') {
       genericImagesVisible = openrouterAllowsGenericImages();
       startVisible = openrouterAllowsFirstFrameImage();
@@ -1269,8 +1264,6 @@
       if (modelIsKlingReferenceVideo(modelSel.value) && genericImageUrls.length) {
         body.scene_image_urls = genericImageUrls.slice();
       }
-    } else if (currentProvider === 'openai') {
-      if (startImageUrl) body.image_url = startImageUrl;
     } else if (currentProvider === 'openrouter') {
       const aspectRatio = document.getElementById('aspect_ratio').value.trim();
       if (openrouterAllowsAspectRatio() && aspectRatio) body.aspect_ratio = aspectRatio;

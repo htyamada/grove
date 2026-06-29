@@ -1,6 +1,5 @@
 """llemon_djview.videogen -- Django view logic for LLemon video generation."""
 
-import base64
 import json
 import logging
 import mimetypes
@@ -541,8 +540,7 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             'duration': duration,
             'debug': bool(data.get('debug')),
         }
-        if provider in ('openai', 'openrouter', 'venice'):
-            gen_kwargs['base_url'] = (data.get('url') or '').strip() or None
+        gen_kwargs['base_url'] = (data.get('url') or '').strip() or None
         if provider == 'venice':
             for key in ('resolution', 'aspect_ratio'):
                 value = (data.get(key) or '').strip()
@@ -550,20 +548,6 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                     gen_kwargs[key] = value
         generate_kwargs: dict[str, Any] = {}
         metadata_options: dict[str, Any] = {}
-        if provider == 'openai':
-            image_value = data.get('image_url')
-            if isinstance(image_value, str) and image_value.strip():
-                clean_value = image_value.strip()
-                generate_kwargs['image_url'] = self._data_reference_for_api(request, clean_value)
-                metadata_options['image_url'] = clean_value
-            ref_urls = data.get('reference_image_urls')
-            if isinstance(ref_urls, list):
-                clean_values = [v.strip() for v in ref_urls if isinstance(v, str) and v.strip()]
-                if clean_values:
-                    generate_kwargs['reference_image_urls'] = [
-                        self._data_reference_for_api(request, v) for v in clean_values
-                    ]
-                    metadata_options['reference_image_urls'] = clean_values
         if provider == 'venice':
             is_kling_reference = venice_model_is_kling_reference_to_video(model)
             is_grok_reference = venice_model_is_grok_reference_to_video(model)

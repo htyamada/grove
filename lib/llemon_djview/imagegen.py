@@ -3,7 +3,6 @@
 Each app instantiates LLemonImageGenViewSet with its own template prefix and URL namespace.
 """
 
-import base64
 import json
 import logging
 import mimetypes
@@ -27,7 +26,6 @@ from hty7.llemon.mediagen.imagegen import (
     default_edit_model,
     default_image_model,
     default_image_size,
-    default_system_prompt,
     edit_aspect_ratios,
     edit_models,
     extract_extra_params,
@@ -44,7 +42,6 @@ from hty7.llemon.mediagen.imagegen import (
     make_imagegen_backend,
     model_capabilities,
     model_display,
-    model_quirk_labels,
     normalize_provider_api,
     provider_config as _provider_config,
     supports_edit,
@@ -193,8 +190,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                                 status=502)
         model_options = []
         model_descriptions: dict[str, str] = {}
-        model_quirks: dict[str, list[str]] = {}
-        model_system_prompts: dict[str, str] = {}
         model_qualities: dict[str, dict] = {}
         for m in raw_models:
             mid  = m['id']
@@ -204,12 +199,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'display': f'{name} ({mid})' if name else mid,
             })
             model_descriptions[mid] = m['description']
-            quirks = model_quirk_labels(mid, provider, api)
-            if quirks:
-                model_quirks[mid] = quirks
-            system_prompt = default_system_prompt(mid, provider, api)
-            if system_prompt is not None:
-                model_system_prompts[mid] = system_prompt
             try:
                 caps = model_capabilities(mid, provider, api)
                 quals = caps.get('qualities') or []
@@ -283,8 +272,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'model_options':      model_options,
                 'model_tag_states':   model_tag_states,
                 'model_descriptions': model_descriptions,
-                'model_quirks':       model_quirks,
-                'model_system_prompts': model_system_prompts,
                 'model_qualities':    model_qualities,
                 'provider_config':    _provider_config(provider, api),
                 'available_tags':      [] if notes_load_errors else get_tags(),
@@ -498,7 +485,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         temperature: float | None,
         temperature_force: float | None,
         system: str | None,
-        system_force: str | None,
         provider: str,
         api: str,
         extra_params: dict[str, Any] | None = None,
@@ -526,7 +512,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 temperature=temperature,
                 temperature_force=temperature_force,
                 system=system,
-                system_force=system_force,
                 **(extra_params or {}),
             )
         finally:
@@ -561,11 +546,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 self._ensure_large_thumbnail(_fname)
         actual_model = result.get('model') or model
         metadata_system = system if system is not None else result.get('system')
-        metadata_system_force = (
-            system_force if system_force is not None else result.get('system_force')
-        )
-        if metadata_system_force is not None:
-            metadata_system = None
 
         try:
             write_image_metadata(
@@ -577,7 +557,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 files=files,
                 prompt=prompt,
                 system=metadata_system,
-                system_force=metadata_system_force,
                 temperature=temperature,
                 temperature_force=temperature_force,
                 provider=provider,
@@ -614,7 +593,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         temperature: float | None,
         temperature_force: float | None,
         system: str | None,
-        system_force: str | None,
         provider: str,
         api: str,
         extra_params: dict[str, Any] | None = None,
@@ -626,7 +604,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             try:
                 payload, status = self._generate_result(
                     prompt, model, aspect_ratio, image_size, temperature,
-                    temperature_force, system, system_force, provider, api,
+                    temperature_force, system, provider, api,
                     extra_params, output_subdir,
                 )
                 q.put({'event': 'done', 'status': status, **payload})
@@ -662,7 +640,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         raw_temperature = data.get('temperature')
         raw_temperature_force = data.get('temperature_force')
         raw_system = data.get('system')
-        raw_system_force = data.get('system_force')
         if raw_temperature in (None, ''):
             temperature = None
         else:
@@ -686,17 +663,8 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'error': 'temperature and temperature_force are mutually exclusive',
             }, status=400)
         system = raw_system.strip() if isinstance(raw_system, str) else None
-        system_force = (
-            raw_system_force.strip() if isinstance(raw_system_force, str) else None
-        )
         if system == '':
             system = None
-        if system_force == '':
-            system_force = None
-        if system is not None and system_force is not None:
-            return JsonResponse({
-                'error': 'system and system_force are mutually exclusive',
-            }, status=400)
 
         if not prompt:
             return JsonResponse({'error': 'prompt is required'}, status=400)
@@ -731,7 +699,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             resp = StreamingHttpResponse(
                 self._generate_stream(
                     prompt, model, aspect_ratio, image_size, temperature,
-                    temperature_force, system, system_force, provider, api,
+                    temperature_force, system, provider, api,
                     extra_params or None, output_subdir,
                 ),
                 content_type='application/x-ndjson',
@@ -742,7 +710,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         payload, status = self._generate_result(
             prompt, model, aspect_ratio, image_size, temperature,
-            temperature_force, system, system_force, provider, api,
+            temperature_force, system, provider, api,
             extra_params or None, output_subdir,
         )
         return JsonResponse(payload, status=status)
@@ -760,8 +728,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return JsonResponse({'error': f'could not list models: {e}'}, status=502)
         model_options = []
         model_descriptions: dict[str, str] = {}
-        model_quirks: dict[str, list[str]] = {}
-        model_system_prompts: dict[str, str] = {}
         model_qualities: dict[str, dict] = {}
         for m in raw_models:
             mid  = m['id']
@@ -771,12 +737,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'display': f'{name} ({mid})' if name else mid,
             })
             model_descriptions[mid] = m['description']
-            quirks = model_quirk_labels(mid, provider, api)
-            if quirks:
-                model_quirks[mid] = quirks
-            system_prompt = default_system_prompt(mid, provider, api)
-            if system_prompt is not None:
-                model_system_prompts[mid] = system_prompt
             try:
                 caps = model_capabilities(mid, provider, api)
                 quals = caps.get('qualities') or []
@@ -796,8 +756,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             'model_options':        model_options,
             'model_tag_states':     model_tag_states,
             'model_descriptions':   model_descriptions,
-            'model_quirks':         model_quirks,
-            'model_system_prompts': model_system_prompts,
             'model_qualities':      model_qualities,
             'aspect_ratios':        aspect_ratios(provider, api),
             'image_sizes':          image_sizes(provider, api),
