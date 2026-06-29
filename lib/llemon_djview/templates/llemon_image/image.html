@@ -198,6 +198,10 @@
             <select id="xf_style_preset" name="style_preset" style="font-size:1em;"></select>
           </span>
         </div>
+        <div class="row" id="quality-row" style="display:none;">
+          <label for="quality">Quality</label>
+          <select id="quality" name="quality" style="font-size:1em;"></select>
+        </div>
         <div class="row">
           <label for="temperature">Temperature</label>
           <input type="number" id="temperature" name="temperature" min="0" max="2" step="0.1" style="width:5em;" placeholder="auto">
@@ -277,6 +281,7 @@
 {{ image_sizes|json_script:"image-sizes-data" }}
 {{ provider_config|json_script:"provider-config-data" }}
 {{ reverse_tags|json_script:"reverse-tags-data" }}
+{{ model_qualities|json_script:"model-qualities-data" }}
 <script>
 var _lbUrl = '';
 function lbShow() {
@@ -299,6 +304,7 @@ document.addEventListener('keydown', function(e) {
   let MODEL_SYSTEM_PROMPTS = JSON.parse(document.getElementById('model-system-prompts-data').textContent);
   let MODEL_OPTIONS        = JSON.parse(document.getElementById('model-options-data').textContent);
   let MODEL_TAG_STATES     = JSON.parse(document.getElementById('model-tag-states-data').textContent);
+  let MODEL_QUALITIES      = JSON.parse(document.getElementById('model-qualities-data').textContent);
   let DEFAULTS = {
     model:        '{{ default_model|escapejs }}',
     aspect_ratio: '{{ default_aspect_ratio|escapejs }}',
@@ -323,6 +329,7 @@ document.addEventListener('keydown', function(e) {
     model_descriptions:   MODEL_DESCRIPTIONS,
     model_quirks:         MODEL_QUIRKS,
     model_system_prompts: MODEL_SYSTEM_PROMPTS,
+    model_qualities:      MODEL_QUALITIES,
     aspect_ratios:        JSON.parse(document.getElementById('aspect-ratios-data').textContent),
     image_sizes:          JSON.parse(document.getElementById('image-sizes-data').textContent),
     default_model:        DEFAULTS.model,
@@ -350,6 +357,7 @@ document.addEventListener('keydown', function(e) {
     MODEL_SYSTEM_PROMPTS = data.model_system_prompts;
     MODEL_OPTIONS        = data.model_options || [];
     MODEL_TAG_STATES     = data.model_tag_states || {};
+    MODEL_QUALITIES      = data.model_qualities || {};
     DEFAULTS = {
       model:        data.default_model,
       aspect_ratio: data.default_aspect_ratio,
@@ -602,6 +610,23 @@ document.addEventListener('keydown', function(e) {
     switchProvider(this.value);
   });
 
+  function _updateQualityRow(modelId) {
+    const row = document.getElementById('quality-row');
+    const sel = document.getElementById('quality');
+    if (!row || !sel) return;
+    const qinfo = MODEL_QUALITIES[modelId];
+    const quals = (qinfo && qinfo.qualities) || [];
+    if (!quals.length) { row.style.display = 'none'; return; }
+    sel.innerHTML = '';
+    for (const q of quals) {
+      const opt = document.createElement('option');
+      opt.value = q; opt.textContent = q;
+      if (q === qinfo.default) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    row.style.display = '';
+  }
+
   function updateDescription(modelId) {
     modelDesc.textContent = MODEL_DESCRIPTIONS[modelId] || '';
     const quirks = MODEL_QUIRKS[modelId] || [];
@@ -621,6 +646,7 @@ document.addEventListener('keydown', function(e) {
       systemForceLbl.style.display = 'none';
       systemForceCb.checked = false;
     }
+    _updateQualityRow(modelId);
   }
 
   function _noteTagBoxes() {
@@ -759,6 +785,8 @@ document.addEventListener('keydown', function(e) {
       updateDescription(modelSel.value);
       loadNote(modelSel.value);
     }
+    const qualityParamEl = document.getElementById('quality');
+    if (p.has('quality') && qualityParamEl) qualityParamEl.value = p.get('quality');
     const ar = document.getElementById('aspect_ratio');
     if (p.has('aspect_ratio') && ar) ar.value = p.get('aspect_ratio');
     const isz = document.getElementById('image_size');
@@ -1046,6 +1074,13 @@ document.addEventListener('keydown', function(e) {
       const v = document.getElementById('xf_style_preset')?.value;
       if (v) body['style_preset'] = v;
     }
+    // Collect quality if supported for this model.
+    const qualityRowEl = document.getElementById('quality-row');
+    const qualitySelEl = document.getElementById('quality');
+    if (qualityRowEl && qualityRowEl.style.display !== 'none' && qualitySelEl && qualitySelEl.value) {
+      body.quality = qualitySelEl.value;
+    }
+
     // Collect remaining provider-specific extra fields.
     const extraContainer = document.getElementById('provider-extra-fields');
     if (extraContainer) {
@@ -1201,6 +1236,10 @@ document.addEventListener('keydown', function(e) {
     if (arSzRow) arSzRow.style.display = isNormal ? '' : 'none';
     if (bottomSection) bottomSection.style.display = isNormal ? '' : 'none';
     if (modelFilterColumn) modelFilterColumn.style.display = isNormal ? '' : 'none';
+    const qualityRowSt = document.getElementById('quality-row');
+    const qualitySelSt = document.getElementById('quality');
+    if (qualityRowSt) qualityRowSt.style.display =
+      (isNormal && qualitySelSt && qualitySelSt.options.length > 0) ? '' : 'none';
 
     if (promptLabel) promptLabel.textContent = isEdit ? 'Instructions' : 'Prompt';
     if (generateBtn) generateBtn.textContent = isNormal ? 'Generate' : (isUpscale ? 'Upscale' : 'Edit');

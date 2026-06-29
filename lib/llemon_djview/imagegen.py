@@ -38,6 +38,7 @@ from hty7.llemon.mediagen.imagegen import (
     image_generation_summary_lines,
     list_image_models_with_metadata,
     make_imagegen_backend,
+    model_capabilities,
     model_display,
     model_quirk_labels,
     normalize_provider_api,
@@ -188,6 +189,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         model_descriptions: dict[str, str] = {}
         model_quirks: dict[str, list[str]] = {}
         model_system_prompts: dict[str, str] = {}
+        model_qualities: dict[str, dict] = {}
         for m in raw_models:
             mid  = m['id']
             name = m['name']
@@ -202,6 +204,16 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             system_prompt = default_system_prompt(mid, provider, api)
             if system_prompt is not None:
                 model_system_prompts[mid] = system_prompt
+            try:
+                caps = model_capabilities(mid, provider, api)
+                quals = caps.get('qualities') or []
+                if quals:
+                    model_qualities[mid] = {
+                        'qualities': quals,
+                        'default': caps.get('default_quality'),
+                    }
+            except Exception:
+                pass
         model_tag_states = self._model_tag_states(
             provider, [opt['id'] for opt in model_options],
         )
@@ -267,6 +279,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'model_descriptions': model_descriptions,
                 'model_quirks':       model_quirks,
                 'model_system_prompts': model_system_prompts,
+                'model_qualities':    model_qualities,
                 'provider_config':    _provider_config(provider, api),
                 'available_tags':      [] if notes_load_errors else get_tags(),
                 'reverse_tags':        [] if notes_load_errors else get_reverse_tags(),
@@ -722,6 +735,10 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             if isinstance(fmt_val, str) and fmt_val.strip():
                 extra_params['output_format'] = fmt_val.strip()
 
+        quality_val = data.get('quality')
+        if isinstance(quality_val, str) and quality_val.strip():
+            extra_params['quality'] = quality_val.strip()
+
         if not self._media_dir():
             return JsonResponse({'error': 'media_dir not configured'}, status=500)
 
@@ -770,6 +787,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         model_descriptions: dict[str, str] = {}
         model_quirks: dict[str, list[str]] = {}
         model_system_prompts: dict[str, str] = {}
+        model_qualities: dict[str, dict] = {}
         for m in raw_models:
             mid  = m['id']
             name = m['name']
@@ -784,6 +802,16 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             system_prompt = default_system_prompt(mid, provider, api)
             if system_prompt is not None:
                 model_system_prompts[mid] = system_prompt
+            try:
+                caps = model_capabilities(mid, provider, api)
+                quals = caps.get('qualities') or []
+                if quals:
+                    model_qualities[mid] = {
+                        'qualities': quals,
+                        'default': caps.get('default_quality'),
+                    }
+            except Exception:
+                pass
         model_tag_states = self._model_tag_states(
             provider, [opt['id'] for opt in model_options],
         )
@@ -795,6 +823,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             'model_descriptions':   model_descriptions,
             'model_quirks':         model_quirks,
             'model_system_prompts': model_system_prompts,
+            'model_qualities':      model_qualities,
             'aspect_ratios':        aspect_ratios(provider, api),
             'image_sizes':          image_sizes(provider, api),
             'default_model':        default_image_model(provider, api),
