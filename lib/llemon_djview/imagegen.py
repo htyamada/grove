@@ -545,23 +545,24 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         actual_model = result.get('model') or model
         metadata_system = system if system is not None else result.get('system')
 
-        try:
-            write_image_metadata(
-                desc_file,
-                model=actual_model,
-                aspect_ratio=aspect_ratio,
-                image_size=image_size,
-                cost=cost,
-                files=files,
-                prompt=prompt,
-                system=metadata_system,
-                temperature=temperature,
-                provider=provider,
-                api=api,
-                extra_params=_sanitize_image_metadata(extra_params) or None,
-            )
-        except OSError as e:
-            logger.warning('could not write metadata file: %s', e)
+        if not (extra_params or {}).get('embed_exif_metadata'):
+            try:
+                write_image_metadata(
+                    desc_file,
+                    model=actual_model,
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                    cost=cost,
+                    files=files,
+                    prompt=prompt,
+                    system=metadata_system,
+                    temperature=temperature,
+                    provider=provider,
+                    api=api,
+                    extra_params=_sanitize_image_metadata(extra_params) or None,
+                )
+            except OSError as e:
+                logger.warning('could not write metadata file: %s', e)
 
         summary = image_generation_summary_lines(
             provider=provider,
@@ -656,7 +657,9 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return JsonResponse({'error': 'invalid image_size'}, status=400)
 
         try:
-            extra_params: dict[str, Any] = extract_extra_params(provider, api, data)
+            extra_params: dict[str, Any] = extract_extra_params(
+                provider, api, {**data, 'hide_watermark': True, 'embed_exif_metadata': True},
+            )
         except LLemonImageParamError as e:
             return JsonResponse({'error': str(e)}, status=400)
 

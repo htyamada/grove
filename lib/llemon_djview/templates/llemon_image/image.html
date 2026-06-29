@@ -417,7 +417,7 @@ document.addEventListener('keydown', function(e) {
     }
 
     // Render remaining extra fields (inline ones handled above).
-    const _INLINE_FIELDS = new Set(['output_format', 'style_preset']);
+    const _INLINE_FIELDS = new Set(['output_format', 'style_preset', 'hide_watermark', 'embed_exif_metadata']);
     _renderExtraFields(extraFields.filter(f => !_INLINE_FIELDS.has(f.name)));
     _applyEditMetadata(data);
     if (modelSel.value) {
@@ -556,6 +556,8 @@ document.addEventListener('keydown', function(e) {
         cb.type = 'checkbox';
         cb.id = 'xf_' + f.name;
         cb.name = f.name;
+        cb.checked = !!f.default;
+        cb.dataset.defaultChecked = f.default ? 'true' : 'false';
         label.style.width = 'auto';
         label.style.marginLeft = '0.4em';
         row.appendChild(cb);
@@ -873,7 +875,7 @@ document.addEventListener('keydown', function(e) {
       const extraContainer = document.getElementById('provider-extra-fields');
       if (extraContainer) {
         for (const el of extraContainer.querySelectorAll('input, select, textarea')) {
-          if (el.type === 'checkbox') el.checked = false;
+          if (el.type === 'checkbox') el.checked = (el.dataset.defaultChecked === 'true');
           else el.value = el.tagName === 'SELECT' ? (el.options[0]?.value || '') : '';
         }
       }
