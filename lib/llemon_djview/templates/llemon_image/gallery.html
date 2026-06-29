@@ -552,7 +552,6 @@ function descShow(idx) {
     ];
     if (sc.system)                    rows.push(['System',          sc.system]);
     if (sc.temperature != null)       rows.push(['Temperature',     sc.temperature]);
-    if (sc.temperature_force != null) rows.push(['Force temp',      sc.temperature_force]);
     if (sc.negative_prompt)           rows.push(['Negative prompt', sc.negative_prompt]);
     if (sc.style_preset)              rows.push(['Style preset',    sc.style_preset]);
     if (sc.steps != null)             rows.push(['Steps',           sc.steps]);
@@ -728,7 +727,6 @@ function genOpen(idx) {
     if (sc.image_size)                url.searchParams.set('image_size',        sc.image_size);
     if (sc.system)                    url.searchParams.set('system',            sc.system);
     if (sc.temperature != null)       url.searchParams.set('temperature',       sc.temperature);
-    if (sc.temperature_force != null) url.searchParams.set('temperature_force', sc.temperature_force);
     if (sc.cost != null)              url.searchParams.set('cost',              sc.cost);
     if (sc.negative_prompt)           url.searchParams.set('negative_prompt',   sc.negative_prompt);
     if (sc.style_preset)              url.searchParams.set('style_preset',      sc.style_preset);

@@ -483,7 +483,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         aspect_ratio: str,
         image_size: str,
         temperature: float | None,
-        temperature_force: float | None,
         system: str | None,
         provider: str,
         api: str,
@@ -510,7 +509,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 aspect_ratio=aspect_ratio,
                 image_size=image_size,
                 temperature=temperature,
-                temperature_force=temperature_force,
                 system=system,
                 **(extra_params or {}),
             )
@@ -558,7 +556,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 prompt=prompt,
                 system=metadata_system,
                 temperature=temperature,
-                temperature_force=temperature_force,
                 provider=provider,
                 api=api,
                 extra_params=_sanitize_image_metadata(extra_params) or None,
@@ -591,7 +588,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         aspect_ratio: str,
         image_size: str,
         temperature: float | None,
-        temperature_force: float | None,
         system: str | None,
         provider: str,
         api: str,
@@ -604,7 +600,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             try:
                 payload, status = self._generate_result(
                     prompt, model, aspect_ratio, image_size, temperature,
-                    temperature_force, system, provider, api,
+                    system, provider, api,
                     extra_params, output_subdir,
                 )
                 q.put({'event': 'done', 'status': status, **payload})
@@ -638,7 +634,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         aspect_ratio = data.get('aspect_ratio', default_aspect_ratio(provider, api))
         image_size   = data.get('image_size', default_image_size(provider, api))
         raw_temperature = data.get('temperature')
-        raw_temperature_force = data.get('temperature_force')
         raw_system = data.get('system')
         if raw_temperature in (None, ''):
             temperature = None
@@ -649,19 +644,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 return JsonResponse({'error': 'invalid temperature'}, status=400)
             if temperature < 0.0 or temperature > 2.0:
                 return JsonResponse({'error': 'invalid temperature'}, status=400)
-        if raw_temperature_force in (None, ''):
-            temperature_force = None
-        else:
-            try:
-                temperature_force = float(raw_temperature_force)
-            except (TypeError, ValueError):
-                return JsonResponse({'error': 'invalid temperature_force'}, status=400)
-            if temperature_force < 0.0 or temperature_force > 2.0:
-                return JsonResponse({'error': 'invalid temperature_force'}, status=400)
-        if temperature is not None and temperature_force is not None:
-            return JsonResponse({
-                'error': 'temperature and temperature_force are mutually exclusive',
-            }, status=400)
         system = raw_system.strip() if isinstance(raw_system, str) else None
         if system == '':
             system = None
@@ -699,7 +681,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             resp = StreamingHttpResponse(
                 self._generate_stream(
                     prompt, model, aspect_ratio, image_size, temperature,
-                    temperature_force, system, provider, api,
+                    system, provider, api,
                     extra_params or None, output_subdir,
                 ),
                 content_type='application/x-ndjson',
@@ -710,7 +692,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         payload, status = self._generate_result(
             prompt, model, aspect_ratio, image_size, temperature,
-            temperature_force, system, provider, api,
+            system, provider, api,
             extra_params or None, output_subdir,
         )
         return JsonResponse(payload, status=status)
