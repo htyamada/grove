@@ -24,9 +24,13 @@ from django.views.decorators.http import require_POST  # type: ignore[import-unt
 from hty7.llemon.mediagen.imagegen import (
     aspect_ratios,
     default_aspect_ratio,
+    default_edit_model,
     default_image_model,
     default_image_size,
     default_system_prompt,
+    edit_aspect_ratios,
+    edit_models,
+    extract_extra_params,
     get_model_note,
     get_model_tag_states,
     get_notes_load_errors,
@@ -43,10 +47,12 @@ from hty7.llemon.mediagen.imagegen import (
     model_quirk_labels,
     normalize_provider_api,
     provider_config as _provider_config,
+    supports_edit,
+    supports_upscale,
     PROVIDERS,
     write_image_metadata,
+    LLemonImageParamError,
 )
-from hty7.llemon.mediagen.imagegen.venice import DEFAULT_EDIT_MODEL, EDIT_ASPECT_RATIOS
 from .storage import (
     VIDEO_EXTS,
     delete_image_asset,
@@ -295,9 +301,12 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'edit_image_url':           _safe_url('edit_image'),
                 'picker_images':            self._gallery_picker_items(),
                 'source_dirs_json_url':     self._source_dirs_json_url(),
-                'edit_models':              ['firered-image-edit', 'qwen-edit', 'grok-imagine-edit', 'flux-2-max-edit'],
-                'default_edit_model':       DEFAULT_EDIT_MODEL,
-                'edit_aspect_ratios':       [''] + list(EDIT_ASPECT_RATIOS),
+                'supports_edit':            supports_edit(provider, api),
+                'supports_upscale':         supports_upscale(provider, api),
+                'edit_models':              edit_models(provider, api),
+                'default_edit_model':       default_edit_model(provider, api),
+                'edit_aspect_ratios':       ([''] + edit_aspect_ratios(provider, api)
+                                             if edit_aspect_ratios(provider, api) else []),
             },
         ))
 
@@ -696,44 +705,10 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         if image_size not in image_sizes(provider, api):
             return JsonResponse({'error': 'invalid image_size'}, status=400)
 
-        extra_params: dict[str, Any] = {}
-        if provider == 'venice':
-            np_val = data.get('negative_prompt')
-            if isinstance(np_val, str) and np_val.strip():
-                extra_params['negative_prompt'] = np_val.strip()
-            sp_val = data.get('style_preset')
-            if isinstance(sp_val, str) and sp_val.strip():
-                extra_params['style_preset'] = sp_val.strip()
-            steps_val = data.get('steps')
-            if steps_val not in (None, ''):
-                try:
-                    extra_params['steps'] = int(steps_val)
-                except (TypeError, ValueError):
-                    return JsonResponse({'error': 'invalid steps'}, status=400)
-            cfg_val = data.get('cfg_scale')
-            if cfg_val not in (None, ''):
-                try:
-                    cfg_scale = float(cfg_val)
-                except (TypeError, ValueError):
-                    return JsonResponse({'error': 'invalid cfg_scale'}, status=400)
-                if not (1.0 <= cfg_scale <= 20.0):
-                    return JsonResponse({'error': 'cfg_scale must be between 1.0 and 20.0'}, status=400)
-                extra_params['cfg_scale'] = cfg_scale
-            seed_val = data.get('seed')
-            if seed_val not in (None, ''):
-                try:
-                    extra_params['seed'] = int(seed_val)
-                except (TypeError, ValueError):
-                    return JsonResponse({'error': 'invalid seed'}, status=400)
-            hw_val = data.get('hide_watermark')
-            if hw_val is not None:
-                extra_params['hide_watermark'] = bool(hw_val)
-            exif_val = data.get('embed_exif_metadata')
-            if exif_val is not None:
-                extra_params['embed_exif_metadata'] = bool(exif_val)
-            fmt_val = data.get('output_format')
-            if isinstance(fmt_val, str) and fmt_val.strip():
-                extra_params['output_format'] = fmt_val.strip()
+        try:
+            extra_params: dict[str, Any] = extract_extra_params(provider, api, data)
+        except LLemonImageParamError as e:
+            return JsonResponse({'error': str(e)}, status=400)
 
         quality_val = data.get('quality')
         if isinstance(quality_val, str) and quality_val.strip():
@@ -830,6 +805,12 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             'default_aspect_ratio': default_aspect_ratio(provider, api),
             'default_image_size':   default_image_size(provider, api),
             'provider_config':      _provider_config(provider, api),
+            'supports_edit':        supports_edit(provider, api),
+            'supports_upscale':     supports_upscale(provider, api),
+            'edit_models':          edit_models(provider, api),
+            'default_edit_model':   default_edit_model(provider, api),
+            'edit_aspect_ratios':   ([''] + edit_aspect_ratios(provider, api)
+                                     if edit_aspect_ratios(provider, api) else []),
         })
 
     def _model_tag_states(self, provider: str, model_ids: list[str]) -> dict[str, dict[str, bool]]:
@@ -990,15 +971,15 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         media_dir: str,
         stem: str,
         sidecar: dict[str, Any],
+        backend_cls: type,
     ) -> 'tuple[dict[str, Any], int]':
         images = result.get('images', [])
         if not images:
             return {'error': 'no image returned'}, 502
 
-        from hty7.llemon.mediagen.imagegen.venice import LLemonVeniceImageGen
         try:
             files, desc = save_operation_images(
-                LLemonVeniceImageGen.write_images, images, media_dir, stem,
+                backend_cls.write_images, images, media_dir, stem,
             )
         except Exception as e:
             logger.exception('could not write operation result images')
@@ -1020,9 +1001,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         source_filename: str,
         media_dir: str,
         kwargs: dict[str, Any],
+        provider: str,
+        api: str,
     ) -> 'tuple[dict[str, Any], int]':
-        from hty7.llemon.mediagen.imagegen.venice import LLemonVeniceImageGen
-        backend = LLemonVeniceImageGen(model='upscale', log_dir=self._log_dir())
+        backend_cls = make_imagegen_backend(provider, api)
+        backend = backend_cls(model='upscale', log_dir=self._log_dir())
         try:
             result = backend.upscale(data_url, **kwargs)
         finally:
@@ -1036,16 +1019,17 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             'source':    source_filename,
             **{k: v for k, v in kwargs.items()},
         }
-        return self._save_operation_result(result, media_dir, stem, sidecar)
+        return self._save_operation_result(result, media_dir, stem, sidecar, backend_cls)
 
     def _upscale_stream(self, data_url: str, source_filename: str,
-                        media_dir: str, kwargs: dict[str, Any]):
+                        media_dir: str, kwargs: dict[str, Any],
+                        provider: str, api: str):
         q: queue.Queue[dict[str, Any]] = queue.Queue()
 
         def _worker() -> None:
             try:
                 payload, status = self._upscale_result(data_url, source_filename,
-                                                       media_dir, kwargs)
+                                                       media_dir, kwargs, provider, api)
                 q.put({'event': 'done', 'status': status, **payload})
             except Exception as e:
                 logger.exception('upscale stream failed')
@@ -1066,6 +1050,14 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             data = json.loads(request.body)
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+
+        try:
+            provider, api = normalize_provider_api((data.get('provider') or '').strip() or None)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        if not supports_upscale(provider, api):
+            return JsonResponse({'error': f'upscale not supported by provider {provider!r}'},
+                                status=400)
 
         filename = str(data.get('filename') or '')
         data_url, err = self._read_image_as_data_url(filename, source_dir=source_dir)
@@ -1102,14 +1094,15 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         if data.get('stream'):
             resp = StreamingHttpResponse(
-                self._upscale_stream(data_url, filename, result_dir, kwargs),
+                self._upscale_stream(data_url, filename, result_dir, kwargs, provider, api),
                 content_type='application/x-ndjson',
             )
             resp['Cache-Control'] = 'no-cache'
             resp['X-Accel-Buffering'] = 'no'
             return resp
 
-        payload, status = self._upscale_result(data_url, filename, result_dir, kwargs)
+        payload, status = self._upscale_result(data_url, filename, result_dir, kwargs,
+                                               provider, api)
         return JsonResponse(payload, status=status)
 
     def _upscale(self, request):
@@ -1127,9 +1120,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         edit_model: str,
         aspect_ratio: str | None,
         safe_mode: bool | None,
+        provider: str,
+        api: str,
     ) -> 'tuple[dict[str, Any], int]':
-        from hty7.llemon.mediagen.imagegen.venice import LLemonVeniceImageGen
-        backend = LLemonVeniceImageGen(model=edit_model, log_dir=self._log_dir())
+        backend_cls = make_imagegen_backend(provider, api)
+        backend = backend_cls(model=edit_model, log_dir=self._log_dir())
         try:
             result = backend.edit(
                 data_url, prompt, model=edit_model,
@@ -1149,17 +1144,18 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         }
         if aspect_ratio:
             sidecar['aspect_ratio'] = aspect_ratio
-        return self._save_operation_result(result, media_dir, stem, sidecar)
+        return self._save_operation_result(result, media_dir, stem, sidecar, backend_cls)
 
     def _edit_stream(self, data_url: str, source_filename: str, media_dir: str,
                      prompt: str, edit_model: str, aspect_ratio: 'str | None',
-                     safe_mode: 'bool | None'):
+                     safe_mode: 'bool | None', provider: str, api: str):
         q: queue.Queue[dict[str, Any]] = queue.Queue()
 
         def _worker() -> None:
             try:
                 payload, status = self._edit_result(data_url, source_filename, media_dir,
-                                                    prompt, edit_model, aspect_ratio, safe_mode)
+                                                    prompt, edit_model, aspect_ratio,
+                                                    safe_mode, provider, api)
                 q.put({'event': 'done', 'status': status, **payload})
             except Exception as e:
                 logger.exception('edit stream failed')
@@ -1181,6 +1177,14 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
 
+        try:
+            provider, api = normalize_provider_api((data.get('provider') or '').strip() or None)
+        except ValueError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        if not supports_edit(provider, api):
+            return JsonResponse({'error': f'edit not supported by provider {provider!r}'},
+                                status=400)
+
         filename = str(data.get('filename') or '')
         data_url, err = self._read_image_as_data_url(filename, source_dir=source_dir)
         if err:
@@ -1190,10 +1194,10 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         if not prompt:
             return JsonResponse({'error': 'prompt is required'}, status=400)
 
-        from hty7.llemon.mediagen.imagegen.venice import DEFAULT_EDIT_MODEL, EDIT_ASPECT_RATIOS
-        edit_model   = (data.get('model') or DEFAULT_EDIT_MODEL).strip()
+        edit_model   = (data.get('model') or default_edit_model(provider, api)).strip()
+        valid_ratios = edit_aspect_ratios(provider, api)
         aspect_ratio = (data.get('aspect_ratio') or '').strip() or None
-        if aspect_ratio and aspect_ratio not in EDIT_ASPECT_RATIOS:
+        if aspect_ratio and aspect_ratio not in valid_ratios:
             return JsonResponse({'error': 'invalid aspect_ratio'}, status=400)
         safe_mode_raw = data.get('safe_mode')
         safe_mode: bool | None = bool(safe_mode_raw) if safe_mode_raw is not None else None
@@ -1204,7 +1208,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         if data.get('stream'):
             resp = StreamingHttpResponse(
                 self._edit_stream(data_url, filename, result_dir, prompt,
-                                  edit_model, aspect_ratio, safe_mode),
+                                  edit_model, aspect_ratio, safe_mode, provider, api),
                 content_type='application/x-ndjson',
             )
             resp['Cache-Control'] = 'no-cache'
@@ -1212,7 +1216,8 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return resp
 
         payload, status = self._edit_result(data_url, filename, result_dir,
-                                            prompt, edit_model, aspect_ratio, safe_mode)
+                                            prompt, edit_model, aspect_ratio, safe_mode,
+                                            provider, api)
         return JsonResponse(payload, status=status)
 
     def _edit_image(self, request):

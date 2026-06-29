@@ -282,6 +282,11 @@
 {{ provider_config|json_script:"provider-config-data" }}
 {{ reverse_tags|json_script:"reverse-tags-data" }}
 {{ model_qualities|json_script:"model-qualities-data" }}
+{{ supports_edit|json_script:"supports-edit-data" }}
+{{ supports_upscale|json_script:"supports-upscale-data" }}
+{{ edit_models|json_script:"edit-models-data" }}
+{{ default_edit_model|json_script:"default-edit-model-data" }}
+{{ edit_aspect_ratios|json_script:"edit-aspect-ratios-data" }}
 <script>
 var _lbUrl = '';
 function lbShow() {
@@ -336,6 +341,11 @@ document.addEventListener('keydown', function(e) {
     default_aspect_ratio: DEFAULTS.aspect_ratio,
     default_image_size:   DEFAULTS.image_size,
     provider_config:      JSON.parse(document.getElementById('provider-config-data').textContent),
+    supports_edit:        JSON.parse(document.getElementById('supports-edit-data').textContent),
+    supports_upscale:     JSON.parse(document.getElementById('supports-upscale-data').textContent),
+    edit_models:          JSON.parse(document.getElementById('edit-models-data').textContent),
+    default_edit_model:   JSON.parse(document.getElementById('default-edit-model-data').textContent),
+    edit_aspect_ratios:   JSON.parse(document.getElementById('edit-aspect-ratios-data').textContent),
   };
 
   let currentProvider = INITIAL_PROVIDER;
@@ -430,6 +440,7 @@ document.addEventListener('keydown', function(e) {
     // Render remaining extra fields (inline ones handled above).
     const _INLINE_FIELDS = new Set(['output_format', 'style_preset']);
     _renderExtraFields(extraFields.filter(f => !_INLINE_FIELDS.has(f.name)));
+    _applyEditMetadata(data);
     if (modelSel.value) {
       updateDescription(modelSel.value);
       loadNote(modelSel.value);
@@ -437,6 +448,48 @@ document.addEventListener('keydown', function(e) {
       updateDescription('');
       notesArea.value = '';
       for (const cb of _noteTagBoxes()) _setTristate(cb, _defaultTagState(cb.value));
+    }
+  }
+
+  // Repopulate the edit-model / edit-aspect dropdowns and show/hide the
+  // Upscale & Edit type options for the selected provider's capabilities.
+  function _applyEditMetadata(data) {
+    const emSel = document.getElementById('edit-model-sel');
+    if (emSel && Array.isArray(data.edit_models)) {
+      emSel.innerHTML = '';
+      for (const m of data.edit_models) {
+        const opt = document.createElement('option');
+        opt.value = m; opt.textContent = m;
+        if (m === data.default_edit_model) opt.selected = true;
+        emSel.appendChild(opt);
+      }
+    }
+    const eaSel = document.getElementById('edit-aspect-sel');
+    if (eaSel && Array.isArray(data.edit_aspect_ratios)) {
+      eaSel.innerHTML = '';
+      for (const r of data.edit_aspect_ratios) {
+        const opt = document.createElement('option');
+        opt.value = r; opt.textContent = r ? r : '(source)';
+        if (!r) opt.selected = true;
+        eaSel.appendChild(opt);
+      }
+    }
+    const typeSel = document.getElementById('image-type');
+    if (typeSel) {
+      let revert = false;
+      for (const opt of typeSel.options) {
+        let ok = true;
+        if (opt.value === 'upscale') ok = data.supports_upscale !== false;
+        else if (opt.value === 'edit') ok = data.supports_edit !== false;
+        else continue;
+        opt.hidden = !ok;
+        opt.disabled = !ok;
+        if (!ok && typeSel.value === opt.value) revert = true;
+      }
+      if (revert) {
+        typeSel.value = 'normal';
+        typeSel.dispatchEvent(new Event('change'));
+      }
     }
   }
 

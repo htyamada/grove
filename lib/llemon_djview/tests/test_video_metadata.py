@@ -50,8 +50,12 @@ class VideoMetadataTests(unittest.TestCase):
                 ],
             }
 
-            with mock.patch('llemon_djview.storage.shutil.which', return_value='/usr/bin/ffprobe'):
-                with mock.patch('llemon_djview.storage.subprocess.run') as run_mock:
+            # Patch on the module objects the code actually uses, resolved from
+            # the imported symbols, so the test is robust to whether the package
+            # was imported as 'llemon_djview' or 'lib.llemon_djview'.
+            storage_mod = sys.modules[read_video_sidecar.__module__]
+            with mock.patch.object(storage_mod.shutil, 'which', return_value='/usr/bin/ffprobe'):
+                with mock.patch.object(storage_mod.subprocess, 'run') as run_mock:
                     run_mock.return_value.stdout = json.dumps(ffprobe_payload)
                     meta = read_video_sidecar(tmpdir, 'clip.mp4', lambda value: value)
 
@@ -66,7 +70,10 @@ class VideoMetadataTests(unittest.TestCase):
     def test_combined_gallery_uses_video_metadata_reader_for_videos(self):
         viewset = _MediaImageViewSet('llemon_image', 'llemon_media')
 
-        with mock.patch('llemon_djview.media.read_video_sidecar', return_value={'duration': '1.0'}) as read_mock:
+        # Patch read_video_sidecar on the exact module the viewset uses,
+        # regardless of the package name it was imported under.
+        media_mod = sys.modules[_MediaImageViewSet.__module__]
+        with mock.patch.object(media_mod, 'read_video_sidecar', return_value={'duration': '1.0'}) as read_mock:
             result = viewset._find_sidecar('/tmp/media', 'clip.mp4')
 
         self.assertEqual(result, {'duration': '1.0'})
