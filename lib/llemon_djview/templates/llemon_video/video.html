@@ -171,7 +171,7 @@
         <select id="duration">
           <option value="{{ default_duration|escape }}">{{ default_duration }}</option>
         </select>
-        <span class="option-group venice-option" id="resolution-group" style="display:none;">
+        <span class="option-group" id="resolution-group" style="display:none;">
           <label for="resolution">Resolution</label>
           <select id="resolution">
             <option value="">Default</option>
@@ -189,6 +189,21 @@
             <option value="">Default</option>
             <option value="true">Yes</option>
             <option value="false">No</option>
+          </select>
+        </span>
+        <span class="option-group" id="upscale-factor-group" style="display:none;">
+          <label for="upscale_factor">Upscale</label>
+          <select id="upscale_factor">
+            <option value="">Default</option>
+            <option value="1">1x</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+          </select>
+        </span>
+        <span class="option-group" id="size-group" style="display:none;">
+          <label for="size">Size</label>
+          <select id="size">
+            <option value="">Default</option>
           </select>
         </span>
       </div>
@@ -237,19 +252,33 @@
         <label for="negative_prompt">Negative prompt</label>
         <input id="negative_prompt" style="width:100%; box-sizing:border-box; font-size:1em;">
       </div>
-      <div id="cfg-scale-row" style="display:none; margin-bottom:0.5em;">
-        <label for="cfg_scale">CFG scale</label>
-        <input id="cfg_scale" type="number" step="any" style="width:100%; box-sizing:border-box; font-size:1em;">
+      <div id="seed-row" style="display:none; margin-bottom:0.5em;">
+        <label for="seed">Seed</label>
+        <input id="seed" type="number" step="1" style="width:100%; box-sizing:border-box; font-size:1em;">
       </div>
-      <div id="enhance-prompt-row" style="display:none; margin-bottom:0.5em;">
-        <label for="enhance_prompt" style="display:flex; align-items:center; gap:0.45em; font-weight:normal;">
-          <input type="checkbox" id="enhance_prompt">
-          <span style="font-weight:bold;">Enhance prompt</span>
-        </label>
+      <div id="callback-url-row" style="display:none; margin-bottom:0.5em;">
+        <label for="callback_url">Callback URL</label>
+        <input id="callback_url" type="url" placeholder="https://..." style="width:100%; box-sizing:border-box; font-size:1em;">
       </div>
-      <div id="unknown-provider-options-row" style="display:none; margin-bottom:0.6em;">
-        <label>Unknown provider options</label>
-        <div id="unknown-provider-options" class="image-btn-label"></div>
+      <div id="provider-json-row" style="display:none; margin-bottom:0.5em;">
+        <label for="provider_json">Provider JSON</label>
+        <textarea id="provider_json" rows="4" placeholder='{"options": {...}}' style="width:100%; box-sizing:border-box; font-size:0.95em;"></textarea>
+      </div>
+      <div id="media-url-row" style="display:none; margin-bottom:0.5em;">
+        <label for="audio_url">Reference audio URL</label>
+        <input id="audio_url" style="width:100%; box-sizing:border-box; font-size:1em; margin-bottom:0.35em;">
+        <label for="video_url">Reference video URL</label>
+        <input id="video_url" style="width:100%; box-sizing:border-box; font-size:1em;">
+      </div>
+      <div id="venice-reference-url-row" style="display:none; margin-bottom:0.5em;">
+        <label for="reference_video_urls">Reference video URLs</label>
+        <textarea id="reference_video_urls" rows="3" placeholder="One URL per line" style="width:100%; box-sizing:border-box; font-size:0.95em; margin-bottom:0.35em;"></textarea>
+        <label for="reference_audio_urls">Reference audio URLs</label>
+        <textarea id="reference_audio_urls" rows="3" placeholder="One URL per line" style="width:100%; box-sizing:border-box; font-size:0.95em;"></textarea>
+      </div>
+      <div id="consents-row" style="display:none; margin-bottom:0.5em;">
+        <label for="consents_json">Consents JSON</label>
+        <textarea id="consents_json" rows="3" placeholder='{"seedance": {...}}' style="width:100%; box-sizing:border-box; font-size:0.95em;"></textarea>
       </div>
       <div id="image-options" style="display:none;">
         <div class="image-select-row" id="generic-images-row">
@@ -532,7 +561,7 @@
     const refLabel = document.getElementById('reference-image-row-label');
     const genericLabel = document.getElementById('generic-images-row-label');
     if (refLabel) {
-      refLabel.textContent = modelIsKlingReferenceVideo(modelSel.value) ? 'Elements' : 'Reference';
+      refLabel.textContent = currentProvider === 'openrouter' ? 'Input references' : (modelIsKlingReferenceVideo(modelSel.value) ? 'Elements' : 'Reference');
     }
     if (genericLabel) {
       genericLabel.textContent = modelIsKlingReferenceVideo(modelSel.value) ? 'Scene Images' : 'Images';
@@ -554,17 +583,12 @@
     const caps = selectedModelCapabilities();
     return new Set(Array.isArray(caps.supported_parameters) ? caps.supported_parameters : []);
   }
-  function openrouterAllowedPassthroughParameters() {
-    const caps = selectedModelCapabilities();
-    return new Set(Array.isArray(caps.allowed_passthrough_parameters) ? caps.allowed_passthrough_parameters : []);
-  }
   function openrouterSupportedParameters() {
     const caps = selectedModelCapabilities();
     return new Set(Array.isArray(caps.supported_parameters) ? caps.supported_parameters : []);
   }
-  function openrouterProviderSlug() {
-    const caps = selectedModelCapabilities();
-    return typeof caps.provider_slug === 'string' ? caps.provider_slug : '';
+  function capValues(caps, key) {
+    return Array.isArray(caps[key]) ? caps[key] : [];
   }
   function openrouterAllowsStartEndImages() {
     const caps = selectedModelCapabilities();
@@ -583,86 +607,54 @@
     const frameImages = new Set(Array.isArray(caps.frame_images) ? caps.frame_images : []);
     if (frameImages.size > 0) return frameImages.has('last_frame');
     return (
-      openrouterSupportedParameters().has('frame_images') ||
-      openrouterAllowedPassthroughParameters().has('last_image')
+      openrouterSupportedParameters().has('frame_images')
     );
   }
   function openrouterAllowsReferenceImages() {
-    return openrouterSupportedParameters().has('input_references');
-  }
-  function openrouterAllowsGenericImages() {
-    return currentProvider === 'openrouter';
+    return true;
   }
   function openrouterAllowsAudio() {
     const caps = selectedModelCapabilities();
     const outputs = new Set(Array.isArray(caps.output_modalities) ? caps.output_modalities : []);
     return (
+      caps.generate_audio === true ||
       outputs.has('audio') ||
-      openrouterSupportedParameters().has('generate_audio') ||
-      openrouterAllowedPassthroughParameters().has('audio')
+      openrouterSupportedParameters().has('generate_audio')
+    );
+  }
+  function openrouterAllowsResolution() {
+    const caps = selectedModelCapabilities();
+    return (
+      capValues(caps, 'supported_resolutions').length > 0 ||
+      openrouterSupportedParameters().has('resolution')
     );
   }
   function openrouterAllowsAspectRatio() {
     const caps = selectedModelCapabilities();
     return (
-      (Array.isArray(caps.aspect_ratios) && caps.aspect_ratios.length > 0) ||
-      openrouterAllowedPassthroughParameters().has('aspectRatio') ||
-      openrouterAllowedPassthroughParameters().has('ratio')
+      capValues(caps, 'supported_aspect_ratios').length > 0 ||
+      openrouterSupportedParameters().has('aspect_ratio')
     );
+  }
+  function openrouterAllowsSize() {
+    const caps = selectedModelCapabilities();
+    return (
+      capValues(caps, 'supported_sizes').length > 0 ||
+      openrouterSupportedParameters().has('size')
+    );
+  }
+  function openrouterAllowsSeed() {
+    const caps = selectedModelCapabilities();
+    return caps.seed === true || openrouterSupportedParameters().has('seed');
+  }
+  function openrouterAllowsCallbackUrl() {
+    return true;
+  }
+  function openrouterAllowsProviderJson() {
+    return true;
   }
   function openrouterAllowsNegativePrompt() {
-    const params = openrouterAllowedPassthroughParameters();
-    return params.has('negativePrompt') || params.has('negative_prompt');
-  }
-  function openrouterAllowsCfgScale() {
-    const params = openrouterAllowedPassthroughParameters();
-    return params.has('cfg_scale') || params.has('cfgScale');
-  }
-  function openrouterCfgScaleKey() {
-    const params = openrouterAllowedPassthroughParameters();
-    if (params.has('cfg_scale')) return 'cfg_scale';
-    if (params.has('cfgScale')) return 'cfgScale';
-    return '';
-  }
-  function openrouterNegativePromptKey() {
-    const params = openrouterAllowedPassthroughParameters();
-    if (params.has('negativePrompt')) return 'negativePrompt';
-    if (params.has('negative_prompt')) return 'negative_prompt';
-    return '';
-  }
-  function openrouterAllowsEnhancePrompt() {
-    const params = openrouterAllowedPassthroughParameters();
-    return (
-      params.has('enhancePrompt') ||
-      params.has('enable_prompt_expansion') ||
-      params.has('prompt_extend')
-    );
-  }
-  function openrouterEnhancePromptKey() {
-    const params = openrouterAllowedPassthroughParameters();
-    if (params.has('enhancePrompt')) return 'enhancePrompt';
-    if (params.has('enable_prompt_expansion')) return 'enable_prompt_expansion';
-    if (params.has('prompt_extend')) return 'prompt_extend';
-    return '';
-  }
-  function openrouterUnknownProviderOptions() {
-    const handled = new Set([
-      'audio',
-      'ratio',
-      'aspectRatio',
-      'cfg_scale',
-      'cfgScale',
-      'last_image',
-      'images',
-      'negativePrompt',
-      'negative_prompt',
-      'enhancePrompt',
-      'enable_prompt_expansion',
-      'prompt_extend',
-    ]);
-    return Array.from(openrouterAllowedPassthroughParameters()).filter(function(name) {
-      return !handled.has(name);
-    });
+    return false;
   }
   function modelPassesFilters(modelId) {
     if (currentProvider === 'venice') {
@@ -746,12 +738,54 @@
     }
     sel.value = text;
   }
+  function textareaLines(id) {
+    const el = document.getElementById(id);
+    if (!el) return [];
+    return el.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+  }
+  function veniceAllowsParameter(name) {
+    const params = veniceSupportedParameters();
+    return params.size === 0 || params.has(name);
+  }
+  function veniceAllowsAudioUrl() {
+    return veniceAllowsParameter('audio_url');
+  }
+  function veniceAllowsVideoUrl() {
+    return veniceAllowsParameter('video_url') || modelVideoType(modelSel.value) === 'video-to-video';
+  }
+  function veniceAllowsReferenceAudioVideo() {
+    return (
+      veniceAllowsParameter('reference_video_urls') ||
+      veniceAllowsParameter('reference_audio_urls') ||
+      modelVideoType(modelSel.value) === 'reference-to-video'
+    );
+  }
+  function veniceAllowsUpscaleFactor() {
+    return (
+      veniceAllowsParameter('upscale_factor') ||
+      modelSel.value === 'topaz-video-upscale' ||
+      modelSel.value.includes('upscale')
+    );
+  }
+  function veniceAllowsConsents() {
+    return true;
+  }
   function updateVideoChoiceControls() {
     const caps = selectedModelCapabilities();
     const duration = document.getElementById('duration').value || DEFAULT_DURATION;
-    setSelectOptions('duration', caps.durations && caps.durations.length ? caps.durations : [DEFAULT_DURATION], duration, null);
-    setSelectOptions('resolution', caps.resolutions || [], document.getElementById('resolution').value, 'Default');
-    setSelectOptions('aspect_ratio', caps.aspect_ratios || [], document.getElementById('aspect_ratio').value, 'Default');
+    const durations = currentProvider === 'openrouter'
+      ? capValues(caps, 'supported_durations')
+      : capValues(caps, 'durations');
+    const resolutions = currentProvider === 'openrouter'
+      ? capValues(caps, 'supported_resolutions')
+      : capValues(caps, 'resolutions');
+    const aspectRatios = currentProvider === 'openrouter'
+      ? capValues(caps, 'supported_aspect_ratios')
+      : capValues(caps, 'aspect_ratios');
+    setSelectOptions('duration', durations.length ? durations : [DEFAULT_DURATION], duration, null);
+    setSelectOptions('resolution', resolutions, document.getElementById('resolution').value, 'Default');
+    setSelectOptions('aspect_ratio', aspectRatios, document.getElementById('aspect_ratio').value, 'Default');
+    setSelectOptions('size', capValues(caps, 'supported_sizes'), document.getElementById('size').value, 'Default');
     updateReferenceInputLabels();
     updateRefImageDisplay();
     updateGenericImagesDisplay();
@@ -774,12 +808,16 @@
   function updateProviderOptionVisibility() {
     const resolutionGroup = document.getElementById('resolution-group');
     const aspectRatioGroup = document.getElementById('aspect-ratio-group');
+    const sizeGroup = document.getElementById('size-group');
     const audioGroup = document.getElementById('audio-group');
+    const upscaleFactorGroup = document.getElementById('upscale-factor-group');
     const negativePromptRow = document.getElementById('negative-prompt-row');
-    const cfgScaleRow = document.getElementById('cfg-scale-row');
-    const enhancePromptRow = document.getElementById('enhance-prompt-row');
-    const unknownRow = document.getElementById('unknown-provider-options-row');
-    const unknownBox = document.getElementById('unknown-provider-options');
+    const seedRow = document.getElementById('seed-row');
+    const callbackUrlRow = document.getElementById('callback-url-row');
+    const providerJsonRow = document.getElementById('provider-json-row');
+    const referenceUrlRow = document.getElementById('media-url-row');
+    const veniceReferenceUrlRow = document.getElementById('venice-reference-url-row');
+    const consentsRow = document.getElementById('consents-row');
     const veniceParams = veniceSupportedParameters();
     const veniceCaps = selectedModelCapabilities();
     const veniceHasResolutionChoices = Array.isArray(veniceCaps.resolutions) && veniceCaps.resolutions.length > 0;
@@ -787,37 +825,66 @@
       veniceParams.size === 0 || veniceParams.has('audio')
     );
 
-    const showResolution = currentProvider === 'venice' && veniceHasResolutionChoices;
+    const showResolution = (
+      currentProvider === 'venice' && veniceHasResolutionChoices
+    ) || (
+      currentProvider === 'openrouter' && openrouterAllowsResolution()
+    );
     const showAspectRatio = currentProvider === 'venice' || (
       currentProvider === 'openrouter' && openrouterAllowsAspectRatio()
     );
+    const showSize = currentProvider === 'openrouter' && openrouterAllowsSize();
     const showAudio = (
       currentProvider === 'venice' && veniceAllowsAudio
     ) || (
       currentProvider === 'openrouter' && openrouterAllowsAudio()
     );
+    const showUpscaleFactor = currentProvider === 'venice' && veniceAllowsUpscaleFactor();
     const showNegativePrompt = currentProvider === 'venice' || (
       currentProvider === 'openrouter' && openrouterAllowsNegativePrompt()
     );
-    const showCfgScale = currentProvider === 'openrouter' && openrouterAllowsCfgScale();
-    const showEnhancePrompt = currentProvider === 'openrouter' && openrouterAllowsEnhancePrompt();
-    const unknownOptions = currentProvider === 'openrouter' ? openrouterUnknownProviderOptions() : [];
+    const showSeed = currentProvider === 'openrouter' && openrouterAllowsSeed();
+    const showCallbackUrl = currentProvider === 'openrouter' && openrouterAllowsCallbackUrl();
+    const showProviderJson = currentProvider === 'openrouter' && openrouterAllowsProviderJson();
+    const showReferenceUrls = (
+      currentProvider === 'openrouter' && openrouterAllowsReferenceImages()
+    ) || (
+      currentProvider === 'venice' && (veniceAllowsAudioUrl() || veniceAllowsVideoUrl())
+    );
+    const showVeniceReferenceUrls = currentProvider === 'venice' && veniceAllowsReferenceAudioVideo();
+    const showConsents = currentProvider === 'venice' && veniceAllowsConsents();
 
     if (resolutionGroup) resolutionGroup.style.display = showResolution ? '' : 'none';
     if (aspectRatioGroup) aspectRatioGroup.style.display = showAspectRatio ? '' : 'none';
+    if (sizeGroup) sizeGroup.style.display = showSize ? '' : 'none';
     if (audioGroup) audioGroup.style.display = showAudio ? '' : 'none';
+    if (upscaleFactorGroup) upscaleFactorGroup.style.display = showUpscaleFactor ? '' : 'none';
     if (negativePromptRow) negativePromptRow.style.display = showNegativePrompt ? '' : 'none';
-    if (cfgScaleRow) cfgScaleRow.style.display = showCfgScale ? '' : 'none';
-    if (enhancePromptRow) enhancePromptRow.style.display = showEnhancePrompt ? '' : 'none';
-    if (unknownRow) unknownRow.style.display = unknownOptions.length ? '' : 'none';
-    if (unknownBox) unknownBox.textContent = unknownOptions.join(', ');
+    if (seedRow) seedRow.style.display = showSeed ? '' : 'none';
+    if (callbackUrlRow) callbackUrlRow.style.display = showCallbackUrl ? '' : 'none';
+    if (providerJsonRow) providerJsonRow.style.display = showProviderJson ? '' : 'none';
+    if (referenceUrlRow) referenceUrlRow.style.display = showReferenceUrls ? '' : 'none';
+    if (veniceReferenceUrlRow) veniceReferenceUrlRow.style.display = showVeniceReferenceUrls ? '' : 'none';
+    if (consentsRow) consentsRow.style.display = showConsents ? '' : 'none';
 
     if (!showResolution) document.getElementById('resolution').value = '';
     if (!showAspectRatio) document.getElementById('aspect_ratio').value = '';
+    if (!showSize) document.getElementById('size').value = '';
     if (!showAudio) document.getElementById('audio').value = '';
+    if (!showUpscaleFactor) document.getElementById('upscale_factor').value = '';
     if (!showNegativePrompt) document.getElementById('negative_prompt').value = '';
-    if (!showCfgScale) document.getElementById('cfg_scale').value = '';
-    if (!showEnhancePrompt) document.getElementById('enhance_prompt').checked = false;
+    if (!showSeed) document.getElementById('seed').value = '';
+    if (!showCallbackUrl) document.getElementById('callback_url').value = '';
+    if (!showProviderJson) document.getElementById('provider_json').value = '';
+    if (!showReferenceUrls) {
+      document.getElementById('audio_url').value = '';
+      document.getElementById('video_url').value = '';
+    }
+    if (!showVeniceReferenceUrls) {
+      document.getElementById('reference_video_urls').value = '';
+      document.getElementById('reference_audio_urls').value = '';
+    }
+    if (!showConsents) document.getElementById('consents_json').value = '';
   }
   function updateImageChoiceVisibility() {
     const imageOptions = document.getElementById('image-options');
@@ -829,7 +896,7 @@
       endVisible = modelAllowsStartEndImages(modelSel.value);
       refVisible = modelAllowsReferenceImages(modelSel.value);
     } else if (currentProvider === 'openrouter') {
-      genericImagesVisible = openrouterAllowsGenericImages();
+      genericImagesVisible = false;
       startVisible = openrouterAllowsFirstFrameImage();
       endVisible = openrouterAllowsLastFrameImage();
       refVisible = openrouterAllowsReferenceImages();
@@ -871,7 +938,7 @@
     if (modelSel.value) loadNote(modelSel.value);
   }
   function applyUrlPrefill() {
-    const fields = ['prompt', 'duration', 'resolution', 'aspect_ratio', 'negative_prompt', 'cfg_scale'];
+    const fields = ['prompt', 'duration', 'resolution', 'aspect_ratio', 'size', 'negative_prompt', 'seed', 'callback_url', 'provider_json', 'audio_url', 'video_url', 'reference_video_urls', 'reference_audio_urls', 'consents_json'];
     for (const id of fields) {
       const value = urlParams.get(id);
       const el = document.getElementById(id);
@@ -885,11 +952,6 @@
       document.getElementById('audio').value =
         (audio === '1' || audio === 'true') ? 'true' :
         (audio === '0' || audio === 'false') ? 'false' : '';
-    }
-    const enhancePrompt = urlParams.get('enhance_prompt');
-    if (enhancePrompt !== null) {
-      document.getElementById('enhance_prompt').checked =
-        enhancePrompt === '1' || enhancePrompt === 'true';
     }
     const imageUrlParam = urlParams.get('image_url');
     if (imageUrlParam) {
@@ -965,9 +1027,17 @@
     document.getElementById('duration').value = DEFAULT_DURATION;
     document.getElementById('resolution').value = '';
     document.getElementById('aspect_ratio').value = '';
+    document.getElementById('size').value = '';
     document.getElementById('negative_prompt').value = '';
-    document.getElementById('cfg_scale').value = '';
-    document.getElementById('enhance_prompt').checked = false;
+    document.getElementById('seed').value = '';
+    document.getElementById('callback_url').value = '';
+    document.getElementById('provider_json').value = '';
+    document.getElementById('audio_url').value = '';
+    document.getElementById('video_url').value = '';
+    document.getElementById('reference_video_urls').value = '';
+    document.getElementById('reference_audio_urls').value = '';
+    document.getElementById('consents_json').value = '';
+    document.getElementById('upscale_factor').value = '';
     document.getElementById('audio').value = '';
     clearStartImage();
     clearEndImage();
@@ -1254,6 +1324,12 @@
       }
       const audio = document.getElementById('audio').value;
       if (audio) body.audio = audio === 'true';
+      const upscaleFactor = document.getElementById('upscale_factor').value;
+      if (upscaleFactor) body.upscale_factor = Number(upscaleFactor);
+      const audioUrl = document.getElementById('audio_url').value.trim();
+      if (audioUrl) body.audio_url = audioUrl;
+      const videoUrl = document.getElementById('video_url').value.trim();
+      if (videoUrl) body.video_url = videoUrl;
       if (modelAllowsStartEndImages(modelSel.value)) {
         if (startImageUrl) body.image_url = startImageUrl;
         if (endImageUrl) body.end_image_url = endImageUrl;
@@ -1264,32 +1340,66 @@
       if (modelIsKlingReferenceVideo(modelSel.value) && genericImageUrls.length) {
         body.scene_image_urls = genericImageUrls.slice();
       }
+      const referenceVideoUrls = textareaLines('reference_video_urls');
+      if (referenceVideoUrls.length) body.reference_video_urls = referenceVideoUrls;
+      const referenceAudioUrls = textareaLines('reference_audio_urls');
+      if (referenceAudioUrls.length) body.reference_audio_urls = referenceAudioUrls;
+      const consentsJson = document.getElementById('consents_json').value.trim();
+      if (consentsJson) {
+        try {
+          body.consents = JSON.parse(consentsJson);
+        } catch (e) {
+          status.textContent = 'Consents JSON is invalid.';
+          return;
+        }
+      }
     } else if (currentProvider === 'openrouter') {
+      const resolution = document.getElementById('resolution').value.trim();
+      if (openrouterAllowsResolution() && resolution) body.resolution = resolution;
       const aspectRatio = document.getElementById('aspect_ratio').value.trim();
       if (openrouterAllowsAspectRatio() && aspectRatio) body.aspect_ratio = aspectRatio;
+      const size = document.getElementById('size').value.trim();
+      if (openrouterAllowsSize() && size) body.size = size;
       const audio = document.getElementById('audio').value;
-      if (openrouterAllowsAudio() && audio) body.audio = audio === 'true';
-      if (genericImageUrls.length) body.image_urls = genericImageUrls.slice();
-      const cfgScale = document.getElementById('cfg_scale').value.trim();
-      if (openrouterAllowsCfgScale() && cfgScale) {
-        body.cfg_scale = cfgScale;
-        body.cfg_scale_key = openrouterCfgScaleKey();
+      if (openrouterAllowsAudio() && audio) body.generate_audio = audio === 'true';
+      const seed = document.getElementById('seed').value.trim();
+      if (openrouterAllowsSeed() && seed) body.seed = seed;
+      const callbackUrl = document.getElementById('callback_url').value.trim();
+      if (openrouterAllowsCallbackUrl() && callbackUrl) body.callback_url = callbackUrl;
+      const providerJson = document.getElementById('provider_json').value.trim();
+      if (openrouterAllowsProviderJson() && providerJson) {
+        try {
+          body.openrouter_provider = JSON.parse(providerJson);
+        } catch (e) {
+          status.textContent = 'Provider JSON is invalid.';
+          return;
+        }
       }
-      const negativePrompt = document.getElementById('negative_prompt').value.trim();
-      if (openrouterAllowsNegativePrompt() && negativePrompt) {
-        body.negative_prompt = negativePrompt;
-        body.negative_prompt_key = openrouterNegativePromptKey();
+      const frameImages = [];
+      if (openrouterAllowsFirstFrameImage() && startImageUrl) {
+        frameImages.push({
+          type: 'image_url',
+          image_url: {url: startImageUrl},
+          frame_type: 'first_frame',
+        });
       }
-      if (openrouterAllowsEnhancePrompt()) {
-        body.enhance_prompt = document.getElementById('enhance_prompt').checked;
-        body.enhance_prompt_key = openrouterEnhancePromptKey();
+      if (openrouterAllowsLastFrameImage() && endImageUrl) {
+        frameImages.push({
+          type: 'image_url',
+          image_url: {url: endImageUrl},
+          frame_type: 'last_frame',
+        });
       }
-      const providerSlug = openrouterProviderSlug();
-      if (providerSlug) body.provider_slug = providerSlug;
-      if (openrouterAllowsFirstFrameImage() && startImageUrl) body.image_url = startImageUrl;
-      if (openrouterAllowsLastFrameImage() && endImageUrl) body.end_image_url = endImageUrl;
-      if (openrouterAllowsReferenceImages() && refImageUrls.length) {
-        body.reference_image_urls = refImageUrls.slice();
+      if (frameImages.length) body.frame_images = frameImages;
+      if (openrouterAllowsReferenceImages()) {
+        const inputReferences = refImageUrls.map(function(url) {
+          return {type: 'image_url', image_url: {url}};
+        });
+        const audioUrl = document.getElementById('audio_url').value.trim();
+        if (audioUrl) inputReferences.push({type: 'audio_url', audio_url: {url: audioUrl}});
+        const videoUrl = document.getElementById('video_url').value.trim();
+        if (videoUrl) inputReferences.push({type: 'video_url', video_url: {url: videoUrl}});
+        if (inputReferences.length) body.input_references = inputReferences;
       }
     }
     document.getElementById('result-thumb-wrap').style.display = 'none';

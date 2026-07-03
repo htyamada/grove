@@ -54,7 +54,6 @@ from hty7.llemon.mediagen.videogen.venice import (
     video_model_allows_start_end_images as venice_model_allows_start_end_images,
     video_model_is_grok_reference_to_video as venice_model_is_grok_reference_to_video,
     video_model_is_kling_reference_to_video as venice_model_is_kling_reference_to_video,
-    video_model_uses_unsupported_video_input as venice_unsupported_video_input,
 )
 
 logger = logging.getLogger(__name__)
@@ -463,7 +462,11 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         for label, key in (
             ('Resolution', 'resolution'),
             ('Aspect ratio', 'aspect_ratio'),
+            ('Size', 'size'),
             ('Audio', 'audio'),
+            ('Generate audio', 'generate_audio'),
+            ('Seed', 'seed'),
+            ('Upscale factor', 'upscale_factor'),
         ):
             value = options.get(key)
             if value not in (None, ''):
@@ -559,11 +562,7 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                     metadata_options[key] = clean_value
             for key in ('audio_url', 'video_url'):
                 value = data.get(key)
-                if (
-                    isinstance(value, str)
-                    and value.strip()
-                    and not venice_unsupported_video_input(model)
-                ):
+                if isinstance(value, str) and value.strip():
                     clean_value = value.strip()
                     generate_kwargs[key] = self._data_reference_for_api(request, clean_value)
                     metadata_options[key] = clean_value
@@ -608,70 +607,112 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             if data.get('upscale_factor') in (1, 2, 4):
                 generate_kwargs['upscale_factor'] = data['upscale_factor']
                 metadata_options['upscale_factor'] = data['upscale_factor']
+            for key in ('reference_video_urls', 'reference_audio_urls'):
+                value = data.get(key)
+                if isinstance(value, list):
+                    clean_values = [
+                        v.strip()
+                        for v in value
+                        if isinstance(v, str) and v.strip()
+                    ]
+                    if clean_values:
+                        generate_kwargs[key] = [
+                            self._data_reference_for_api(request, v)
+                            for v in clean_values
+                        ]
+                        metadata_options[key] = clean_values
+            consents = data.get('consents')
+            if consents is not None:
+                if not isinstance(consents, dict):
+                    return JsonResponse({'error': 'consents must be an object'}, status=400)
+                generate_kwargs['consents'] = consents
+                metadata_options['consents'] = consents
 
         if provider == 'openrouter':
-            aspect_ratio = data.get('aspect_ratio')
-            if isinstance(aspect_ratio, str) and aspect_ratio.strip():
-                clean_aspect_ratio = aspect_ratio.strip()
-                generate_kwargs['aspect_ratio'] = clean_aspect_ratio
-                metadata_options['aspect_ratio'] = clean_aspect_ratio
-            if isinstance(data.get('audio'), bool):
-                generate_kwargs['generate_audio'] = data['audio']
-                metadata_options['audio'] = data['audio']
-            provider_slug = data.get('provider_slug')
-            if isinstance(provider_slug, str) and provider_slug.strip():
-                generate_kwargs['provider_slug'] = provider_slug.strip()
-                metadata_options['provider_slug'] = provider_slug.strip()
-            cfg_scale = data.get('cfg_scale')
-            if cfg_scale is not None and cfg_scale != '':
-                try:
-                    cfg_scale_float = float(cfg_scale)
-                except (TypeError, ValueError):
-                    return JsonResponse({'error': 'invalid cfg_scale'}, status=400)
-                generate_kwargs['cfg_scale'] = cfg_scale_float
-                metadata_options['cfg_scale'] = cfg_scale_float
-            cfg_scale_key = data.get('cfg_scale_key')
-            if isinstance(cfg_scale_key, str) and cfg_scale_key.strip():
-                generate_kwargs['cfg_scale_key'] = cfg_scale_key.strip()
-                metadata_options['cfg_scale_key'] = cfg_scale_key.strip()
-            negative_prompt = data.get('negative_prompt')
-            if isinstance(negative_prompt, str) and negative_prompt.strip():
-                clean_negative_prompt = negative_prompt.strip()
-                generate_kwargs['negative_prompt'] = clean_negative_prompt
-                metadata_options['negative_prompt'] = clean_negative_prompt
-            negative_prompt_key = data.get('negative_prompt_key')
-            if isinstance(negative_prompt_key, str) and negative_prompt_key.strip():
-                generate_kwargs['negative_prompt_key'] = negative_prompt_key.strip()
-                metadata_options['negative_prompt_key'] = negative_prompt_key.strip()
-            if isinstance(data.get('enhance_prompt'), bool):
-                generate_kwargs['enhance_prompt'] = data['enhance_prompt']
-                metadata_options['enhance_prompt'] = data['enhance_prompt']
-            enhance_prompt_key = data.get('enhance_prompt_key')
-            if isinstance(enhance_prompt_key, str) and enhance_prompt_key.strip():
-                generate_kwargs['enhance_prompt_key'] = enhance_prompt_key.strip()
-                metadata_options['enhance_prompt_key'] = enhance_prompt_key.strip()
-            for key in ('image_url', 'end_image_url'):
+            for key in ('resolution', 'aspect_ratio', 'size', 'callback_url'):
                 value = data.get(key)
                 if isinstance(value, str) and value.strip():
                     clean_value = value.strip()
-                    generate_kwargs[key] = self._data_reference_for_api(request, clean_value)
+                    generate_kwargs[key] = clean_value
                     metadata_options[key] = clean_value
-            image_urls = data.get('image_urls')
-            if isinstance(image_urls, list):
-                clean_values = [v.strip() for v in image_urls if isinstance(v, str) and v.strip()]
-                if clean_values:
-                    generate_kwargs['image_urls'] = [
-                        self._data_reference_for_api(request, v) for v in clean_values
-                    ]
-                    metadata_options['image_urls'] = clean_values
-            ref_urls = data.get('reference_image_urls')
-            if isinstance(ref_urls, list):
-                clean_values = [v.strip() for v in ref_urls if isinstance(v, str) and v.strip()]
-                if clean_values:
-                    generate_kwargs['reference_image_urls'] = [
-                        self._data_reference_for_api(request, v) for v in clean_values
-                    ]
-                    metadata_options['reference_image_urls'] = clean_values
+            if isinstance(data.get('generate_audio'), bool):
+                generate_kwargs['generate_audio'] = data['generate_audio']
+                metadata_options['generate_audio'] = data['generate_audio']
+            seed = data.get('seed')
+            if seed not in (None, ''):
+                try:
+                    seed_int = int(seed)
+                except (TypeError, ValueError):
+                    return JsonResponse({'error': 'invalid seed'}, status=400)
+                generate_kwargs['seed'] = seed_int
+                metadata_options['seed'] = seed_int
+            openrouter_provider = data.get('openrouter_provider')
+            if openrouter_provider is not None:
+                if not isinstance(openrouter_provider, dict):
+                    return JsonResponse({'error': 'openrouter provider must be an object'},
+                                        status=400)
+                generate_kwargs['provider'] = openrouter_provider
+                metadata_options['provider'] = openrouter_provider
+            frame_images = data.get('frame_images')
+            if isinstance(frame_images, list):
+                clean_frame_images = []
+                metadata_frame_images = []
+                for item in frame_images:
+                    if not isinstance(item, dict):
+                        continue
+                    image_url = item.get('image_url')
+                    if not isinstance(image_url, dict):
+                        continue
+                    url = image_url.get('url')
+                    frame_type = item.get('frame_type')
+                    if (
+                        not isinstance(url, str)
+                        or not url.strip()
+                        or frame_type not in ('first_frame', 'last_frame')
+                    ):
+                        continue
+                    clean_url = url.strip()
+                    clean_frame_images.append({
+                        'type': 'image_url',
+                        'image_url': {'url': self._data_reference_for_api(request, clean_url)},
+                        'frame_type': frame_type,
+                    })
+                    metadata_frame_images.append({
+                        'type': 'image_url',
+                        'image_url': {'url': clean_url},
+                        'frame_type': frame_type,
+                    })
+                if clean_frame_images:
+                    generate_kwargs['frame_images'] = clean_frame_images
+                    metadata_options['frame_images'] = metadata_frame_images
+            input_references = data.get('input_references')
+            if isinstance(input_references, list):
+                clean_input_references = []
+                metadata_input_references = []
+                for item in input_references:
+                    if not isinstance(item, dict):
+                        continue
+                    ref_type = item.get('type')
+                    if ref_type not in ('image_url', 'audio_url', 'video_url'):
+                        continue
+                    ref_value = item.get(ref_type)
+                    if not isinstance(ref_value, dict):
+                        continue
+                    url = ref_value.get('url')
+                    if not isinstance(url, str) or not url.strip():
+                        continue
+                    clean_url = url.strip()
+                    clean_input_references.append({
+                        'type': ref_type,
+                        ref_type: {'url': self._data_reference_for_api(request, clean_url)},
+                    })
+                    metadata_input_references.append({
+                        'type': ref_type,
+                        ref_type: {'url': clean_url},
+                    })
+                if clean_input_references:
+                    generate_kwargs['input_references'] = clean_input_references
+                    metadata_options['input_references'] = metadata_input_references
 
         try:
             gen = backend_cls(**gen_kwargs)
