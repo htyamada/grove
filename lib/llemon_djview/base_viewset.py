@@ -7,9 +7,10 @@ from django.conf import settings  # type: ignore[import-untyped]
 from django.urls import reverse  # type: ignore[import-untyped]
 
 from .media_utils import ensure_media_thumbnail
-from .storage import CategoryStore, VIDEO_EXTS
+from .storage import CategoryStore, METADATA_CACHE_DIR, VIDEO_EXTS
 
-_RESERVED_GALLERY_DIRS: frozenset[str] = frozenset({'thumbnails', 'thumbnails_large', 'db'})
+_RESERVED_GALLERY_DIRS: frozenset[str] = frozenset(
+    {'thumbnails', 'thumbnails_large', 'db', METADATA_CACHE_DIR})
 
 
 class MediaGenViewSetBase:

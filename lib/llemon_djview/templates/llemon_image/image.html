@@ -1143,7 +1143,7 @@ document.addEventListener('keydown', function(e) {
     info.style.display = 'block';
 
     topSection.classList.add('has-image');
-    status.textContent = 'Done.';
+    status.textContent = data.warning ? 'Warning: ' + data.warning : 'Done.';
   }
 
   function getCookie(name) {

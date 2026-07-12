@@ -76,8 +76,8 @@ Gallery and archive display both image and video files:
 ### What a Project Is
 
 A project is any subdirectory inside the gallery directory that is not a
-reserved name (`thumbnails`, `thumbnails_large`, `db`) and does not start
-with `.`. Projects can be nested to any depth. The path from the gallery root
+reserved name (`thumbnails`, `thumbnails_large`, `db`, `metadata_cache`) and
+does not start with `.`. Projects can be nested to any depth. The path from the gallery root
 to the project is the **subdir**, e.g. `vacation` or `vacation/day2`. There is
 no project registry or database; presence of a directory is sufficient.
 
@@ -105,6 +105,7 @@ gallery/
   thumbnails/                 ← root gallery small thumbs (160 px)
   thumbnails_large/           ← root gallery large thumbs (600 px)
   db/                         ← SQLite category database
+  metadata_cache/             ← cached EXIF-embedded generation metadata
   some-image.png
   some-image.json             ← sidecar metadata
   vacation/                   ← project directory
@@ -121,6 +122,13 @@ gallery/
 Thumbnail directories (`thumbnails/`, `thumbnails_large/`) are created on
 demand inside each directory that needs them. Reserved directory names are
 never offered as navigation targets.
+
+`metadata_cache/` is likewise created on demand: when an image has no JSON
+sidecar, its EXIF-embedded generation metadata (or `null` when it has none)
+is read once via exiftool and cached as `<fname>.json`, invalidated by the
+image's mtime. Cache entries are deleted and moved along with their image,
+like thumbnails. Transient read failures (including an unavailable or timed-out
+exiftool) are not cached, so a later gallery load retries them.
 
 ### Navigating Projects
 

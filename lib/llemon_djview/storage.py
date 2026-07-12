@@ -15,11 +15,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from hty7.llemon.mediagen.imagegen import read_image_exif_metadata_result
+
 
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.gif'}
 VIDEO_EXTS = {'.mp4', '.webm', '.mov', '.m4v'}
 MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS
 LARGE_THUMB_SIZE = 600
+METADATA_CACHE_DIR = 'metadata_cache'
 
 
 def safe_name(value: str) -> str:
@@ -149,6 +152,36 @@ def delete_media_file(directory: str, filename: str, allowed_exts: set[str]) -> 
     os.remove(path)
 
 
+def _image_exif_metadata_cached(media_dir: str, fname: str) -> dict[str, Any] | None:
+    """Read EXIF-embedded generation metadata through a per-directory cache.
+
+    Mirrors the thumbnail cache: ``<media_dir>/metadata_cache/<fname>.json``
+    holds the read_image_exif_metadata() result (``null`` when the image has
+    no embedded metadata) and is refreshed when the image is newer, so
+    gallery listings do not spawn exiftool per sidecar-less file per load.
+    """
+    image_path = os.path.join(media_dir, fname)
+    cache_dir = os.path.join(media_dir, METADATA_CACHE_DIR)
+    cache_path = os.path.join(cache_dir, f'{fname}.json')
+    try:
+        if os.path.getmtime(cache_path) >= os.path.getmtime(image_path):
+            with open(cache_path, encoding='utf-8') as f:
+                cached = json.load(f)
+            return cached if isinstance(cached, dict) else None
+    except (OSError, ValueError):
+        pass
+    meta, cacheable = read_image_exif_metadata_result(image_path)
+    if not cacheable:
+        return meta
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(meta, f)
+    except OSError:
+        pass
+    return meta
+
+
 def read_image_sidecar(media_dir: str, fname: str, sanitize) -> dict[str, Any] | None:
     stem = os.path.splitext(fname)[0]
     bare = re.sub(r'_\d+$', '', stem)
@@ -160,6 +193,13 @@ def read_image_sidecar(media_dir: str, fname: str, sanitize) -> dict[str, Any] |
                     return sanitize(json.load(f))
             except Exception:
                 return None
+    # No JSON sidecar — some backends (e.g. OpenRouter) embed metadata
+    # directly in the image file's EXIF tags instead.
+    if (os.path.splitext(fname)[1].lower() in IMAGE_EXTS
+            and os.path.isfile(os.path.join(media_dir, fname))):
+        meta = _image_exif_metadata_cached(media_dir, fname)
+        if meta is not None:
+            return sanitize(meta)
     return None
 
 
@@ -427,6 +467,13 @@ def delete_image_asset(
             except OSError:
                 pass
 
+    cache_path = os.path.join(media_dir, METADATA_CACHE_DIR, f'{fname}.json')
+    if os.path.isfile(cache_path):
+        try:
+            os.unlink(cache_path)
+        except OSError:
+            pass
+
 
 def delete_video_asset(
     directory: str,
@@ -506,6 +553,15 @@ def move_image_asset(
                 _replace_or_move(src_thumb_path, os.path.join(dst_thumb, dst_fname))
             except OSError:
                 pass
+
+    src_cache = os.path.join(src_dir, METADATA_CACHE_DIR, f'{fname}.json')
+    if os.path.isfile(src_cache):
+        dst_cache_dir = os.path.join(dst_dir, METADATA_CACHE_DIR)
+        try:
+            os.makedirs(dst_cache_dir, exist_ok=True)
+            _replace_or_move(src_cache, os.path.join(dst_cache_dir, f'{dst_fname}.json'))
+        except OSError:
+            pass
     return dst_fname
 
 

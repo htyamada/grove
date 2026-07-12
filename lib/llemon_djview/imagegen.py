@@ -47,6 +47,7 @@ from hty7.llemon.mediagen.imagegen import (
     supports_edit,
     supports_upscale,
     PROVIDERS,
+    write_image_generation_exif_with_sidecar_fallback,
     write_image_metadata,
     LLemonImageParamError,
 )
@@ -544,8 +545,27 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 self._ensure_large_thumbnail(_fname)
         actual_model = result.get('model') or model
         metadata_system = system if system is not None else result.get('system')
+        metadata_warning = None
 
-        if not (extra_params or {}).get('embed_exif_metadata'):
+        if getattr(backend_cls, 'embeds_metadata_in_exif', False):
+            metadata_warning = write_image_generation_exif_with_sidecar_fallback(
+                [os.path.join(save_dir, f) for f in files],
+                desc_file,
+                files,
+                model=actual_model,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                cost=cost,
+                prompt=prompt,
+                system=metadata_system,
+                temperature=temperature,
+                provider=provider,
+                api=api,
+                extra_params=_sanitize_image_metadata(extra_params) or None,
+            )
+            if metadata_warning:
+                logger.warning('%s', metadata_warning)
+        elif not (extra_params or {}).get('embed_exif_metadata'):
             try:
                 write_image_metadata(
                     desc_file,
@@ -580,6 +600,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             'model':         actual_model,
             'model_display': model_display(actual_model),
             'summary':       summary,
+            'warning':       metadata_warning,
         }, 200
 
     def _generate_stream(
