@@ -5,18 +5,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-if __package__ in (None, ''):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    from llemon_djview.media import _MediaImageViewSet
-    from llemon_djview.storage import read_video_sidecar
-else:
-    try:
-        from ..media import _MediaImageViewSet
-        from ..storage import read_video_sidecar
-    except ImportError:
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        from llemon_djview.media import _MediaImageViewSet
-        from llemon_djview.storage import read_video_sidecar
+_LIB = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'lib')
+if _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+from llemon_djview.media import _MediaImageViewSet
+from llemon_djview.storage import read_video_sidecar
 
 
 class VideoMetadataTests(unittest.TestCase):

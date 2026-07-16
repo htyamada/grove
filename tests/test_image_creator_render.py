@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[2]      # .../grove/lib
+ROOT = Path(__file__).resolve().parents[1] / 'lib'      # .../grove/lib
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -46,6 +46,16 @@ else:
         'OPTIONS': {},
     }]
 
+    # This file's settings.configure() call only takes effect when Django
+    # settings are not already configured — another test file discovered in
+    # the same process (e.g. tests/test_djview.py) may have configured its
+    # own ROOT_URLCONF/TEMPLATES/INSTALLED_APPS first, since Django settings
+    # can only be configured once per process. The bare-minimum call below
+    # covers the standalone-run case; _DJANGO_TEST_OVERRIDES below covers
+    # this test's own values regardless of what ran first, via
+    # override_settings, which Django supports even after settings are
+    # already configured and correctly invalidates the URL/template/app
+    # caches for the duration of the override.
     if not settings.configured:
         settings.configure(
             SECRET_KEY='test-secret',
@@ -65,6 +75,7 @@ else:
 
     from django.http import HttpResponse
     from django.test import RequestFactory
+    from django.test.utils import override_settings
     from django.urls import include, path
 
     from llemon_djview.imagegen import LLemonImageGenViewSet
@@ -84,6 +95,16 @@ else:
         path('edit/', _noop, name='edit_image'),
     ], 'llemon_image')
     urlpatterns = [path('', include(_img_patterns, namespace='llemon_image'))]
+
+    _DJANGO_TEST_OVERRIDES = dict(
+        ROOT_URLCONF=__name__,
+        INSTALLED_APPS=[
+            'django.contrib.contenttypes',
+            'django.contrib.sessions',
+        ],
+        TEMPLATES=_TEMPLATES,
+        MIDDLEWARE=[],
+    )
 
     _PROVIDER_CONFIG = {
         'supports_temperature':   False,
@@ -127,9 +148,10 @@ else:
                 'default_edit_model':            mock.Mock(return_value='firered-image-edit'),
                 'edit_aspect_ratios':            mock.Mock(return_value=['auto', '1:1', '16:9']),
             }
-            with mock.patch.dict(self.view.image_creator.__globals__, overrides):
-                with mock.patch.object(self.view, '_gallery_picker_items', return_value=[]):
-                    return self.view.image_creator(request)
+            with override_settings(**_DJANGO_TEST_OVERRIDES):
+                with mock.patch.dict(self.view.image_creator.__globals__, overrides):
+                    with mock.patch.object(self.view, '_gallery_picker_items', return_value=[]):
+                        return self.view.image_creator(request)
 
         def test_image_creator_renders_provider_reactive_edit_metadata(self) -> None:
             response = self._render()

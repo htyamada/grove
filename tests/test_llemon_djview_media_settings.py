@@ -17,7 +17,38 @@ for lib in (GROVE_LIB, HTY7_LIB):
         sys.path.insert(0, str(lib))
 
 
+def _stash_djview_modules() -> dict:
+    """Remove any already-imported llemon_djview modules from sys.modules.
+
+    Other tests in this process (e.g. tests/test_image_creator_render.py)
+    may import llemon_djview for real, against the real django package. Once
+    cached in sys.modules, a plain ``import llemon_djview`` or ``from
+    llemon_djview.x import y`` returns that cached module unchanged — patching
+    sys.modules['django'] afterwards does not affect names already bound
+    inside it. Removing any cached entries first forces every test here to
+    import fresh modules against this file's faked django stand-ins.
+    """
+    return {
+        name: sys.modules.pop(name)
+        for name in list(sys.modules)
+        if name == 'llemon_djview' or name.startswith('llemon_djview.')
+    }
+
+
+def _restore_djview_modules(stashed: dict) -> None:
+    for name in list(sys.modules):
+        if name == 'llemon_djview' or name.startswith('llemon_djview.'):
+            del sys.modules[name]
+    sys.modules.update(stashed)
+
+
 class DjviewMediaSettingsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._stashed_djview_modules = _stash_djview_modules()
+
+    def tearDown(self) -> None:
+        _restore_djview_modules(self._stashed_djview_modules)
+
     def _fake_django_modules(self, *, render=None, settings_obj=None):
         return {
             'django': types.ModuleType('django'),
@@ -779,6 +810,12 @@ class DjviewMediaSettingsTests(unittest.TestCase):
 
 class UnifiedGalleryTests(unittest.TestCase):
     """Tests for the unified gallery system where image and video galleries are the same."""
+
+    def setUp(self) -> None:
+        self._stashed_djview_modules = _stash_djview_modules()
+
+    def tearDown(self) -> None:
+        _restore_djview_modules(self._stashed_djview_modules)
 
     def _fake_django_modules(self, *, render=None, settings_obj=None):
         return {
