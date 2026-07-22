@@ -478,6 +478,9 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         prompt = meta.get('prompt')
         if prompt:
             rows.append(['Prompt', str(prompt)])
+        generated_prompt = meta.get('generated_prompt')
+        if generated_prompt:
+            rows.append(['Generated prompt', str(generated_prompt)])
         return rows
 
     def _models_json(self, request):
@@ -510,8 +513,11 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         prompt = (data.get('prompt') or '').strip()
         if not prompt:
             return JsonResponse({'error': 'prompt is required'}, status=400)
+        provider_value = data.get('provider')
+        if not isinstance(provider_value, str) or not provider_value.strip():
+            return JsonResponse({'error': 'provider is required'}, status=400)
         try:
-            provider, api = normalize_provider_api(data.get('provider'), data.get('api'))
+            provider, api = normalize_provider_api(provider_value.strip(), data.get('api'))
             model = (data.get('model') or default_video_model(provider, api)).strip()
             backend_cls = make_videogen_backend(provider, api)
         except ValueError as e:
@@ -742,6 +748,12 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             'options': _sanitize_video_metadata(metadata_options),
             'files': saved,
         }
+        if result.get('generated_prompt') is not None:
+            meta['generated_prompt'] = result['generated_prompt']
+        if result.get('prompt_enhancement') is not None:
+            meta['prompt_enhancement'] = _sanitize_video_metadata(
+                result['prompt_enhancement'],
+            )
         if result.get('id'):
             meta['request_id'] = result['id']
         if result.get('job_id'):

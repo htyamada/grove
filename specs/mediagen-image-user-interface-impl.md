@@ -202,12 +202,39 @@ The form's submit handler checks the Type selector value and routes to the
 appropriate endpoint:
 
 - **normal**: POST to `generateUrl` (existing flow)
-- **upscale**: POST to `upscaleUrl` with JSON body `{fname, scale, enhance, ...}`
-- **edit**: POST to `editImageUrl` with JSON body `{fname, model, aspect_ratio, prompt}`
+- **upscale**: POST to `upscaleUrl` with JSON body
+  `{provider, fname, scale, enhance, ...}`
+- **edit**: POST to `editImageUrl` with JSON body
+  `{provider, fname, model, aspect_ratio, prompt}` plus `image_size` when the
+  provider's edit path accepts an explicit size (OpenRouter)
 
 Both upscale and edit receive streaming NDJSON responses (same `readGenerateStream()`
 pattern as normal generation) and display results using the existing
 image-result rendering code.
+
+Every action POST (`generate`, `upscale`, and `edit`) must contain the provider
+currently selected in the form. The server returns HTTP 400 with
+`provider is required` when it is absent or empty; action endpoints never
+select the package default provider.
+
+### Generation Metadata and Prompt Enhancement
+
+`_generate_result()` reads `generated_prompt` and `prompt_enhancement` from
+the backend result (present when a mediagen prompt-enhancement selector
+matched the request; see the LLemon `mediagen-image-spec.md`). Both fields
+are passed to the metadata writers and, when a generated prompt is present,
+the client-side canonical EXIF/sidecar writer
+(`write_image_generation_exif_with_sidecar_fallback`) is used even for a
+backend that did not request server-side embedding, so the original and
+generated prompts are both represented in the embedded `generationParams`.
+The `prompt` value everywhere remains the original user prompt. The summary
+returned to the creator gains a `Generated prompt` line via
+`image_generation_summary_lines()`, and the JSON response includes a
+`generated_prompt` key when one exists. Unenhanced generations omit all of
+these additions. Enhancement failures are terminal: the backend returns a
+`prompt_enhance_`-prefixed structured error before any image provider
+request, and the view reports it like any other generation error (the Django
+path performs no outer retries).
 
 ### Upscale Options
 
@@ -222,10 +249,34 @@ The enhance sub-options are omitted from the POST body when enhance is unchecked
 
 When Type is edit, a panel shows:
 
-- **Model** dropdown: list of edit models from `edit_models` context variable
-- **Aspect ratio** dropdown: empty string (source, no change), plus list from `edit_aspect_ratios`
+- **Model** dropdown: edit models from the `edit_models` context variable.
+  The list comes only from live discovery (`list_edit_models()`). Discovery
+  failure or an empty result produces an empty list, reports that image editing
+  is unavailable through `edit_models_warning`, and disables the Edit action.
+  There is no static or default-model fallback.
+- **Aspect ratio** dropdown: exactly the provider's `edit_aspect_ratios`.
+  There is no empty "(source)" choice. Venice includes `auto`
+  (displayed as "auto (source)"), which preserves the source ratio;
+  OpenRouter has no source-preserving ratio, so a concrete ratio is always
+  selected and submitted. `default_edit_aspect_ratio` selects `auto` when
+  available, otherwise the provider's default generation ratio.
+- **Size** dropdown: shown only when `edit_image_sizes` is non-empty
+  (OpenRouter). For Venice single-image edits the control is replaced by a
+  note explaining that output size is determined by the source image.
 
-The aspect-ratio field is omitted from the POST body when left empty.
+The submitted body always contains `provider`, the explicitly selected edit
+`model`, and `aspect_ratio`; `image_size` is included only while the size
+control is visible. With no discovered edit model, the client submits nothing.
+
+Server-side, `_do_edit_image()` re-validates everything: the edit model must
+be explicitly present and in the discovered list, the aspect ratio must be one of
+`edit_aspect_ratios` (with `auto` supplied as the default when the provider
+offers it, and a 400 requiring an explicit fixed ratio when it does not),
+and `image_size` is rejected with a provider-appropriate message when the
+provider does not accept one, or validated against `edit_image_sizes` and
+defaulted when it does. `_edit_result()` forwards `image_size` to
+`backend.edit()` only when set and records it in the operation sidecar. An
+empty discovered list returns HTTP 400 before a backend is constructed.
 
 ### Backend Context Additions
 
@@ -234,9 +285,24 @@ The `image_creator()` view adds to the template context:
 - `upscale_url`: URL path or `None`
 - `edit_image_url`: URL path or `None`
 - `picker_images`: list of dicts with `fname` and `thumb_url` from gallery
-- `edit_models`: list of edit model identifiers
-- `default_edit_model`: default selected edit model
-- `edit_aspect_ratios`: list prefixed with empty string for "(source)"
+- `supports_edit`: effective edit availability; false when the backend lacks
+  editing or live discovery yielded no valid model
+- `edit_models`: live-discovered edit model identifiers; never a static fallback
+- `edit_models_warning`: discovery-failure/empty-catalog message or `None`
+- `default_edit_model`: first discovered model for initial UI selection, or
+  `''` when editing is unavailable; it is not a server request fallback
+- `edit_aspect_ratios`: the provider's edit ratios (no empty entry)
+- `default_edit_aspect_ratio`: `auto` when offered, else the default ratio
+- `edit_image_sizes`: permitted edit sizes (empty when size is automatic)
+- `default_edit_image_size`: default selected edit size (`''` when automatic)
+
+These edit keys are produced by the module-level `_edit_metadata()` helper,
+which caches live edit-model discovery for five minutes per provider so page
+renders and edit requests do not each pay a catalog fetch. The same keys are
+included in the `models_json` response so a provider switch updates the edit
+controls without a page reload. Unit/render tests replace `_edit_metadata()`
+or the backend catalog method with deterministic doubles and never contact a
+live provider.
 
 The `_gallery_picker_items()` private method scans the gallery directory for
 image files (extensions: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) and returns

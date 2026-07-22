@@ -105,6 +105,7 @@ class DjviewMediaSettingsTests(unittest.TestCase):
             get_log_dir=mock.Mock(return_value=''),
         )
         fake_mediagen = types.SimpleNamespace(
+            init=mock.Mock(),
             imagegen=fake_imagegen,
             videogen=fake_videogen,
         )
@@ -118,8 +119,7 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         ):
             settings = djview.media_settings(fake_appconfig)
 
-        fake_imagegen.init.assert_called_once_with(fake_appconfig)
-        fake_videogen.init.assert_called_once_with(fake_appconfig)
+        fake_mediagen.init.assert_called_once_with(fake_appconfig)
         self.assertEqual(settings['LLEMON_IMAGEGEN_MEDIA_DIR'], str(Path('~/img-media').expanduser()))
         self.assertEqual(settings['LLEMON_IMAGEGEN_LOG_DIR'], str(Path('~/img-log').expanduser()))
         self.assertIsNone(settings['LLEMON_LOG_DIR'])
@@ -140,7 +140,9 @@ class DjviewMediaSettingsTests(unittest.TestCase):
             get_media_dir=mock.Mock(return_value='~/vid-media'),
             get_log_dir=mock.Mock(return_value=''),
         )
-        fake_mediagen = types.SimpleNamespace(imagegen=fake_imagegen, videogen=fake_videogen)
+        fake_mediagen = types.SimpleNamespace(
+            init=mock.Mock(), imagegen=fake_imagegen, videogen=fake_videogen,
+        )
 
         class FakeAppConfig:
             def get(self, namespace, section, key):
@@ -623,6 +625,16 @@ class DjviewMediaSettingsTests(unittest.TestCase):
                 'default_image_size': mock.Mock(return_value=''),
                 'default_image_model': mock.Mock(return_value='model-a'),
                 '_provider_config': mock.Mock(return_value={}),
+                '_edit_metadata': mock.Mock(return_value={
+                    'supports_edit': False,
+                    'edit_models': [],
+                    'edit_models_warning': None,
+                    'default_edit_model': '',
+                    'edit_aspect_ratios': [],
+                    'default_edit_aspect_ratio': '',
+                    'edit_image_sizes': [],
+                    'default_edit_image_size': '',
+                }),
             },
         ):
             with mock.patch.object(view, '_u', side_effect=lambda name, *args: f'/{name}/' + '/'.join(args)):

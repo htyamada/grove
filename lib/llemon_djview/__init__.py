@@ -56,7 +56,18 @@ def _render_md_doc(text):
 
 
 def media_settings(appconfig) -> dict[str, str | None]:
-    """Initialize LLemon media backends and return Django settings values."""
+    """Initialize LLemon media backends and return Django settings values.
+
+    Initialization goes through top-level ``mediagen.init()`` so the
+    prompt-enhancement selector mapping is built alongside the imagegen and
+    videogen subpackages. A configuration error (including an invalid
+    ``*-rewrite.json`` selector) propagates out of the Django settings
+    import and is fatal to startup; no media request can be served after a
+    failed initialization.
+    """
+    import importlib
+
+    _mediagen = importlib.import_module('hty7.llemon.mediagen')
     from hty7.llemon.mediagen import imagegen as _imagegen
     from hty7.llemon.mediagen import videogen as _videogen
 
@@ -68,8 +79,7 @@ def media_settings(appconfig) -> dict[str, str | None]:
             return None
         return os.path.expanduser(str(value))
 
-    _imagegen.init(appconfig)
-    _videogen.init(appconfig)
+    _mediagen.init(appconfig)
     return {
         'LLEMON_LOG_DIR': os.path.expanduser(discover.log_dir) if discover.log_dir else None,
         'LLEMON_IMAGEGEN_MEDIA_DIR': os.path.expanduser(_imagegen.get_media_dir()),

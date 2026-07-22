@@ -231,6 +231,19 @@ with a different `notes.json` are not destroyed).
 Returns `{'ok': true, 'tags': dict[str, bool]}` on success, where `tags` is the
 merged stored tag state after unknown stored tags have been preserved.
 
+### 5.3 Media action selection
+
+Image generation, upscale, and edit POST bodies always include the provider
+currently selected in the creator. The server does not apply the package's
+default provider to action requests. An image edit also includes an explicit
+model selected from the live `list_edit_models()` result.
+
+Edit-model discovery has no static or default-model fallback. If discovery
+fails or returns no models, effective edit support is false, the Edit action is
+disabled, and a direct edit request is rejected before a backend action can be
+started. Render and view tests replace discovery with deterministic test data;
+they do not contact provider catalog APIs.
+
 ---
 
 ## 6. Error States
@@ -240,3 +253,6 @@ merged stored tag state after unknown stored tags have been preserved.
 | `notes_dir` not configured | GET/POST returns `{'error': 'notes_dir not configured'}` with HTTP 500 |
 | DB open or query error | GET/POST returns `{'error': str(e)}` with HTTP 500 |
 | Missing `provider` or `model` in GET | Returns `{'error': 'provider and model are required'}` with HTTP 400 |
+| Missing `provider` in a generate/upscale/edit POST | Returns `{'error': 'provider is required'}` with HTTP 400 |
+| Missing edit `model` | Returns `{'error': 'edit model is required'}` with HTTP 400 |
+| Edit-model discovery failed or returned no models | Edit is disabled; a direct POST returns HTTP 400 and no backend action occurs |

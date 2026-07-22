@@ -74,11 +74,19 @@ follow the image-generation interaction model: textarea blur saves notes, tag cl
 save immediately, and the special `block` reverse-tag is used by model
 filtering.
 
+Every video-generation POST contains the provider currently selected in the
+creator. The server requires a non-empty `provider` field and returns HTTP 400
+with `provider is required` when it is absent; it never selects the package
+default provider for an action request.
+
 When a video generation request completes, the creator displays the returned
 video immediately and renders the same metadata summary that is written to the
 video sidecar. The summary includes provider, API, model display name,
 duration, selected generation options, saved filename, and prompt when those
-values are present. When the creator is opened from a gallery Reload action,
+values are present. When prompt enhancement rewrote the prompt (see the
+LLemon `mediagen-video-spec.md` for the selector mechanism), a
+`Generated prompt` row follows the `Prompt` row; the `Prompt` value always
+remains the original user prompt. When the creator is opened from a gallery Reload action,
 the result preview is populated from query parameters derived from the sidecar
 and uses the same metadata rendering path.
 
@@ -180,6 +188,7 @@ Video-specific details:
 - When opening a video in the detail overlay, a video player is displayed instead of an image viewer
 - Generation saves video files to gallery and writes a JSON sidecar beside the primary file
 - The sidecar records provider, API, `model_id`, `model`, `model_display`, duration, prompt, creation time, options, saved file names, and best-effort request/job identifiers
+- When prompt enhancement ran, the sidecar also records `generated_prompt` (the exact prompt sent to the video provider) and the `prompt_enhancement` provenance object from the backend result (enhancement provider, model, configured instruction, request ID, usage); `prompt` remains the original user prompt. Unenhanced generations omit both fields
 - Data URLs in metadata are truncated to 30 characters in display; options must not contain any `data:` URL longer than 30 characters
 - Generation responses return the sidecar object as `meta` plus a label/value `summary` for immediate creator display
 - The detail overlay includes a Generate button (when creator URL is available) that opens the video creator with parameters from the sidecar

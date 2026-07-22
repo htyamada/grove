@@ -143,10 +143,16 @@ else:
                 'PROVIDERS':                     ['venice', 'openrouter'],
                 'supports_edit':                 mock.Mock(return_value=True),
                 'supports_upscale':              mock.Mock(return_value=True),
-                'edit_models':                   mock.Mock(
-                    return_value=['firered-image-edit', 'qwen-edit']),
-                'default_edit_model':            mock.Mock(return_value='firered-image-edit'),
-                'edit_aspect_ratios':            mock.Mock(return_value=['auto', '1:1', '16:9']),
+                '_edit_metadata':                 mock.Mock(return_value={
+                    'supports_edit':             True,
+                    'edit_models':               ['firered-image-edit', 'qwen-edit'],
+                    'edit_models_warning':       None,
+                    'default_edit_model':        'firered-image-edit',
+                    'edit_aspect_ratios':        ['auto', '1:1', '16:9'],
+                    'default_edit_aspect_ratio': 'auto',
+                    'edit_image_sizes':          [],
+                    'default_edit_image_size':   '',
+                }),
             }
             with override_settings(**_DJANGO_TEST_OVERRIDES):
                 with mock.patch.dict(self.view.image_creator.__globals__, overrides):
@@ -161,7 +167,9 @@ else:
             # json_script blocks feeding the initial provider cache.
             for elem_id in (
                 'supports-edit-data', 'supports-upscale-data', 'edit-models-data',
-                'default-edit-model-data', 'edit-aspect-ratios-data',
+                'edit-models-warning-data', 'default-edit-model-data',
+                'edit-aspect-ratios-data', 'default-edit-aspect-ratio-data',
+                'edit-image-sizes-data', 'default-edit-image-size-data',
             ):
                 self.assertIn(f'id="{elem_id}"', html)
 
@@ -178,6 +186,18 @@ else:
 
             # The provider-switch handler that repopulates edit options is wired in.
             self.assertIn('_applyEditMetadata', html)
+
+            # Provider-dependent actions carry the provider selected in the UI.
+            self.assertIn(
+                'filename: sourceImageFname,\n      provider: currentProvider,\n'
+                '      scale:',
+                html,
+            )
+            self.assertIn(
+                'filename: sourceImageFname,\n      provider: currentProvider,\n'
+                '      prompt:',
+                html,
+            )
 
 
 if __name__ == '__main__':

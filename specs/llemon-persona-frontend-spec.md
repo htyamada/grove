@@ -118,6 +118,15 @@ appended after any items supplied via `nav`.
 loads LLemon settings at application startup through
 `llemon_djview.django_settings(<variant>)`, which initializes the configured
 variant and returns the Django settings required by the shared views.
+Media support is initialized through top-level `mediagen.init(appconfig)`,
+which loads API keys, validates every prompt-enhancement `*-rewrite.json`
+selector, builds the enhancer mapping, and initializes the imagegen and
+videogen subpackages. Every rewrite selector must contain all fields, including
+a non-empty exact `target_model`; there is no provider-wide fallback. Any
+configuration error — a missing or malformed
+configuration file, or an invalid rewrite selector — propagates out of the
+Django settings import and is fatal to startup; the hosts do not catch it,
+so no media request can be served after a failed initialization.
 
 For Grove, `django_settings()` inherits the base LLemon values from
 `~/etc/llemon.conf` via `hty7.config.AppConfig`, then applies the independent

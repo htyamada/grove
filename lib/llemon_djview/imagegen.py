@@ -10,6 +10,7 @@ import os
 import queue
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 from typing import Any
@@ -23,11 +24,10 @@ from django.views.decorators.http import require_POST  # type: ignore[import-unt
 from hty7.llemon.mediagen.imagegen import (
     aspect_ratios,
     default_aspect_ratio,
-    default_edit_model,
     default_image_model,
     default_image_size,
     edit_aspect_ratios,
-    edit_models,
+    edit_image_sizes,
     extract_extra_params,
     get_model_note,
     get_model_tag_states,
@@ -77,6 +77,96 @@ _MEDIA_EXTS = _IMAGE_EXTS | VIDEO_EXTS
 
 def _sanitize_image_metadata(value: Any) -> Any:
     return sanitize_metadata_data_urls(value)
+
+
+_EDIT_MODELS_CACHE_TTL = 300.0
+_edit_models_cache: dict[tuple[str, str], tuple[float, list[str], 'str | None']] = {}
+
+
+def _discovered_edit_models(provider: str, api: str) -> 'tuple[list[str], str | None]':
+    """Return live-discovered edit model IDs and any availability warning.
+
+    OpenRouter and Venice advertise edit-capable models live; their catalogs
+    change faster than the shipped static lists. Discovery results are cached
+    briefly so page renders and edit requests do not each pay a catalog fetch.
+    Failure or an empty result means editing is unavailable; no model is
+    inferred or accepted as a fallback.
+    """
+    key = (provider, api)
+    cached = _edit_models_cache.get(key)
+    if cached and time.monotonic() - cached[0] < _EDIT_MODELS_CACHE_TTL:
+        return list(cached[1]), cached[2]
+    models: list[str] = []
+    warning: str | None = None
+    try:
+        entries = make_imagegen_backend(provider, api).list_edit_models()
+        discovered: list[str] = []
+        for entry in entries:
+            model_id = entry.get('id') if isinstance(entry, dict) else entry
+            if not isinstance(model_id, str) or not model_id.strip():
+                continue
+            model_id = model_id.strip()
+            if model_id not in discovered:
+                discovered.append(model_id)
+        if discovered:
+            models = discovered
+        else:
+            warning = 'no edit models were discovered; image editing is unavailable'
+    except Exception as e:
+        logger.warning('live edit-model discovery failed for %s: %s', provider, e)
+        warning = 'edit-model discovery failed; image editing is unavailable'
+    _edit_models_cache[key] = (time.monotonic(), list(models), warning)
+    return models, warning
+
+
+def _edit_metadata(provider: str, api: str) -> dict[str, Any]:
+    """Edit-control metadata for one provider.
+
+    Aspect-ratio policy: a provider whose edit ratios include ``auto``
+    (Venice) preserves the source ratio through that value; a provider
+    without ``auto`` (OpenRouter) resizes to a fixed ratio, so no
+    source-preserving choice is offered and a concrete ratio is required.
+    Sizing: ``edit_image_sizes`` is empty for Venice single-image edits
+    (output size comes from the source image) and non-empty for OpenRouter,
+    whose edit path accepts an explicit size.
+    """
+    if not supports_edit(provider, api):
+        return {
+            'supports_edit':             False,
+            'edit_models':               [],
+            'edit_models_warning':       None,
+            'default_edit_model':        '',
+            'edit_aspect_ratios':        [],
+            'default_edit_aspect_ratio': '',
+            'edit_image_sizes':          [],
+            'default_edit_image_size':   '',
+        }
+    models, warning = _discovered_edit_models(provider, api)
+    default_model = models[0] if models else ''
+    ratios = edit_aspect_ratios(provider, api) if models else []
+    default_ratio = ''
+    if 'auto' in ratios:
+        default_ratio = 'auto'
+    elif ratios:
+        default_ratio = default_aspect_ratio(provider, api)
+        if default_ratio not in ratios:
+            default_ratio = ratios[0]
+    sizes = edit_image_sizes(provider, api) if models else []
+    default_size = ''
+    if sizes:
+        default_size = default_image_size(provider, api)
+        if default_size not in sizes:
+            default_size = sizes[0]
+    return {
+        'supports_edit':             bool(models),
+        'edit_models':               models,
+        'edit_models_warning':       warning,
+        'default_edit_model':        default_model,
+        'edit_aspect_ratios':        ratios,
+        'default_edit_aspect_ratio': default_ratio,
+        'edit_image_sizes':          sizes,
+        'default_edit_image_size':   default_size,
+    }
 
 
 class LLemonImageGenViewSet(MediaGenViewSetBase):
@@ -291,10 +381,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'source_dirs_json_url':     self._source_dirs_json_url(),
                 'supports_edit':            supports_edit(provider, api),
                 'supports_upscale':         supports_upscale(provider, api),
-                'edit_models':              edit_models(provider, api),
-                'default_edit_model':       default_edit_model(provider, api),
-                'edit_aspect_ratios':       ([''] + edit_aspect_ratios(provider, api)
-                                             if edit_aspect_ratios(provider, api) else []),
+                **_edit_metadata(provider, api),
             },
         ))
 
@@ -546,8 +633,16 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         actual_model = result.get('model') or model
         metadata_system = system if system is not None else result.get('system')
         metadata_warning = None
+        generated_prompt = result.get('generated_prompt')
+        prompt_enhancement = result.get('prompt_enhancement')
 
-        if getattr(backend_cls, 'embeds_metadata_in_exif', False):
+        # An enhanced result must use the client-side canonical metadata
+        # writer even when the provider offered server-side embedding, so the
+        # original and generated prompts are both represented.
+        if (
+            getattr(backend_cls, 'embeds_metadata_in_exif', False)
+            or generated_prompt is not None
+        ):
             metadata_warning = write_image_generation_exif_with_sidecar_fallback(
                 [os.path.join(save_dir, f) for f in files],
                 desc_file,
@@ -562,6 +657,8 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 provider=provider,
                 api=api,
                 extra_params=_sanitize_image_metadata(extra_params) or None,
+                generated_prompt=generated_prompt,
+                prompt_enhancement=prompt_enhancement,
             )
             if metadata_warning:
                 logger.warning('%s', metadata_warning)
@@ -580,6 +677,8 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                     provider=provider,
                     api=api,
                     extra_params=_sanitize_image_metadata(extra_params) or None,
+                    generated_prompt=generated_prompt,
+                    prompt_enhancement=prompt_enhancement,
                 )
             except OSError as e:
                 logger.warning('could not write metadata file: %s', e)
@@ -592,16 +691,20 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             cost=cost,
             file=files[0] if files else '',
             prompt=prompt,
+            generated_prompt=generated_prompt,
         )
 
-        return {
+        payload: dict[str, Any] = {
             'files':         files,
             'cost':          cost,
             'model':         actual_model,
             'model_display': model_display(actual_model),
             'summary':       summary,
             'warning':       metadata_warning,
-        }, 200
+        }
+        if generated_prompt is not None:
+            payload['generated_prompt'] = generated_prompt
+        return payload, 200
 
     def _generate_stream(
         self,
@@ -646,7 +749,10 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
 
         prompt       = (data.get('prompt') or '').strip()
-        provider_param = (data.get('provider') or '').strip() or None
+        provider_value = data.get('provider')
+        if not isinstance(provider_value, str) or not provider_value.strip():
+            return JsonResponse({'error': 'provider is required'}, status=400)
+        provider_param = provider_value.strip()
         try:
             provider, api = normalize_provider_api(provider_param)
         except ValueError as e:
@@ -771,10 +877,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             'provider_config':      _provider_config(provider, api),
             'supports_edit':        supports_edit(provider, api),
             'supports_upscale':     supports_upscale(provider, api),
-            'edit_models':          edit_models(provider, api),
-            'default_edit_model':   default_edit_model(provider, api),
-            'edit_aspect_ratios':   ([''] + edit_aspect_ratios(provider, api)
-                                     if edit_aspect_ratios(provider, api) else []),
+            **_edit_metadata(provider, api),
         })
 
     def _model_tag_states(self, provider: str, model_ids: list[str]) -> dict[str, dict[str, bool]]:
@@ -1015,8 +1118,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
 
+        provider_value = data.get('provider')
+        if not isinstance(provider_value, str) or not provider_value.strip():
+            return JsonResponse({'error': 'provider is required'}, status=400)
         try:
-            provider, api = normalize_provider_api((data.get('provider') or '').strip() or None)
+            provider, api = normalize_provider_api(provider_value.strip())
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
         if not supports_upscale(provider, api):
@@ -1083,17 +1189,22 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         prompt: str,
         edit_model: str,
         aspect_ratio: str | None,
+        image_size: str | None,
         safe_mode: bool | None,
         provider: str,
         api: str,
     ) -> 'tuple[dict[str, Any], int]':
         backend_cls = make_imagegen_backend(provider, api)
         backend = backend_cls(model=edit_model, log_dir=self._log_dir())
+        edit_kwargs: dict[str, Any] = {
+            'model':        edit_model,
+            'aspect_ratio': aspect_ratio,
+            'safe_mode':    safe_mode,
+        }
+        if image_size is not None:
+            edit_kwargs['image_size'] = image_size
         try:
-            result = backend.edit(
-                data_url, prompt, model=edit_model,
-                aspect_ratio=aspect_ratio, safe_mode=safe_mode,
-            )
+            result = backend.edit(data_url, prompt, **edit_kwargs)
         finally:
             backend.shutdown()
         if result.get('error'):
@@ -1108,18 +1219,21 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         }
         if aspect_ratio:
             sidecar['aspect_ratio'] = aspect_ratio
+        if image_size:
+            sidecar['image_size'] = image_size
         return self._save_operation_result(result, media_dir, stem, sidecar, backend_cls)
 
     def _edit_stream(self, data_url: str, source_filename: str, media_dir: str,
                      prompt: str, edit_model: str, aspect_ratio: 'str | None',
-                     safe_mode: 'bool | None', provider: str, api: str):
+                     image_size: 'str | None', safe_mode: 'bool | None',
+                     provider: str, api: str):
         q: queue.Queue[dict[str, Any]] = queue.Queue()
 
         def _worker() -> None:
             try:
                 payload, status = self._edit_result(data_url, source_filename, media_dir,
                                                     prompt, edit_model, aspect_ratio,
-                                                    safe_mode, provider, api)
+                                                    image_size, safe_mode, provider, api)
                 q.put({'event': 'done', 'status': status, **payload})
             except Exception as e:
                 logger.exception('edit stream failed')
@@ -1141,8 +1255,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
 
+        provider_value = data.get('provider')
+        if not isinstance(provider_value, str) or not provider_value.strip():
+            return JsonResponse({'error': 'provider is required'}, status=400)
         try:
-            provider, api = normalize_provider_api((data.get('provider') or '').strip() or None)
+            provider, api = normalize_provider_api(provider_value.strip())
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
         if not supports_edit(provider, api):
@@ -1158,11 +1275,53 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         if not prompt:
             return JsonResponse({'error': 'prompt is required'}, status=400)
 
-        edit_model   = (data.get('model') or default_edit_model(provider, api)).strip()
-        valid_ratios = edit_aspect_ratios(provider, api)
+        model_value = data.get('model')
+        edit_model = model_value.strip() if isinstance(model_value, str) else ''
+        if not edit_model:
+            return JsonResponse({'error': 'edit model is required'}, status=400)
+        edit_meta = _edit_metadata(provider, api)
+        valid_models = edit_meta['edit_models']
+        if not valid_models:
+            return JsonResponse(
+                {'error': f'no edit models are available for provider {provider!r}'},
+                status=400,
+            )
+        if edit_model not in valid_models:
+            return JsonResponse(
+                {'error': f'invalid edit model; use one of: {", ".join(valid_models)}'},
+                status=400,
+            )
+        valid_ratios = edit_meta['edit_aspect_ratios']
         aspect_ratio = (data.get('aspect_ratio') or '').strip() or None
-        if aspect_ratio and aspect_ratio not in valid_ratios:
+        if aspect_ratio and valid_ratios and aspect_ratio not in valid_ratios:
             return JsonResponse({'error': 'invalid aspect_ratio'}, status=400)
+        if not aspect_ratio and valid_ratios:
+            if 'auto' in valid_ratios:
+                aspect_ratio = 'auto'
+            else:
+                return JsonResponse(
+                    {'error': (f'{provider} image edits resize to a fixed aspect '
+                               f'ratio; set aspect_ratio '
+                               f'(one of: {", ".join(valid_ratios)})')},
+                    status=400,
+                )
+        valid_sizes = edit_meta['edit_image_sizes']
+        image_size = (data.get('image_size') or '').strip() or None
+        if image_size and not valid_sizes:
+            if provider == 'venice':
+                message = ('Venice single-image editing determines output size '
+                           'from the source image; image_size is not accepted')
+            else:
+                message = f'provider {provider!r} image editing does not accept image_size'
+            return JsonResponse({'error': message}, status=400)
+        if valid_sizes:
+            if not image_size:
+                image_size = edit_meta['default_edit_image_size']
+            if image_size not in valid_sizes:
+                return JsonResponse(
+                    {'error': f'invalid image_size; use one of: {", ".join(valid_sizes)}'},
+                    status=400,
+                )
         safe_mode_raw = data.get('safe_mode')
         safe_mode: bool | None = bool(safe_mode_raw) if safe_mode_raw is not None else None
 
@@ -1172,7 +1331,8 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         if data.get('stream'):
             resp = StreamingHttpResponse(
                 self._edit_stream(data_url, filename, result_dir, prompt,
-                                  edit_model, aspect_ratio, safe_mode, provider, api),
+                                  edit_model, aspect_ratio, image_size, safe_mode,
+                                  provider, api),
                 content_type='application/x-ndjson',
             )
             resp['Cache-Control'] = 'no-cache'
@@ -1180,8 +1340,8 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return resp
 
         payload, status = self._edit_result(data_url, filename, result_dir,
-                                            prompt, edit_model, aspect_ratio, safe_mode,
-                                            provider, api)
+                                            prompt, edit_model, aspect_ratio, image_size,
+                                            safe_mode, provider, api)
         return JsonResponse(payload, status=status)
 
     def _edit_image(self, request):

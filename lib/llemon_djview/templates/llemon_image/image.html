@@ -156,6 +156,7 @@
             </div>
           </div>
         </div>
+        <div class="row" id="edit-models-warning" style="color:#a60; font-size:0.85em;{% if not edit_models_warning %} display:none;{% endif %}">{{ edit_models_warning|default:"" }}</div>
         <div id="edit-opts" style="display:none;">
           <div class="row">
             <label for="edit-model-sel">Model</label>
@@ -166,8 +167,17 @@
           <div class="row">
             <label for="edit-aspect-sel">Aspect ratio</label>
             <select id="edit-aspect-sel" style="font-size:1em;">
-              {% for r in edit_aspect_ratios %}<option value="{{ r }}"{% if not r %} selected{% endif %}>{% if r %}{{ r }}{% else %}(source){% endif %}</option>{% endfor %}
+              {% for r in edit_aspect_ratios %}<option value="{{ r }}"{% if r == default_edit_aspect_ratio %} selected{% endif %}>{% if r == 'auto' %}auto (source){% else %}{{ r }}{% endif %}</option>{% endfor %}
             </select>
+          </div>
+          <div class="row" id="edit-size-row"{% if not edit_image_sizes %} style="display:none;"{% endif %}>
+            <label for="edit-size-sel">Size</label>
+            <select id="edit-size-sel" style="font-size:1em;">
+              {% for s in edit_image_sizes %}<option value="{{ s }}"{% if s == default_edit_image_size %} selected{% endif %}>{{ s }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="row" id="edit-size-note"{% if edit_image_sizes %} style="display:none;"{% endif %}>
+            <span style="font-size:0.85em; color:#666;">Output size is determined by the source image.</span>
           </div>
         </div>
         <div class="row" id="model-row">
@@ -274,8 +284,12 @@
 {{ supports_edit|json_script:"supports-edit-data" }}
 {{ supports_upscale|json_script:"supports-upscale-data" }}
 {{ edit_models|json_script:"edit-models-data" }}
+{{ edit_models_warning|json_script:"edit-models-warning-data" }}
 {{ default_edit_model|json_script:"default-edit-model-data" }}
 {{ edit_aspect_ratios|json_script:"edit-aspect-ratios-data" }}
+{{ default_edit_aspect_ratio|json_script:"default-edit-aspect-ratio-data" }}
+{{ edit_image_sizes|json_script:"edit-image-sizes-data" }}
+{{ default_edit_image_size|json_script:"default-edit-image-size-data" }}
 <script>
 var _lbUrl = '';
 function lbShow() {
@@ -328,8 +342,12 @@ document.addEventListener('keydown', function(e) {
     supports_edit:        JSON.parse(document.getElementById('supports-edit-data').textContent),
     supports_upscale:     JSON.parse(document.getElementById('supports-upscale-data').textContent),
     edit_models:          JSON.parse(document.getElementById('edit-models-data').textContent),
+    edit_models_warning:  JSON.parse(document.getElementById('edit-models-warning-data').textContent),
     default_edit_model:   JSON.parse(document.getElementById('default-edit-model-data').textContent),
     edit_aspect_ratios:   JSON.parse(document.getElementById('edit-aspect-ratios-data').textContent),
+    default_edit_aspect_ratio: JSON.parse(document.getElementById('default-edit-aspect-ratio-data').textContent),
+    edit_image_sizes:     JSON.parse(document.getElementById('edit-image-sizes-data').textContent),
+    default_edit_image_size: JSON.parse(document.getElementById('default-edit-image-size-data').textContent),
   };
 
   let currentProvider = INITIAL_PROVIDER;
@@ -443,16 +461,36 @@ document.addEventListener('keydown', function(e) {
         emSel.appendChild(opt);
       }
     }
+    const emWarn = document.getElementById('edit-models-warning');
+    if (emWarn) {
+      emWarn.textContent = data.edit_models_warning || '';
+      emWarn.style.display = data.edit_models_warning ? '' : 'none';
+    }
     const eaSel = document.getElementById('edit-aspect-sel');
     if (eaSel && Array.isArray(data.edit_aspect_ratios)) {
       eaSel.innerHTML = '';
       for (const r of data.edit_aspect_ratios) {
         const opt = document.createElement('option');
-        opt.value = r; opt.textContent = r ? r : '(source)';
-        if (!r) opt.selected = true;
+        opt.value = r; opt.textContent = r === 'auto' ? 'auto (source)' : r;
+        if (r === data.default_edit_aspect_ratio) opt.selected = true;
         eaSel.appendChild(opt);
       }
     }
+    const esSel = document.getElementById('edit-size-sel');
+    const esRow = document.getElementById('edit-size-row');
+    const esNote = document.getElementById('edit-size-note');
+    const editSizes = Array.isArray(data.edit_image_sizes) ? data.edit_image_sizes : [];
+    if (esSel) {
+      esSel.innerHTML = '';
+      for (const s of editSizes) {
+        const opt = document.createElement('option');
+        opt.value = s; opt.textContent = s;
+        if (s === data.default_edit_image_size) opt.selected = true;
+        esSel.appendChild(opt);
+      }
+    }
+    if (esRow) esRow.style.display = editSizes.length ? '' : 'none';
+    if (esNote) esNote.style.display = editSizes.length ? 'none' : '';
     const typeSel = document.getElementById('image-type');
     if (typeSel) {
       let revert = false;
@@ -471,6 +509,8 @@ document.addEventListener('keydown', function(e) {
       }
     }
   }
+
+  _applyEditMetadata(_providerCache[INITIAL_PROVIDER]);
 
   function _modelFilterBoxes() {
     return document.querySelectorAll('#model-filter-tags input[type=checkbox]');
@@ -901,6 +941,7 @@ document.addEventListener('keydown', function(e) {
 
     const body = {
       filename: sourceImageFname,
+      provider: currentProvider,
       scale: parseInt(document.getElementById('up-scale').value),
       enhance: document.getElementById('up-enhance').checked,
       stream: true,
@@ -945,6 +986,8 @@ document.addEventListener('keydown', function(e) {
     if (!sourceImageFname) { errMsg.textContent = 'Please select a source image.'; return; }
     if (!editImageUrl) { errMsg.textContent = 'Edit is not available.'; return; }
     if (!prompt) { errMsg.textContent = 'Please enter edit instructions.'; return; }
+    const editModel = document.getElementById('edit-model-sel').value;
+    if (!editModel) { errMsg.textContent = 'No edit models are available.'; return; }
 
     btn.disabled = true;
     status.textContent = 'Editing…';
@@ -952,13 +995,21 @@ document.addEventListener('keydown', function(e) {
 
     const body = {
       filename: sourceImageFname,
+      provider: currentProvider,
       prompt: prompt,
-      model: document.getElementById('edit-model-sel').value,
+      model: editModel,
       stream: true,
     };
 
     const aspectRatio = document.getElementById('edit-aspect-sel').value;
     if (aspectRatio) body.aspect_ratio = aspectRatio;
+
+    const editSizeRow = document.getElementById('edit-size-row');
+    const editSizeSel = document.getElementById('edit-size-sel');
+    if (editSizeRow && editSizeRow.style.display !== 'none'
+        && editSizeSel && editSizeSel.value) {
+      body.image_size = editSizeSel.value;
+    }
 
     try {
       const resp = await fetch(editImageUrl, {
