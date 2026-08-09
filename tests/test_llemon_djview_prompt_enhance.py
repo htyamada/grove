@@ -353,6 +353,13 @@ class VideoEnhancementPassthroughTests(_DjviewTestCase):
             'default_video_model': lambda *a, **k: 'video-model',
             'default_duration': lambda *a, **k: 5,
             'make_videogen_backend': mock.Mock(return_value=_FakeVideoBackend),
+            'model_presentation': mock.Mock(return_value={
+                'reference_image_request_family': 'none',
+                'allows_start_image': False,
+                'allows_end_image': False,
+                'allows_reference_images': True,
+                'allows_scene_images': False,
+            }),
             'save_generated_videos': mock.Mock(return_value=['out.mp4']),
             'write_video_sidecar': sidecar_writer,
             'model_display': lambda model, *a, **k: model,

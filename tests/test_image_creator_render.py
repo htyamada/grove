@@ -7,6 +7,9 @@ edit metadata wiring (json_script blocks + the edit dropdowns / Type options)
 is validated as actual HTML output.
 """
 
+import json
+import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -76,9 +79,11 @@ else:
     from django.http import HttpResponse
     from django.test import RequestFactory
     from django.test.utils import override_settings
+    from django.template.loader import get_template
     from django.urls import include, path
 
     from llemon_djview.imagegen import LLemonImageGenViewSet
+    from llemon_djview.videogen import LLemonVideoGenViewSet
 
     def _noop(request, *args, **kwargs):
         return HttpResponse('')
@@ -159,19 +164,24 @@ else:
                     with mock.patch.object(self.view, '_gallery_picker_items', return_value=[]):
                         return self.view.image_creator(request)
 
+        def _assert_javascript_syntax(self, html: str) -> None:
+            scripts = re.findall(r'<script>(.*?)</script>', html, re.DOTALL)
+            self.assertTrue(scripts)
+            for source in scripts:
+                result = subprocess.run(
+                    ['node', '--check'], input=source, text=True,
+                    capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
         def test_image_creator_renders_provider_reactive_edit_metadata(self) -> None:
             response = self._render()
             self.assertEqual(response.status_code, 200)
             html = response.content.decode('utf-8')
+            self._assert_javascript_syntax(html)
 
-            # json_script blocks feeding the initial provider cache.
-            for elem_id in (
-                'supports-edit-data', 'supports-upscale-data', 'edit-models-data',
-                'edit-models-warning-data', 'default-edit-model-data',
-                'edit-aspect-ratios-data', 'default-edit-aspect-ratio-data',
-                'edit-image-sizes-data', 'default-edit-image-size-data',
-            ):
-                self.assertIn(f'id="{elem_id}"', html)
+            self.assertIn('id="creator-presentation-data"', html)
+            self.assertNotIn('id="model-options-data"', html)
 
             # Edit metadata is serialized for the JS.
             self.assertIn('firered-image-edit', html)
@@ -186,6 +196,8 @@ else:
 
             # The provider-switch handler that repopulates edit options is wired in.
             self.assertIn('_applyEditMetadata', html)
+            self.assertIn('createMediaRefreshController', html)
+            self.assertIn('selectImageModel', html)
 
             # Provider-dependent actions carry the provider selected in the UI.
             self.assertIn(
@@ -198,6 +210,140 @@ else:
                 '      prompt:',
                 html,
             )
+
+        def test_image_refresh_separates_discovery_from_selected_target_lookup(self) -> None:
+            request = self.factory.get(
+                '/models-json/?provider=venice&selected_model=m2'
+            )
+            list_models = mock.Mock(return_value=[
+                {'id': 'm1', 'name': 'One', 'description': 'one'},
+                {'id': 'm2', 'name': 'Two', 'description': 'two'},
+            ])
+            capabilities = mock.Mock(return_value={
+                'qualities': ['high'], 'default_quality': 'high',
+            })
+            overrides = {
+                'normalize_provider_api': mock.Mock(return_value=('venice', 'generation')),
+                'list_image_models_with_metadata': list_models,
+                'model_capabilities': capabilities,
+                'aspect_ratios': mock.Mock(return_value=['1:1']),
+                'image_sizes': mock.Mock(return_value=['1K']),
+                'default_aspect_ratio': mock.Mock(return_value='1:1'),
+                'default_image_size': mock.Mock(return_value='1K'),
+                'default_image_model': mock.Mock(return_value='m1'),
+                '_provider_config': mock.Mock(return_value={}),
+                'supports_edit': mock.Mock(return_value=False),
+                'supports_upscale': mock.Mock(return_value=False),
+                '_edit_metadata': mock.Mock(return_value={
+                    'supports_edit': False,
+                    'edit_models': [],
+                    'edit_models_warning': None,
+                    'default_edit_model': '',
+                    'edit_aspect_ratios': [],
+                    'default_edit_aspect_ratio': '',
+                    'edit_image_sizes': [],
+                    'default_edit_image_size': '',
+                }),
+            }
+            with mock.patch.dict(self.view._models_json.__globals__, overrides):
+                with mock.patch.object(self.view, '_model_tag_states', return_value={}):
+                    provider_response = self.view._models_json(request)
+
+                    target_request = self.factory.get(
+                        '/models-json/?provider=venice&target=generate&model=m1'
+                    )
+                    target_response = self.view._models_json(target_request)
+
+            list_models.assert_called_once()
+            self.assertEqual(capabilities.call_count, 2)
+            provider_data = json.loads(provider_response.content)
+            self.assertEqual(provider_data['operations']['generate']['selected_model'], 'm2')
+            self.assertEqual(
+                json.loads(target_response.content)['target']['model'], 'm1',
+            )
+            self.assertEqual(
+                [call.args[0] for call in capabilities.call_args_list],
+                ['m2', 'm1'],
+            )
+
+        def test_video_refresh_returns_one_nonduplicated_contract(self) -> None:
+            view = LLemonVideoGenViewSet('llemon_video', 'llemon_image')
+            request = self.factory.get(
+                '/models-json/?provider=venice&selected_model=m2'
+            )
+            model_options = [
+                {'id': 'm1', 'display': 'One', 'capabilities': {'durations': ['5s']}},
+                {'id': 'm2', 'display': 'Two', 'capabilities': {'durations': ['10s']}},
+            ]
+            with mock.patch.object(view, '_model_options', return_value=model_options) as listed:
+                with mock.patch.object(view, '_model_tag_states', return_value={}):
+                    with mock.patch.dict(view._models_json.__globals__, {
+                        'normalize_provider_api': mock.Mock(
+                            return_value=('venice', 'generation'),
+                        ),
+                        'default_video_model': mock.Mock(return_value='m1'),
+                        'default_duration': mock.Mock(return_value='5s'),
+                    }):
+                        response = view._models_json(request)
+
+            listed.assert_called_once()
+            data = json.loads(response.content)
+            operation = data['operations']['generate']
+            self.assertEqual(operation['selected_model'], 'm2')
+            self.assertEqual(len(operation['model_options']), 2)
+            self.assertNotIn('model_options', data)
+            self.assertNotIn('model_capabilities', operation['controls'])
+
+        def test_video_creator_consumes_valid_presentation_javascript(self) -> None:
+            presentation = {
+                'provider': 'venice',
+                'api': 'generation',
+                'target': {
+                    'provider': 'venice', 'api': 'generation',
+                    'operation': 'provider', 'model': None,
+                },
+                'operations': {'generate': {
+                    'operation': 'generate',
+                    'model_options': [{
+                        'id': 'm1', 'display': 'Model One', 'description': 'desc',
+                        'capabilities': {'presentation': {
+                            'mode': 'text-to-video',
+                            'reference_image_request_family': 'none',
+                            'allows_start_image': False,
+                            'allows_end_image': False,
+                            'allows_reference_images': False,
+                            'shows_scene_images': False,
+                            'is_upscale': False,
+                        }},
+                    }],
+                    'selected_model': 'm1',
+                    'default_model': 'm1',
+                    'defaults': {'duration': '5s'},
+                    'controls': {},
+                    'availability': {'enabled': True},
+                    'selected_target': {'target': {
+                        'provider': 'venice', 'api': 'generation',
+                        'operation': 'generate', 'model': 'm1',
+                    }, 'controls': {}},
+                    'notes': {'provider': 'venice', 'model_tag_states': {}},
+                }},
+            }
+            context = {
+                'site_name': 'Test', 'title': 'Video Creator',
+                'providers': ['venice'], 'provider': 'venice',
+                'model_options': presentation['operations']['generate']['model_options'],
+                'model_tag_states': {}, 'reverse_tags': [],
+                'presentation': presentation,
+                'default_model': 'm1', 'default_duration': '5s',
+                'available_tags': [], 'gallery_images': [],
+                'output_subdir': '',
+            }
+            with override_settings(**_DJANGO_TEST_OVERRIDES):
+                html = get_template('llemon_video/video.html').render(context)
+            self.assertIn('id="creator-presentation-data"', html)
+            self.assertNotIn('id="model-options-data"', html)
+            self.assertIn('selectVideoModel', html)
+            self._assert_javascript_syntax(html)
 
 
 if __name__ == '__main__':

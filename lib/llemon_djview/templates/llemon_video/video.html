@@ -352,24 +352,37 @@
   <video id="result-vb-video" controls></video>
 </div>
 
-{{ model_options|json_script:"model-options-data" }}
-{{ model_tag_states|json_script:"model-tag-states-data" }}
-{{ venice_video_model_type_suffixes|json_script:"venice-video-model-type-suffixes-data" }}
+{{ presentation|json_script:"creator-presentation-data" }}
 {{ reverse_tags|json_script:"reverse-tags-data" }}
 <script>
+{% include 'llemon_media/media_creator.js' %}
 (function () {
-  let MODEL_OPTIONS = JSON.parse(document.getElementById('model-options-data').textContent);
-  let MODEL_TAG_STATES = JSON.parse(document.getElementById('model-tag-states-data').textContent);
-  const VENICE_VIDEO_MODEL_TYPE_SUFFIXES = JSON.parse(document.getElementById('venice-video-model-type-suffixes-data').textContent);
+  let CREATOR_PRESENTATION = JSON.parse(
+    document.getElementById('creator-presentation-data').textContent
+  );
+  function videoProviderData(presentation) {
+    const generate = (presentation.operations || {}).generate || {};
+    const notes = generate.notes || {};
+    return {
+      model_options: generate.model_options || [],
+      model_tag_states: notes.model_tag_states || {},
+      selected_model: generate.selected_model || '',
+      default_model: generate.default_model || '',
+      default_duration: (generate.defaults || {}).duration || '',
+    };
+  }
+  let initialProviderData = videoProviderData(CREATOR_PRESENTATION);
+  let MODEL_OPTIONS = initialProviderData.model_options;
+  let MODEL_TAG_STATES = initialProviderData.model_tag_states;
   let startImageUrl = '', startImageFname = '';
   let endImageUrl = '', endImageFname = '';
   let genericImageUrls = [], genericImageFnames = [];
   let refImageUrls = [], refImageFnames = [];
   let pickerTarget = '';
-  let DEFAULT_MODEL = '{{ default_model|escapejs }}';
-  let DEFAULT_DURATION = '{{ default_duration|escapejs }}';
+  let DEFAULT_MODEL = initialProviderData.default_model;
+  let DEFAULT_DURATION = initialProviderData.default_duration;
   const REVERSE_FILTER_TAGS = new Set(JSON.parse(document.getElementById('reverse-tags-data').textContent));
-  const INITIAL_PROVIDER = '{{ provider|escapejs }}';
+  const INITIAL_PROVIDER = CREATOR_PRESENTATION.provider;
   const generateUrl = '{{ generate_url|escapejs }}';
   const modelNoteUrl = '{{ model_note_url|escapejs }}';
   const modelsJsonUrl = '{{ models_json_url|escapejs }}';
@@ -386,12 +399,7 @@
   let currentProvider = INITIAL_PROVIDER;
   let noteLoadSeq = 0;
   const providerCache = {};
-  providerCache[INITIAL_PROVIDER] = {
-    model_options: MODEL_OPTIONS,
-    model_tag_states: MODEL_TAG_STATES,
-    default_model: DEFAULT_MODEL,
-    default_duration: DEFAULT_DURATION,
-  };
+  const providerApis = {[INITIAL_PROVIDER]: CREATOR_PRESENTATION.api};
 
   function appendImageThumb(label, imageUrl, imageName, imageTag) {
     if (!imageUrl) return;
@@ -529,28 +537,26 @@
     for (const cb of modelFilterBoxes()) if (cb.checked) tags.push(cb.value);
     return tags;
   }
+  function modelPresentation(modelId) {
+    const option = MODEL_OPTIONS.find(item => item.id === modelId);
+    const capabilities = (option && option.capabilities) || {};
+    return capabilities.presentation || {};
+  }
   function modelVideoType(modelId) {
-    const id = String(modelId || '');
-    for (const [modelType, suffixes] of Object.entries(VENICE_VIDEO_MODEL_TYPE_SUFFIXES)) {
-      if (suffixes.some(suffix => id.endsWith(suffix))) return modelType;
-    }
-    return 'other';
+    return modelPresentation(modelId).mode || 'other';
   }
   function modelAllowsStartEndImages(modelId) {
-    const type = modelVideoType(modelId);
-    return type === 'image-to-video' || type === 'transition' || type === 'other';
+    const presentation = modelPresentation(modelId);
+    return presentation.allows_start_image === true || presentation.allows_end_image === true;
   }
   function modelAllowsReferenceImages(modelId) {
-    const type = modelVideoType(modelId);
-    return type === 'reference-to-video' || type === 'other';
+    return modelPresentation(modelId).allows_reference_images === true;
   }
   function modelIsKlingReferenceVideo(modelId) {
-    const id = String(modelId || '');
-    return id.startsWith('kling-') && modelVideoType(id) === 'reference-to-video';
+    return modelPresentation(modelId).reference_image_request_family === 'kling';
   }
   function modelIsGrokReferenceVideo(modelId) {
-    const id = String(modelId || '');
-    return id.startsWith('grok-') && modelVideoType(id) === 'reference-to-video';
+    return modelPresentation(modelId).reference_image_request_family === 'grok';
   }
   function currentRefImageTag(index) {
     return modelIsKlingReferenceVideo(modelSel.value)
@@ -763,8 +769,7 @@
   function veniceAllowsUpscaleFactor() {
     return (
       veniceAllowsParameter('upscale_factor') ||
-      modelSel.value === 'topaz-video-upscale' ||
-      modelSel.value.includes('upscale')
+      modelPresentation(modelSel.value).is_upscale === true
     );
   }
   function veniceAllowsConsents() {
@@ -891,9 +896,10 @@
     if (!imageOptions) return;
     let genericImagesVisible, startVisible, endVisible, refVisible;
     if (currentProvider === 'venice') {
-      genericImagesVisible = modelIsKlingReferenceVideo(modelSel.value);
-      startVisible = modelAllowsStartEndImages(modelSel.value);
-      endVisible = modelAllowsStartEndImages(modelSel.value);
+      const presentation = modelPresentation(modelSel.value);
+      genericImagesVisible = presentation.shows_scene_images === true;
+      startVisible = presentation.allows_start_image === true;
+      endVisible = presentation.allows_end_image === true;
       refVisible = modelAllowsReferenceImages(modelSel.value);
     } else if (currentProvider === 'openrouter') {
       genericImagesVisible = false;
@@ -930,12 +936,10 @@
     DEFAULT_MODEL = data.default_model || '';
     DEFAULT_DURATION = data.default_duration || '';
     document.getElementById('duration').value = DEFAULT_DURATION;
-    renderModels(urlParams.get('model') || DEFAULT_MODEL);
-    updateDescription(modelSel.value);
-    updateVideoChoiceControls();
+    renderModels(data.selected_model || DEFAULT_MODEL);
     setVeniceOptionsVisible();
     applyUrlPrefill();
-    if (modelSel.value) loadNote(modelSel.value);
+    if (modelSel.value) selectVideoModel(modelSel.value);
   }
   function applyUrlPrefill() {
     const fields = ['prompt', 'duration', 'resolution', 'aspect_ratio', 'size', 'negative_prompt', 'seed', 'callback_url', 'provider_json', 'audio_url', 'video_url', 'reference_video_urls', 'reference_audio_urls', 'consents_json'];
@@ -1044,10 +1048,7 @@
     clearGenericImages();
     clearRefImages();
     renderModels(DEFAULT_MODEL);
-    updateDescription(modelSel.value);
-    updateVideoChoiceControls();
-    updateImageChoiceVisibility();
-    if (modelSel.value) loadNote(modelSel.value);
+    if (modelSel.value) selectVideoModel(modelSel.value);
     document.getElementById('status').textContent = '';
     closeVideoLightbox();
     currentVideoUrl = '';
@@ -1059,16 +1060,87 @@
     document.getElementById('top-section').classList.remove('has-video');
   }
   async function switchProvider(providerId) {
-    currentProvider = providerId;
-    if (providerCache[providerId]) {
-      applyProviderData(providerCache[providerId]);
-      return;
+    return providerController.select({
+      provider: providerId,
+      api: providerApis[providerId] || '',
+      operation: 'provider',
+      model: null,
+    });
+  }
+  const providerController = createMediaRefreshController({
+    initialTarget: CREATOR_PRESENTATION.target,
+    initialData: CREATOR_PRESENTATION,
+    cache: providerCache,
+    commitOnBegin: true,
+    begin: function (target) {
+      currentProvider = target.provider;
+    },
+    load: async function (target) {
+      let url = modelsJsonUrl + '?provider=' + encodeURIComponent(target.provider);
+      const preferredModel = urlParams.get('model');
+      if (preferredModel) {
+        url += '&selected_model=' + encodeURIComponent(preferredModel);
+      }
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      return data;
+    },
+    apply: function (presentation) {
+      CREATOR_PRESENTATION = presentation;
+      currentProvider = presentation.provider;
+      providerApis[presentation.provider] = presentation.api;
+      providerController.cache[
+        mediaPresentationTargetKey(presentation.target)
+      ] = presentation;
+      applyProviderData(videoProviderData(presentation));
+    },
+  });
+
+  const initialGenerate = CREATOR_PRESENTATION.operations.generate || {};
+  const initialVideoTarget = initialGenerate.selected_target || undefined;
+  const initialVideoOption = MODEL_OPTIONS.find(function (option) {
+    return initialVideoTarget && option.id === initialVideoTarget.target.model;
+  });
+  const modelController = createMediaRefreshController({
+    initialTarget: initialVideoTarget ? initialVideoTarget.target : null,
+    initialData: initialVideoOption,
+    load: async function (target) {
+      const option = MODEL_OPTIONS.find(item => item.id === target.model);
+      if (!option) throw new Error('model is not available');
+      return option;
+    },
+    apply: function (option, target) {
+      if (target.provider !== currentProvider || target.model !== modelSel.value) return;
+      const operation = CREATOR_PRESENTATION.operations.generate;
+      operation.selected_model = target.model;
+      operation.selected_target = {
+        target: target,
+        controls: {capabilities: option.capabilities || {}},
+      };
+      updateDescription(target.model);
+      updateVideoChoiceControls();
+      updateImageChoiceVisibility();
+      loadNote(target.model);
+    },
+  });
+
+  function selectVideoModel(modelId) {
+    if (!modelId) {
+      const operation = CREATOR_PRESENTATION.operations.generate;
+      operation.selected_model = null;
+      operation.selected_target = null;
+      return Promise.resolve({applied: false, stale: false});
     }
-    const resp = await fetch(modelsJsonUrl + '?provider=' + encodeURIComponent(providerId));
-    const data = await resp.json();
-    if (data.error) throw new Error(data.error);
-    providerCache[providerId] = data;
-    applyProviderData(data);
+    return modelController.select({
+      provider: currentProvider,
+      api: CREATOR_PRESENTATION.api,
+      operation: 'generate',
+      model: modelId,
+    }).catch(function (error) {
+      document.getElementById('status').textContent = 'Error: ' + error.message;
+      return {applied: false, stale: false};
+    });
   }
   function defaultTagState(tagName) { return REVERSE_FILTER_TAGS.has(tagName) ? false : null; }
   function setTristate(cb, state) {
@@ -1115,7 +1187,7 @@
       const data = await resp.json();
       if (!data.ok) throw new Error(data.error || 'save failed');
       MODEL_TAG_STATES[modelId] = {...(data.tags || tags)};
-      if (providerCache[providerId]) providerCache[providerId].model_tag_states = MODEL_TAG_STATES;
+      CREATOR_PRESENTATION.operations.generate.notes.model_tag_states = MODEL_TAG_STATES;
       renderModels(modelId);
       notesStatus.textContent = 'Saved.';
     } catch (e) {
@@ -1126,10 +1198,7 @@
     switchProvider(this.value).catch(e => alert(e.message));
   });
   modelSel.addEventListener('change', function () {
-    updateDescription(this.value);
-    updateVideoChoiceControls();
-    updateImageChoiceVisibility();
-    loadNote(this.value);
+    selectVideoModel(this.value);
   });
   notesArea.addEventListener('blur', saveNote);
   for (const lbl of document.querySelectorAll('#notes-tags label')) {
@@ -1149,28 +1218,22 @@
   for (const cb of modelFilterBoxes()) cb.addEventListener('change', function () {
     const before = modelSel.value;
     renderModels(modelSel.value);
-    updateDescription(modelSel.value);
-    updateVideoChoiceControls();
-    updateImageChoiceVisibility();
-    if (modelSel.value && modelSel.value !== before) loadNote(modelSel.value);
+    if (modelSel.value && modelSel.value !== before) selectVideoModel(modelSel.value);
+    else if (!modelSel.value) selectVideoModel('');
   });
   document.getElementById('model_type_filter').addEventListener('change', function () {
     const before = modelSel.value;
     renderModels(modelSel.value);
-    updateDescription(modelSel.value);
-    updateVideoChoiceControls();
-    updateImageChoiceVisibility();
-    if (modelSel.value && modelSel.value !== before) loadNote(modelSel.value);
+    if (modelSel.value && modelSel.value !== before) selectVideoModel(modelSel.value);
+    else if (!modelSel.value) selectVideoModel('');
   });
   const clearBtn = document.getElementById('model-filter-clear');
   if (clearBtn) clearBtn.addEventListener('click', function () {
     const before = modelSel.value;
     resetFilters();
     renderModels(modelSel.value);
-    updateDescription(modelSel.value);
-    updateVideoChoiceControls();
-    updateImageChoiceVisibility();
-    if (modelSel.value && modelSel.value !== before) loadNote(modelSel.value);
+    if (modelSel.value && modelSel.value !== before) selectVideoModel(modelSel.value);
+    else if (!modelSel.value) selectVideoModel('');
   });
   document.getElementById('reset-btn').addEventListener('click', resetForm);
   document.getElementById('start-image-btn').addEventListener('click', function () { openImagePicker('start'); });
@@ -1441,7 +1504,7 @@
     }
   });
   resetFilters();
-  applyProviderData(providerCache[INITIAL_PROVIDER]);
+  applyProviderData(initialProviderData);
   window.addEventListener('pageshow', function (e) {
     if (!e.persisted) return;
     document.getElementById('generate-btn').disabled = false;

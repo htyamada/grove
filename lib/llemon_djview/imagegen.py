@@ -67,6 +67,11 @@ from .storage import (
 )
 from .media_utils import ensure_media_thumbnail, is_video
 from .base_viewset import MediaGenViewSetBase, _RESERVED_GALLERY_DIRS
+from .media_creator import (
+    build_creator_presentation,
+    build_model_target,
+    build_operation_presentation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -279,29 +284,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             logger.exception('could not list image generation models')
             return JsonResponse({'error': f'could not list image generation models: {e}'},
                                 status=502)
-        model_options = []
-        model_descriptions: dict[str, str] = {}
-        model_qualities: dict[str, dict] = {}
-        for m in raw_models:
-            mid  = m['id']
-            name = m['name']
-            model_options.append({
-                'id':      mid,
-                'display': f'{name} ({mid})' if name else mid,
-            })
-            model_descriptions[mid] = m['description']
-            try:
-                caps = model_capabilities(mid, provider, api)
-                quals = caps.get('qualities') or []
-                if quals:
-                    model_qualities[mid] = {
-                        'qualities': quals,
-                        'default': caps.get('default_quality'),
-                    }
-            except Exception:
-                pass
-        model_tag_states = self._model_tag_states(
-            provider, [opt['id'] for opt in model_options],
+        requested_model = (
+            request.GET.get('model') if 'model' in request.GET else None
+        )
+        creator_data = self._creator_data(
+            provider, api, raw_models, requested_model=requested_model,
         )
 
         notes_load_errors = get_notes_load_errors()
@@ -353,18 +340,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         return render(request, self._t('image.html'), self._ctx(
             'LLemon Image Creator', nav, {
                 'providers':          PROVIDERS,
-                'provider':           provider,
-                'api':                api,
-                'aspect_ratios':      aspect_ratios(provider, api),
-                'image_sizes':        image_sizes(provider, api),
-                'default_aspect_ratio': default_aspect_ratio(provider, api),
-                'default_image_size': default_image_size(provider, api),
-                'default_model':      default_image_model(provider, api),
-                'model_options':      model_options,
-                'model_tag_states':   model_tag_states,
-                'model_descriptions': model_descriptions,
-                'model_qualities':    model_qualities,
-                'provider_config':    _provider_config(provider, api),
+                **creator_data,
                 'available_tags':      [] if notes_load_errors else get_tags(),
                 'reverse_tags':        [] if notes_load_errors else get_reverse_tags(),
                 'notes_load_errors':   notes_load_errors,
@@ -379,11 +355,153 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 'edit_image_url':           _safe_url('edit_image'),
                 'picker_images':            self._gallery_picker_items(),
                 'source_dirs_json_url':     self._source_dirs_json_url(),
-                'supports_edit':            supports_edit(provider, api),
-                'supports_upscale':         supports_upscale(provider, api),
-                **_edit_metadata(provider, api),
             },
         ))
+
+    def _creator_data(
+        self,
+        provider: str,
+        api: str,
+        raw_models: list[dict[str, Any]],
+        *,
+        requested_model: str | None = None,
+    ) -> dict[str, Any]:
+        """Return the provider data shared by initial render and JSON refresh."""
+        model_options: list[dict[str, Any]] = []
+        model_descriptions: dict[str, str] = {}
+        for model in raw_models:
+            model_id = model['id']
+            name = model['name']
+            model_options.append({
+                'id': model_id,
+                'display': f'{name} ({model_id})' if name else model_id,
+                'description': model['description'],
+            })
+            model_descriptions[model_id] = model['description']
+
+        model_tag_states = self._model_tag_states(
+            provider, [option['id'] for option in model_options],
+        )
+        ratios = aspect_ratios(provider, api)
+        sizes = image_sizes(provider, api)
+        default_model = default_image_model(provider, api)
+        default_ratio = default_aspect_ratio(provider, api)
+        default_size = default_image_size(provider, api)
+        provider_fields = _provider_config(provider, api)
+        provider_supports_edit = supports_edit(provider, api)
+        provider_supports_upscale = supports_upscale(provider, api)
+        edit_data = _edit_metadata(provider, api)
+        model_ids = {option['id'] for option in model_options}
+        selected_model = default_model
+        if requested_model is not None:
+            selected_model = requested_model if requested_model in model_ids else None
+        selected_target = (
+            self._image_model_target(provider, api, selected_model)
+            if selected_model else None
+        )
+        model_qualities: dict[str, dict[str, Any]] = {}
+        if selected_target and selected_model:
+            target_controls = selected_target['controls']
+            if target_controls.get('qualities'):
+                model_qualities[selected_model] = {
+                    'qualities': target_controls['qualities'],
+                    'default': target_controls.get('default_quality'),
+                }
+
+        data: dict[str, Any] = {
+            'provider': provider,
+            'api': api,
+            'model_options': model_options,
+            'model_tag_states': model_tag_states,
+            'model_descriptions': model_descriptions,
+            'model_qualities': model_qualities,
+            'aspect_ratios': ratios,
+            'image_sizes': sizes,
+            'default_model': default_model,
+            'selected_model': selected_model,
+            'default_aspect_ratio': default_ratio,
+            'default_image_size': default_size,
+            'provider_config': provider_fields,
+            'supports_edit': provider_supports_edit,
+            'supports_upscale': provider_supports_upscale,
+            **edit_data,
+        }
+        data['presentation'] = build_creator_presentation(provider, api, {
+            'generate': build_operation_presentation(
+                'generate',
+                model_options=model_options,
+                selected_model=selected_model,
+                default_model=default_model,
+                defaults={
+                    'aspect_ratio': default_ratio,
+                    'image_size': default_size,
+                },
+                controls={
+                    'aspect_ratios': ratios,
+                    'image_sizes': sizes,
+                    'provider_config': provider_fields,
+                },
+                availability={'enabled': True},
+                selected_target=selected_target,
+                notes={
+                    'provider': provider,
+                    'model_tag_states': model_tag_states,
+                },
+            ),
+            'edit': build_operation_presentation(
+                'edit',
+                model_options=[{'id': model_id, 'display': model_id}
+                               for model_id in edit_data['edit_models']],
+                selected_model=edit_data['default_edit_model'] or None,
+                default_model=edit_data['default_edit_model'] or None,
+                defaults={
+                    'aspect_ratio': edit_data['default_edit_aspect_ratio'],
+                    'image_size': edit_data['default_edit_image_size'],
+                },
+                controls={
+                    'aspect_ratios': edit_data['edit_aspect_ratios'],
+                    'image_sizes': edit_data['edit_image_sizes'],
+                },
+                availability={
+                    'enabled': edit_data['supports_edit'],
+                    'reason': edit_data['edit_models_warning'],
+                },
+                selected_target=(
+                    build_model_target(
+                        provider, api, 'edit', edit_data['default_edit_model'],
+                    )
+                    if edit_data['default_edit_model'] else None
+                ),
+            ),
+            'upscale': build_operation_presentation(
+                'upscale',
+                availability={'enabled': provider_supports_upscale},
+            ),
+        })
+        return data
+
+    @staticmethod
+    def _image_model_target(
+        provider: str,
+        api: str,
+        model: str,
+    ) -> dict[str, Any]:
+        """Return selected-model controls without repeating model discovery."""
+        controls: dict[str, Any] = {}
+        try:
+            capabilities = model_capabilities(model, provider, api)
+            qualities = capabilities.get('qualities') or []
+            if qualities:
+                controls = {
+                    'qualities': list(qualities),
+                    'default_quality': capabilities.get('default_quality'),
+                }
+        except Exception:
+            # Preserve the creator's historical best-effort quality behavior.
+            pass
+        return build_model_target(
+            provider, api, 'generate', model, controls=controls,
+        )
 
     def _find_sidecar(self, media_dir: str, fname: str) -> 'dict | None':
         return read_image_sidecar(media_dir, fname, _sanitize_image_metadata)
@@ -829,8 +947,16 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
     def _models_json(self, request):
         provider_param = request.GET.get('provider', '').strip() or None
+        target = request.GET.get('target', '').strip()
         try:
             provider, api = normalize_provider_api(provider_param)
+            if target:
+                if target != 'generate':
+                    raise ValueError(f'unknown presentation target: {target!r}')
+                model = request.GET.get('model', '').strip()
+                if not model:
+                    raise ValueError('model is required')
+                return JsonResponse(self._image_model_target(provider, api, model))
             raw_models = list_image_models_with_metadata(provider, api)
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
@@ -838,47 +964,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             logger.exception('could not list image generation models for provider %s',
                              provider_param)
             return JsonResponse({'error': f'could not list models: {e}'}, status=502)
-        model_options = []
-        model_descriptions: dict[str, str] = {}
-        model_qualities: dict[str, dict] = {}
-        for m in raw_models:
-            mid  = m['id']
-            name = m['name']
-            model_options.append({
-                'id':      mid,
-                'display': f'{name} ({mid})' if name else mid,
-            })
-            model_descriptions[mid] = m['description']
-            try:
-                caps = model_capabilities(mid, provider, api)
-                quals = caps.get('qualities') or []
-                if quals:
-                    model_qualities[mid] = {
-                        'qualities': quals,
-                        'default': caps.get('default_quality'),
-                    }
-            except Exception:
-                pass
-        model_tag_states = self._model_tag_states(
-            provider, [opt['id'] for opt in model_options],
+        requested_model = request.GET.get('selected_model') or None
+        data = self._creator_data(
+            provider, api, raw_models, requested_model=requested_model,
         )
-        return JsonResponse({
-            'provider':             provider,
-            'api':                  api,
-            'model_options':        model_options,
-            'model_tag_states':     model_tag_states,
-            'model_descriptions':   model_descriptions,
-            'model_qualities':      model_qualities,
-            'aspect_ratios':        aspect_ratios(provider, api),
-            'image_sizes':          image_sizes(provider, api),
-            'default_model':        default_image_model(provider, api),
-            'default_aspect_ratio': default_aspect_ratio(provider, api),
-            'default_image_size':   default_image_size(provider, api),
-            'provider_config':      _provider_config(provider, api),
-            'supports_edit':        supports_edit(provider, api),
-            'supports_upscale':     supports_upscale(provider, api),
-            **_edit_metadata(provider, api),
-        })
+        return JsonResponse(data['presentation'])
 
     def _model_tag_states(self, provider: str, model_ids: list[str]) -> dict[str, dict[str, bool]]:
         try:

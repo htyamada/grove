@@ -66,6 +66,15 @@ operations are type-aware.
 
 ## Creator
 
+Provider-dependent browser data follows the shared operation-aware presentation
+contract in
+[`mediagen-creator-presentation-spec.md`](mediagen-creator-presentation-spec.md).
+Initial render and provider-refresh JSON expose the same contract. Flat Django
+context values remain only for server-rendering the initial controls; action
+semantics are unchanged. Model changes use the shared stale-safe target
+controller and reuse capabilities from the provider's already-fetched model
+rows without repeating discovery.
+
 The creator page follows the image-generation page structure: a left result preview and
 form area, a narrow model tag filter column, and a right sidebar for model notes
 and gallery/source-reference image selection. It selects provider, model,
@@ -115,30 +124,32 @@ request payloads only: the video sidecar stores the original selected URL/path
 for media inputs so gallery Reload can replay the selection without persisting
 any `data:` URL longer than 30 characters.
 
-For Venice models, the creator infers the mode from recognized model-id
-suffixes:
+For Venice models, the creator consumes the normalized `presentation` record
+from LLemon's public video facade. LLemon centralizes catalog-schema precedence
+and any identifier-based compatibility fallback; Grove neither imports the
+Venice backend nor parses model identifiers. The normalized modes produce these
+UI media inputs:
 
-| Mode | Suffixes | UI media inputs |
-|------|----------|-----------------|
-| Text to Video | `-text-to-video`, `-text-to-video-private` | none |
-| Image to Video | `-image-to-video`, `-image-to-video-private` | start image, end image |
-| Reference to Video | `-reference-to-video`, `-reference-to-video-private` | ordered reference images |
-| Video to Video | `-video-to-video`, `-video-to-video-private` | (no controls; video input not supported) |
-| Transition | `-transition`, `-transition-private` | start image, end image |
-| Other | any other suffix | start image, end image, ordered reference images |
+| Normalized mode | UI media inputs |
+|-----------------|-----------------|
+| Text to Video | none |
+| Image to Video | permitted start/end inputs |
+| Reference to Video | permitted ordered reference/scene inputs |
+| Video to Video | no controls; video input is not supported |
+| Transition | permitted start/end inputs |
+| Other | inputs explicitly allowed by normalized presentation booleans |
 
 Video-to-video mode hides the start, end, and reference buttons; video input
 is not currently supported for those models.
 
-Within Venice reference-to-video, the creator distinguishes two assumed
-families. This is an implementation assumption rather than a provider-guaranteed
-contract, because Venice does not currently expose a better machine-readable
-way for LLemon to separate Kling-style and Grok-style reference-video models:
+Within Venice reference-to-video, the creator uses the normalized
+`reference_image_request_family`; schema-derived values take precedence over
+LLemon's centralized compatibility fallback:
 
-| Family | Matching model IDs | Creator inputs |
-|--------|--------------------|----------------|
-| Kling-family R2V | starts with `kling-` and uses the reference-to-video suffixes | `Elements` plus optional `Scene Images` |
-| Grok-family R2V | starts with `grok-` and uses the reference-to-video suffixes | flat ordered `Reference` images |
+| Family | Creator inputs |
+|--------|----------------|
+| `kling` | `Elements` plus optional `Scene Images` when allowed |
+| `grok` | flat ordered `Reference` images |
 
 For Kling O3 R2V, the `Elements` selection is displayed and labeled as
 `@Element1`, `@Element2`, ... and the optional scene-image selection is

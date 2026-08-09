@@ -27,6 +27,7 @@ from hty7.llemon.mediagen.videogen import (
     set_model_note,
     make_videogen_backend,
     model_display,
+    model_presentation,
     normalize_provider_api,
 )
 from .storage import (
@@ -48,14 +49,11 @@ from .storage import (
 )
 from .media_utils import ensure_media_thumbnail, is_video
 from .base_viewset import MediaGenViewSetBase, _RESERVED_GALLERY_DIRS
-from hty7.llemon.mediagen.videogen.venice import (
-    VIDEO_MODEL_TYPE_SUFFIXES as VENICE_VIDEO_MODEL_TYPE_SUFFIXES,
-    video_model_allows_reference_images as venice_model_allows_reference_images,
-    video_model_allows_start_end_images as venice_model_allows_start_end_images,
-    video_model_is_grok_reference_to_video as venice_model_is_grok_reference_to_video,
-    video_model_is_kling_reference_to_video as venice_model_is_kling_reference_to_video,
+from .media_creator import (
+    build_creator_presentation,
+    build_model_target,
+    build_operation_presentation,
 )
-
 logger = logging.getLogger(__name__)
 
 _MEDIA_EXTS = VIDEO_EXTS | IMAGE_EXTS
@@ -158,7 +156,12 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             logger.exception('could not list video generation models')
             return JsonResponse({'error': f'could not list video generation models: {e}'},
                                 status=502)
-        model_ids = [opt['id'] for opt in model_options]
+        requested_model = (
+            request.GET.get('model') if 'model' in request.GET else None
+        )
+        creator_data = self._creator_data(
+            provider, api, model_options, requested_model=requested_model,
+        )
         notes_load_errors = get_notes_load_errors()
 
         output_subdir_raw = request.GET.get('output_subdir', '').strip()
@@ -207,16 +210,7 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         return render(request, self._t('video.html'), self._ctx(
             'LLemon Video Creator', nav, {
                 'providers':        PROVIDERS,
-                'provider':         provider,
-                'api':              api,
-                'default_model':    default_video_model(provider, api),
-                'default_duration': default_duration(provider, api),
-                'model_options':    model_options,
-                'model_tag_states': self._model_tag_states(provider, model_ids),
-                'venice_video_model_type_suffixes': {
-                    key: list(value)
-                    for key, value in VENICE_VIDEO_MODEL_TYPE_SUFFIXES.items()
-                },
+                **creator_data,
                 'available_tags':   [] if notes_load_errors else get_tags(),
                 'reverse_tags':     [] if notes_load_errors else get_reverse_tags(),
                 'notes_load_errors': notes_load_errors,
@@ -236,22 +230,83 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         backend_cls = make_videogen_backend(provider, api)
         if hasattr(backend_cls, 'list_video_models_with_metadata'):
             rows = backend_cls.list_video_models_with_metadata()
-            return [
-                {
+            options = []
+            for row in rows:
+                capabilities = dict(row.get('capabilities') or {})
+                capabilities['presentation'] = model_presentation(
+                    row['id'], provider, api, capabilities=capabilities,
+                )
+                options.append({
                     'id': row['id'],
                     'display': (
                         f"{row.get('name') or ''} ({row['id']})"
                         if row.get('name') else row['id']
                     ),
                     'description': row.get('description') or '',
-                    'capabilities': row.get('capabilities') or {},
-                }
-                for row in rows
-            ]
+                    'capabilities': capabilities,
+                })
+            return options
         return [
-            {'id': model_id, 'display': model_id, 'description': ''}
+            {
+                'id': model_id,
+                'display': model_id,
+                'description': '',
+                'capabilities': {
+                    'presentation': model_presentation(model_id, provider, api),
+                },
+            }
             for model_id in backend_cls.list_video_models()
         ]
+
+    def _creator_data(
+        self,
+        provider: str,
+        api: str,
+        model_options: list[dict[str, Any]],
+        *,
+        requested_model: str | None = None,
+    ) -> dict[str, Any]:
+        """Return the provider data shared by initial render and JSON refresh."""
+        default_model = default_video_model(provider, api)
+        duration = default_duration(provider, api)
+        model_tag_states = self._model_tag_states(
+            provider, [option['id'] for option in model_options],
+        )
+        model_ids = {option['id'] for option in model_options}
+        selected_model = (
+            requested_model
+            if requested_model in model_ids
+            else default_model
+        )
+        selected_target = (
+            build_model_target(provider, api, 'generate', selected_model)
+            if selected_model else None
+        )
+        data: dict[str, Any] = {
+            'provider': provider,
+            'api': api,
+            'default_model': default_model,
+            'selected_model': selected_model,
+            'default_duration': duration,
+            'model_options': model_options,
+            'model_tag_states': model_tag_states,
+        }
+        data['presentation'] = build_creator_presentation(provider, api, {
+            'generate': build_operation_presentation(
+                'generate',
+                model_options=model_options,
+                selected_model=selected_model,
+                default_model=default_model,
+                defaults={'duration': duration},
+                availability={'enabled': True},
+                selected_target=selected_target,
+                notes={
+                    'provider': provider,
+                    'model_tag_states': model_tag_states,
+                },
+            ),
+        })
+        return data
 
     def gallery(self, request):
         return self._media_page(
@@ -494,16 +549,11 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             logger.exception('could not list video generation models')
             return JsonResponse({'error': f'could not list video generation models: {e}'},
                                 status=502)
-        return JsonResponse({
-            'provider': provider,
-            'api': api,
-            'model_options': model_options,
-            'model_tag_states': self._model_tag_states(
-                provider, [opt['id'] for opt in model_options],
-            ),
-            'default_model': default_video_model(provider, api),
-            'default_duration': default_duration(provider, api),
-        })
+        requested_model = request.GET.get('selected_model') or None
+        data = self._creator_data(
+            provider, api, model_options, requested_model=requested_model,
+        )
+        return JsonResponse(data['presentation'])
 
     def _generate(self, request):
         try:
@@ -520,6 +570,7 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             provider, api = normalize_provider_api(provider_value.strip(), data.get('api'))
             model = (data.get('model') or default_video_model(provider, api)).strip()
             backend_cls = make_videogen_backend(provider, api)
+            presentation = model_presentation(model, provider, api)
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
         gallery_dir = self._gallery_dir()
@@ -558,8 +609,6 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
         generate_kwargs: dict[str, Any] = {}
         metadata_options: dict[str, Any] = {}
         if provider == 'venice':
-            is_kling_reference = venice_model_is_kling_reference_to_video(model)
-            is_grok_reference = venice_model_is_grok_reference_to_video(model)
             for key in ('negative_prompt', 'resolution', 'aspect_ratio'):
                 value = data.get(key)
                 if isinstance(value, str) and value.strip():
@@ -572,14 +621,19 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                     clean_value = value.strip()
                     generate_kwargs[key] = self._data_reference_for_api(request, clean_value)
                     metadata_options[key] = clean_value
-            if venice_model_allows_start_end_images(model):
+            if presentation['allows_start_image'] or presentation['allows_end_image']:
                 for key in ('image_url', 'end_image_url'):
+                    if (
+                        key == 'image_url' and not presentation['allows_start_image']
+                        or key == 'end_image_url' and not presentation['allows_end_image']
+                    ):
+                        continue
                     value = data.get(key)
                     if isinstance(value, str) and value.strip():
                         clean_value = value.strip()
                         generate_kwargs[key] = self._data_reference_for_api(request, clean_value)
                         metadata_options[key] = clean_value
-            if venice_model_allows_reference_images(model):
+            if presentation['allows_reference_images']:
                 ref_value = data.get('reference_image_urls')
                 if isinstance(ref_value, list):
                     clean_values = [
@@ -593,7 +647,7 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                             for v in clean_values
                         ]
                         metadata_options['reference_image_urls'] = clean_values
-                if is_kling_reference or not is_grok_reference:
+                if presentation['allows_scene_images']:
                     scene_value = data.get('scene_image_urls')
                     if isinstance(scene_value, list):
                         clean_values = [

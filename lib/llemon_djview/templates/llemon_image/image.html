@@ -273,23 +273,8 @@
   </div>
 </div>
 
-{{ model_descriptions|json_script:"model-descriptions-data" }}
-{{ model_options|json_script:"model-options-data" }}
-{{ model_tag_states|json_script:"model-tag-states-data" }}
-{{ aspect_ratios|json_script:"aspect-ratios-data" }}
-{{ image_sizes|json_script:"image-sizes-data" }}
-{{ provider_config|json_script:"provider-config-data" }}
+{{ presentation|json_script:"creator-presentation-data" }}
 {{ reverse_tags|json_script:"reverse-tags-data" }}
-{{ model_qualities|json_script:"model-qualities-data" }}
-{{ supports_edit|json_script:"supports-edit-data" }}
-{{ supports_upscale|json_script:"supports-upscale-data" }}
-{{ edit_models|json_script:"edit-models-data" }}
-{{ edit_models_warning|json_script:"edit-models-warning-data" }}
-{{ default_edit_model|json_script:"default-edit-model-data" }}
-{{ edit_aspect_ratios|json_script:"edit-aspect-ratios-data" }}
-{{ default_edit_aspect_ratio|json_script:"default-edit-aspect-ratio-data" }}
-{{ edit_image_sizes|json_script:"edit-image-sizes-data" }}
-{{ default_edit_image_size|json_script:"default-edit-image-size-data" }}
 <script>
 var _lbUrl = '';
 function lbShow() {
@@ -306,18 +291,67 @@ document.addEventListener('keydown', function(e) {
 });
 </script>
 <script>
+{% include 'llemon_media/media_creator.js' %}
 (function () {
-  let MODEL_DESCRIPTIONS   = JSON.parse(document.getElementById('model-descriptions-data').textContent);
-  let MODEL_OPTIONS        = JSON.parse(document.getElementById('model-options-data').textContent);
-  let MODEL_TAG_STATES     = JSON.parse(document.getElementById('model-tag-states-data').textContent);
-  let MODEL_QUALITIES      = JSON.parse(document.getElementById('model-qualities-data').textContent);
+  let CREATOR_PRESENTATION = JSON.parse(
+    document.getElementById('creator-presentation-data').textContent
+  );
+  function imageProviderData(presentation) {
+    const operations = presentation.operations || {};
+    const generate = operations.generate || {};
+    const edit = operations.edit || {};
+    const upscale = operations.upscale || {};
+    const controls = generate.controls || {};
+    const defaults = generate.defaults || {};
+    const notes = generate.notes || {};
+    const target = generate.selected_target || {};
+    const targetControls = target.controls || {};
+    const descriptions = {};
+    for (const option of generate.model_options || []) {
+      descriptions[option.id] = option.description || '';
+    }
+    const qualities = {};
+    if (target.target && target.target.model && targetControls.qualities) {
+      qualities[target.target.model] = {
+        qualities: targetControls.qualities,
+        default: targetControls.default_quality,
+      };
+    }
+    return {
+      model_options: generate.model_options || [],
+      model_tag_states: notes.model_tag_states || {},
+      model_descriptions: descriptions,
+      model_qualities: qualities,
+      selected_model: generate.selected_model || '',
+      default_model: generate.default_model || '',
+      aspect_ratios: controls.aspect_ratios || [],
+      image_sizes: controls.image_sizes || [],
+      default_aspect_ratio: defaults.aspect_ratio || '',
+      default_image_size: defaults.image_size || '',
+      provider_config: controls.provider_config || {},
+      supports_edit: (edit.availability || {}).enabled === true,
+      supports_upscale: (upscale.availability || {}).enabled === true,
+      edit_models: (edit.model_options || []).map(option => option.id),
+      edit_models_warning: (edit.availability || {}).reason || null,
+      default_edit_model: edit.default_model || '',
+      edit_aspect_ratios: (edit.controls || {}).aspect_ratios || [],
+      default_edit_aspect_ratio: (edit.defaults || {}).aspect_ratio || '',
+      edit_image_sizes: (edit.controls || {}).image_sizes || [],
+      default_edit_image_size: (edit.defaults || {}).image_size || '',
+    };
+  }
+  const INITIAL_PROVIDER = CREATOR_PRESENTATION.provider;
+  let initialProviderData = imageProviderData(CREATOR_PRESENTATION);
+  let MODEL_DESCRIPTIONS = initialProviderData.model_descriptions;
+  let MODEL_OPTIONS = initialProviderData.model_options;
+  let MODEL_TAG_STATES = initialProviderData.model_tag_states;
+  let MODEL_QUALITIES = initialProviderData.model_qualities;
   let DEFAULTS = {
-    model:        '{{ default_model|escapejs }}',
-    aspect_ratio: '{{ default_aspect_ratio|escapejs }}',
-    image_size:   '{{ default_image_size|escapejs }}',
-    temperature:  '',
+    model: initialProviderData.default_model,
+    aspect_ratio: initialProviderData.default_aspect_ratio,
+    image_size: initialProviderData.default_image_size,
+    temperature: '',
   };
-  const INITIAL_PROVIDER = '{{ provider|escapejs }}';
   const generateUrl           = '{{ generate_url|escapejs }}';
   const imageFileUrl          = '{{ image_file_url|escapejs }}';
   const largeThumbnailFileUrl = '{{ large_thumbnail_file_url|escapejs }}';
@@ -326,29 +360,8 @@ document.addEventListener('keydown', function(e) {
   const modelsJsonUrl  = '{{ models_json_url|escapejs }}';
   const REVERSE_FILTER_TAGS = new Set(JSON.parse(document.getElementById('reverse-tags-data').textContent));
 
-  // Pre-populate provider cache with server-rendered data.
   const _providerCache = {};
-  _providerCache[INITIAL_PROVIDER] = {
-    model_options:        JSON.parse(document.getElementById('model-options-data').textContent),
-    model_tag_states:     MODEL_TAG_STATES,
-    model_descriptions:   MODEL_DESCRIPTIONS,
-    model_qualities:      MODEL_QUALITIES,
-    aspect_ratios:        JSON.parse(document.getElementById('aspect-ratios-data').textContent),
-    image_sizes:          JSON.parse(document.getElementById('image-sizes-data').textContent),
-    default_model:        DEFAULTS.model,
-    default_aspect_ratio: DEFAULTS.aspect_ratio,
-    default_image_size:   DEFAULTS.image_size,
-    provider_config:      JSON.parse(document.getElementById('provider-config-data').textContent),
-    supports_edit:        JSON.parse(document.getElementById('supports-edit-data').textContent),
-    supports_upscale:     JSON.parse(document.getElementById('supports-upscale-data').textContent),
-    edit_models:          JSON.parse(document.getElementById('edit-models-data').textContent),
-    edit_models_warning:  JSON.parse(document.getElementById('edit-models-warning-data').textContent),
-    default_edit_model:   JSON.parse(document.getElementById('default-edit-model-data').textContent),
-    edit_aspect_ratios:   JSON.parse(document.getElementById('edit-aspect-ratios-data').textContent),
-    default_edit_aspect_ratio: JSON.parse(document.getElementById('default-edit-aspect-ratio-data').textContent),
-    edit_image_sizes:     JSON.parse(document.getElementById('edit-image-sizes-data').textContent),
-    default_edit_image_size: JSON.parse(document.getElementById('default-edit-image-size-data').textContent),
-  };
+  const _providerApis = {[INITIAL_PROVIDER]: CREATOR_PRESENTATION.api};
 
   let currentProvider = INITIAL_PROVIDER;
 
@@ -372,7 +385,7 @@ document.addEventListener('keydown', function(e) {
       image_size:   data.default_image_size,
       temperature:  '',
     };
-    _renderModelOptions(data.default_model);
+    _renderModelOptions(data.selected_model || data.default_model);
     // Repopulate aspect_ratio select.
     const arSel = document.getElementById('aspect_ratio');
     arSel.innerHTML = '';
@@ -439,8 +452,7 @@ document.addEventListener('keydown', function(e) {
     _renderExtraFields(extraFields.filter(f => !_INLINE_FIELDS.has(f.name)));
     _applyEditMetadata(data);
     if (modelSel.value) {
-      updateDescription(modelSel.value);
-      loadNote(modelSel.value);
+      selectImageModel(modelSel.value);
     } else {
       updateDescription('');
       notesArea.value = '';
@@ -510,7 +522,7 @@ document.addEventListener('keydown', function(e) {
     }
   }
 
-  _applyEditMetadata(_providerCache[INITIAL_PROVIDER]);
+  _applyEditMetadata(initialProviderData);
 
   function _modelFilterBoxes() {
     return document.querySelectorAll('#model-filter-tags input[type=checkbox]');
@@ -568,11 +580,9 @@ document.addEventListener('keydown', function(e) {
     const before = modelSel.value;
     _renderModelOptions(before);
     if (modelSel.value && modelSel.value !== before) {
-      updateDescription(modelSel.value);
-      loadNote(modelSel.value);
+      selectImageModel(modelSel.value);
     } else if (!modelSel.value) {
-      modelDesc.textContent = '';
-      notesArea.value = '';
+      selectImageModel('');
       for (const cb of _noteTagBoxes()) _setTristate(cb, _defaultTagState(cb.value));
     }
   }
@@ -661,23 +671,47 @@ document.addEventListener('keydown', function(e) {
   }
 
   async function switchProvider(providerId) {
-    if (_providerCache[providerId]) {
-      currentProvider = providerId;
-      _applyProviderData(_providerCache[providerId]);
-      return;
-    }
     try {
-      const resp = await fetch(modelsJsonUrl + '?provider=' + encodeURIComponent(providerId));
-      const data = await resp.json();
-      if (data.error) throw new Error(data.error);
-      _providerCache[providerId] = data;
-      currentProvider = providerId;
-      _applyProviderData(data);
+      await _providerController.select({
+        provider: providerId,
+        api: _providerApis[providerId] || '',
+        operation: 'provider',
+        model: null,
+      });
     } catch (e) {
       errMsg.textContent = 'Could not load provider models: ' + e.message;
-      providerSel.value = currentProvider;
+      providerSel.value = _providerController.current().provider;
     }
   }
+
+  const _providerController = createMediaRefreshController({
+    initialTarget: CREATOR_PRESENTATION.target,
+    initialData: CREATOR_PRESENTATION,
+    cache: _providerCache,
+    load: async function (target) {
+      const resp = await fetch(
+        modelsJsonUrl + '?provider=' + encodeURIComponent(target.provider)
+      );
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      return data;
+    },
+    apply: function (presentation) {
+      CREATOR_PRESENTATION = presentation;
+      currentProvider = presentation.provider;
+      _providerApis[presentation.provider] = presentation.api;
+      _providerController.cache[
+        mediaPresentationTargetKey(presentation.target)
+      ] = presentation;
+      const generate = (presentation.operations || {}).generate || {};
+      if (generate.selected_target) {
+        _modelController.cache[
+          mediaPresentationTargetKey(generate.selected_target.target)
+        ] = generate.selected_target;
+      }
+      _applyProviderData(imageProviderData(presentation));
+    },
+  });
 
   providerSel.addEventListener('change', function () {
     switchProvider(this.value);
@@ -704,6 +738,63 @@ document.addEventListener('keydown', function(e) {
     modelDesc.textContent = MODEL_DESCRIPTIONS[modelId] || '';
     systemArea.value = '';
     _updateQualityRow(modelId);
+  }
+
+  const initialGenerate = CREATOR_PRESENTATION.operations.generate || {};
+  const initialModelTarget = initialGenerate.selected_target || undefined;
+  const _modelController = createMediaRefreshController({
+    initialTarget: initialModelTarget ? initialModelTarget.target : null,
+    initialData: initialModelTarget,
+    begin: function (target) {
+      updateDescription(target.model);
+      loadNote(target.model);
+    },
+    load: async function (target) {
+      const url = modelsJsonUrl
+        + '?provider=' + encodeURIComponent(target.provider)
+        + '&target=' + encodeURIComponent(target.operation)
+        + '&model=' + encodeURIComponent(target.model);
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      return data;
+    },
+    apply: function (targetData, target) {
+      if (target.provider !== currentProvider || target.model !== modelSel.value) return;
+      const controls = targetData.controls || {};
+      if (controls.qualities && controls.qualities.length) {
+        MODEL_QUALITIES[target.model] = {
+          qualities: controls.qualities,
+          default: controls.default_quality,
+        };
+      } else {
+        delete MODEL_QUALITIES[target.model];
+      }
+      const operation = CREATOR_PRESENTATION.operations.generate;
+      operation.selected_model = target.model;
+      operation.selected_target = targetData;
+      _updateQualityRow(target.model);
+    },
+  });
+
+  function selectImageModel(modelId) {
+    if (!modelId) {
+      const operation = CREATOR_PRESENTATION.operations.generate;
+      operation.selected_model = null;
+      operation.selected_target = null;
+      updateDescription('');
+      notesArea.value = '';
+      return Promise.resolve({applied: false, stale: false});
+    }
+    return _modelController.select({
+      provider: currentProvider,
+      api: CREATOR_PRESENTATION.api,
+      operation: 'generate',
+      model: modelId,
+    }).catch(function (error) {
+      errMsg.textContent = 'Could not load model controls: ' + error.message;
+      return {applied: false, stale: false};
+    });
   }
 
   function _noteTagBoxes() {
@@ -790,7 +881,8 @@ document.addEventListener('keydown', function(e) {
       if (providerId !== currentProvider || modelId !== modelSel.value) return;
       if (data.ok) {
         MODEL_TAG_STATES[modelId] = {...(data.tags || tags)};
-        if (_providerCache[providerId]) _providerCache[providerId].model_tag_states = MODEL_TAG_STATES;
+        const operation = CREATOR_PRESENTATION.operations.generate;
+        operation.notes.model_tag_states = MODEL_TAG_STATES;
         _applyModelFilters();
         notesStatus.textContent = 'Saved.';
       } else {
@@ -803,8 +895,7 @@ document.addEventListener('keydown', function(e) {
   }
 
   modelSel.addEventListener('change', function () {
-    updateDescription(this.value);
-    loadNote(this.value);
+    selectImageModel(this.value);
   });
   if (notesArea) notesArea.addEventListener('blur', saveNote);
   for (const lbl of document.querySelectorAll('#notes-tags label')) lbl.addEventListener('click', _tristateLabelClick);
@@ -817,7 +908,7 @@ document.addEventListener('keydown', function(e) {
   });
   // Apply initial provider_config (temperature/system visibility, extra fields).
   // This also calls updateDescription + loadNote via _applyProviderData.
-  _applyProviderData(_providerCache[INITIAL_PROVIDER]);
+  _applyProviderData(initialProviderData);
 
   function populateFromParams() {
     const p = new URLSearchParams(window.location.search);
@@ -825,9 +916,12 @@ document.addEventListener('keydown', function(e) {
     const promptEl = document.getElementById('prompt');
     if (p.has('prompt') && promptEl) promptEl.value = p.get('prompt');
     if (p.has('model')) {
-      modelSel.value = p.get('model');
-      updateDescription(modelSel.value);
-      loadNote(modelSel.value);
+      const requestedModel = p.get('model');
+      modelSel.value = requestedModel;
+      const currentTarget = _modelController.current();
+      if (!currentTarget || currentTarget.model !== requestedModel) {
+        selectImageModel(modelSel.value);
+      }
     }
     const qualityParamEl = document.getElementById('quality');
     if (p.has('quality') && qualityParamEl) qualityParamEl.value = p.get('quality');
@@ -896,8 +990,7 @@ document.addEventListener('keydown', function(e) {
     } else {
       _applyModelFilters();
       if (modelSel.value) {
-        updateDescription(modelSel.value);
-        loadNote(modelSel.value);
+        selectImageModel(modelSel.value);
       }
       document.getElementById('image_size').value = DEFAULTS.image_size;
       const tempEl = document.getElementById('temperature');

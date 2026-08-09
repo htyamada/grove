@@ -185,6 +185,18 @@ if updating both in one request.
 
 ## 5. Django View Integration
 
+Provider-dependent browser data follows the shared operation-aware presentation
+contract in
+[`mediagen-creator-presentation-spec.md`](mediagen-creator-presentation-spec.md).
+Initial render and provider-refresh JSON expose the same contract. Flat Django
+context values remain only for server-rendering the initial controls; action
+semantics are unchanged.
+
+Generation model controls are selected-target data. Provider refresh performs
+model discovery once and obtains capabilities only for the selected model. A
+model change uses the same stale-safe target controller and requests that
+model's controls without repeating discovery.
+
 ### 5.0 Constructor
 
 The deployed Django front ends include `llemon_djview.urls` at `/llemon/`.
