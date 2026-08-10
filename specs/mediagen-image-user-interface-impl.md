@@ -250,10 +250,14 @@ The enhance sub-options are omitted from the POST body when enhance is unchecked
 When Type is edit, a panel shows:
 
 - **Model** dropdown: edit models from the `edit_models` context variable.
-  The list comes only from live discovery (`list_edit_models()`). Discovery
-  failure or an empty result produces an empty list, reports that image editing
-  is unavailable through `edit_models_warning`, and disables the Edit action.
-  There is no static or default-model fallback.
+  The list comes only from live discovery, through LLemon's public
+  `list_edit_models_with_metadata()` facade (see
+  `specs/mediagen-image-spec.md` "Edit-model listing" in the LLemon repo).
+  There is no static or default-model fallback. A provider that does not
+  support editing at all renders normally with editing absent — see "Backend
+  Context Additions" below. A provider that does support editing but whose
+  discovery fails or comes back empty is a provider fault: the view does not
+  render a degraded creator for it (see "Error responses" below).
 - **Aspect ratio** dropdown: exactly the provider's `edit_aspect_ratios`.
   There is no empty "(source)" choice. Venice includes `auto`
   (displayed as "auto (source)"), which preserves the source ratio;
@@ -275,8 +279,12 @@ offers it, and a 400 requiring an explicit fixed ratio when it does not),
 and `image_size` is rejected with a provider-appropriate message when the
 provider does not accept one, or validated against `edit_image_sizes` and
 defaulted when it does. `_edit_result()` forwards `image_size` to
-`backend.edit()` only when set and records it in the operation sidecar. An
-empty discovered list returns HTTP 400 before a backend is constructed.
+`backend.edit()` only when set and records it in the operation sidecar.
+`supports_edit(provider, api)` is checked first and returns HTTP 400 when the
+provider does not support editing at all; once that passes, edit-model
+discovery either succeeds with at least one model or raises — see "Error
+responses" below for the resulting HTTP 502, which replaces the previous
+empty-list HTTP 400.
 
 ### Backend Context Additions
 
@@ -285,24 +293,44 @@ The `image_creator()` view adds to the template context:
 - `upscale_url`: URL path or `None`
 - `edit_image_url`: URL path or `None`
 - `picker_images`: list of dicts with `fname` and `thumb_url` from gallery
-- `supports_edit`: effective edit availability; false when the backend lacks
-  editing or live discovery yielded no valid model
-- `edit_models`: live-discovered edit model identifiers; never a static fallback
-- `edit_models_warning`: discovery-failure/empty-catalog message or `None`
+- `supports_edit`: effective edit availability; false only when the backend
+  itself has no editing support. A backend that does support editing but
+  whose discovery fails never reaches template rendering — see "Error
+  responses" below.
+- `edit_models`: live-discovered edit model identifiers; never a static
+  fallback; always non-empty when `supports_edit` is true
 - `default_edit_model`: first discovered model for initial UI selection, or
-  `''` when editing is unavailable; it is not a server request fallback
+  `''` when editing is unsupported; it is not a server request fallback
 - `edit_aspect_ratios`: the provider's edit ratios (no empty entry)
 - `default_edit_aspect_ratio`: `auto` when offered, else the default ratio
 - `edit_image_sizes`: permitted edit sizes (empty when size is automatic)
 - `default_edit_image_size`: default selected edit size (`''` when automatic)
 
-These edit keys are produced by the module-level `_edit_metadata()` helper,
-which caches live edit-model discovery for five minutes per provider so page
-renders and edit requests do not each pay a catalog fetch. The same keys are
+These edit keys are produced by the module-level `_edit_metadata()` helper.
+It no longer maintains its own cache: `list_edit_models_with_metadata()`
+caches live edit-model discovery in LLemon itself (300 seconds, keyed by
+provider/api/URL), so page renders and edit requests still do not each pay a
+catalog fetch, without Grove duplicating that cache. The same keys are
 included in the `models_json` response so a provider switch updates the edit
 controls without a page reload. Unit/render tests replace `_edit_metadata()`
-or the backend catalog method with deterministic doubles and never contact a
-live provider.
+or `list_edit_models_with_metadata()` with deterministic doubles and never
+contact a live provider.
+
+### Error responses
+
+`image_creator()`, `models_json()`, and `_do_edit_image()`/
+`_edit_archive_image()` each call `_edit_metadata(provider, api)` (directly,
+or through `_creator_data()`) inside its own `try`/`except`. When that call
+raises — a discovery failure, or an empty listing from a provider that does
+declare `supports_edit`, both of which `list_edit_models_with_metadata()`
+raises rather than returning a degraded result — the view logs the exception
+and returns `JsonResponse({'error': f'could not list edit models: {e}'},
+status=502)` instead of rendering or returning partial creator data. This
+mirrors the existing `could not list image generation models`/`could not
+list models` 502 pattern already used for the generate-listing failure path
+in the same two view methods. There is no HTTP 400 for an empty edit-model
+listing any more: that case is now indistinguishable, at the HTTP layer,
+from any other discovery failure.
 
 The `_gallery_picker_items()` private method scans the gallery directory for
 image files (extensions: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) and returns

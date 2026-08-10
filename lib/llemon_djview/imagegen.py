@@ -10,7 +10,6 @@ import os
 import queue
 import re
 import threading
-import time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 from typing import Any
@@ -38,6 +37,7 @@ from hty7.llemon.mediagen.imagegen import (
     set_model_note,
     image_sizes,
     image_generation_summary_lines,
+    list_edit_models_with_metadata,
     list_image_models_with_metadata,
     make_imagegen_backend,
     model_capabilities,
@@ -84,48 +84,36 @@ def _sanitize_image_metadata(value: Any) -> Any:
     return sanitize_metadata_data_urls(value)
 
 
-_EDIT_MODELS_CACHE_TTL = 300.0
-_edit_models_cache: dict[tuple[str, str], tuple[float, list[str], 'str | None']] = {}
+def _discovered_edit_models(provider: str, api: str) -> list[str]:
+    """Return live-discovered edit model IDs.
 
-
-def _discovered_edit_models(provider: str, api: str) -> 'tuple[list[str], str | None]':
-    """Return live-discovered edit model IDs and any availability warning.
-
-    OpenRouter and Venice advertise edit-capable models live; their catalogs
-    change faster than the shipped static lists. Discovery results are cached
-    briefly so page renders and edit requests do not each pay a catalog fetch.
-    Failure or an empty result means editing is unavailable; no model is
-    inferred or accepted as a fallback.
+    Every provider's edit-model discovery is live, cached briefly by LLemon's
+    own ``list_edit_models_with_metadata()`` facade so page renders and edit
+    requests do not each pay a catalog fetch. A discovery failure or an
+    empty result from a provider that declares edit support is a provider
+    fault: it raises rather than degrading to a warning, and the caller is
+    responsible for turning that into an HTTP error response.
     """
-    key = (provider, api)
-    cached = _edit_models_cache.get(key)
-    if cached and time.monotonic() - cached[0] < _EDIT_MODELS_CACHE_TTL:
-        return list(cached[1]), cached[2]
-    models: list[str] = []
-    warning: str | None = None
-    try:
-        entries = make_imagegen_backend(provider, api).list_edit_models()
-        discovered: list[str] = []
-        for entry in entries:
-            model_id = entry.get('id') if isinstance(entry, dict) else entry
-            if not isinstance(model_id, str) or not model_id.strip():
-                continue
-            model_id = model_id.strip()
-            if model_id not in discovered:
-                discovered.append(model_id)
-        if discovered:
-            models = discovered
-        else:
-            warning = 'no edit models were discovered; image editing is unavailable'
-    except Exception as e:
-        logger.warning('live edit-model discovery failed for %s: %s', provider, e)
-        warning = 'edit-model discovery failed; image editing is unavailable'
-    _edit_models_cache[key] = (time.monotonic(), list(models), warning)
-    return models, warning
+    entries = list_edit_models_with_metadata(provider, api)
+    discovered: list[str] = []
+    for entry in entries:
+        model_id = entry.get('id') if isinstance(entry, dict) else entry
+        if not isinstance(model_id, str) or not model_id.strip():
+            continue
+        model_id = model_id.strip()
+        if model_id not in discovered:
+            discovered.append(model_id)
+    return discovered
 
 
 def _edit_metadata(provider: str, api: str) -> dict[str, Any]:
     """Edit-control metadata for one provider.
+
+    A provider that does not declare ``supports_edit`` is an ordinary
+    supported state and returns cleanly with no request. Otherwise this
+    contacts (or reuses LLemon's cache of) live edit-model discovery, which
+    raises on failure or an empty result — the caller must let that
+    exception become an HTTP error response rather than catching it here.
 
     Aspect-ratio policy: a provider whose edit ratios include ``auto``
     (Venice) preserves the source ratio through that value; a provider
@@ -139,16 +127,15 @@ def _edit_metadata(provider: str, api: str) -> dict[str, Any]:
         return {
             'supports_edit':             False,
             'edit_models':               [],
-            'edit_models_warning':       None,
             'default_edit_model':        '',
             'edit_aspect_ratios':        [],
             'default_edit_aspect_ratio': '',
             'edit_image_sizes':          [],
             'default_edit_image_size':   '',
         }
-    models, warning = _discovered_edit_models(provider, api)
-    default_model = models[0] if models else ''
-    ratios = edit_aspect_ratios(provider, api) if models else []
+    models = _discovered_edit_models(provider, api)
+    default_model = models[0]
+    ratios = edit_aspect_ratios(provider, api)
     default_ratio = ''
     if 'auto' in ratios:
         default_ratio = 'auto'
@@ -156,16 +143,15 @@ def _edit_metadata(provider: str, api: str) -> dict[str, Any]:
         default_ratio = default_aspect_ratio(provider, api)
         if default_ratio not in ratios:
             default_ratio = ratios[0]
-    sizes = edit_image_sizes(provider, api) if models else []
+    sizes = edit_image_sizes(provider, api)
     default_size = ''
     if sizes:
         default_size = default_image_size(provider, api)
         if default_size not in sizes:
             default_size = sizes[0]
     return {
-        'supports_edit':             bool(models),
+        'supports_edit':             True,
         'edit_models':               models,
-        'edit_models_warning':       warning,
         'default_edit_model':        default_model,
         'edit_aspect_ratios':        ratios,
         'default_edit_aspect_ratio': default_ratio,
@@ -284,11 +270,17 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             logger.exception('could not list image generation models')
             return JsonResponse({'error': f'could not list image generation models: {e}'},
                                 status=502)
+        try:
+            edit_data = _edit_metadata(provider, api)
+        except Exception as e:
+            logger.exception('could not list edit models')
+            return JsonResponse({'error': f'could not list edit models: {e}'},
+                                status=502)
         requested_model = (
             request.GET.get('model') if 'model' in request.GET else None
         )
         creator_data = self._creator_data(
-            provider, api, raw_models, requested_model=requested_model,
+            provider, api, raw_models, edit_data, requested_model=requested_model,
         )
 
         notes_load_errors = get_notes_load_errors()
@@ -363,10 +355,16 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         provider: str,
         api: str,
         raw_models: list[dict[str, Any]],
+        edit_data: dict[str, Any],
         *,
         requested_model: str | None = None,
     ) -> dict[str, Any]:
-        """Return the provider data shared by initial render and JSON refresh."""
+        """Return the provider data shared by initial render and JSON refresh.
+
+        ``edit_data`` is computed by the caller (``_edit_metadata()``) so
+        that caller can isolate and report an edit-model discovery failure
+        distinctly from any other failure in this method.
+        """
         model_options: list[dict[str, Any]] = []
         model_descriptions: dict[str, str] = {}
         for model in raw_models:
@@ -390,7 +388,6 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         provider_fields = _provider_config(provider, api)
         provider_supports_edit = supports_edit(provider, api)
         provider_supports_upscale = supports_upscale(provider, api)
-        edit_data = _edit_metadata(provider, api)
         model_ids = {option['id'] for option in model_options}
         selected_model = default_model
         if requested_model is not None:
@@ -462,10 +459,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                     'aspect_ratios': edit_data['edit_aspect_ratios'],
                     'image_sizes': edit_data['edit_image_sizes'],
                 },
-                availability={
-                    'enabled': edit_data['supports_edit'],
-                    'reason': edit_data['edit_models_warning'],
-                },
+                availability={'enabled': edit_data['supports_edit']},
                 selected_target=(
                     build_model_target(
                         provider, api, 'edit', edit_data['default_edit_model'],
@@ -964,9 +958,15 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             logger.exception('could not list image generation models for provider %s',
                              provider_param)
             return JsonResponse({'error': f'could not list models: {e}'}, status=502)
+        try:
+            edit_data = _edit_metadata(provider, api)
+        except Exception as e:
+            logger.exception('could not list edit models')
+            return JsonResponse({'error': f'could not list edit models: {e}'},
+                                status=502)
         requested_model = request.GET.get('selected_model') or None
         data = self._creator_data(
-            provider, api, raw_models, requested_model=requested_model,
+            provider, api, raw_models, edit_data, requested_model=requested_model,
         )
         return JsonResponse(data['presentation'])
 
@@ -1369,13 +1369,16 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         edit_model = model_value.strip() if isinstance(model_value, str) else ''
         if not edit_model:
             return JsonResponse({'error': 'edit model is required'}, status=400)
-        edit_meta = _edit_metadata(provider, api)
+        try:
+            edit_meta = _edit_metadata(provider, api)
+        except Exception as e:
+            logger.exception('could not list edit models')
+            return JsonResponse({'error': f'could not list edit models: {e}'},
+                                status=502)
+        # supports_edit(provider, api) was already confirmed True above, so a
+        # successful _edit_metadata() call always carries at least one model;
+        # discovery that comes back empty raises instead of returning [].
         valid_models = edit_meta['edit_models']
-        if not valid_models:
-            return JsonResponse(
-                {'error': f'no edit models are available for provider {provider!r}'},
-                status=400,
-            )
         if edit_model not in valid_models:
             return JsonResponse(
                 {'error': f'invalid edit model; use one of: {", ".join(valid_models)}'},

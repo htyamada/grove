@@ -156,7 +156,6 @@
             </div>
           </div>
         </div>
-        <div class="row" id="edit-models-warning" style="color:#a60; font-size:0.85em;{% if not edit_models_warning %} display:none;{% endif %}">{{ edit_models_warning|default:"" }}</div>
         <div id="edit-opts" style="display:none;">
           <div class="row">
             <label for="edit-model-sel">Model</label>
@@ -332,7 +331,6 @@ document.addEventListener('keydown', function(e) {
       supports_edit: (edit.availability || {}).enabled === true,
       supports_upscale: (upscale.availability || {}).enabled === true,
       edit_models: (edit.model_options || []).map(option => option.id),
-      edit_models_warning: (edit.availability || {}).reason || null,
       default_edit_model: edit.default_model || '',
       edit_aspect_ratios: (edit.controls || {}).aspect_ratios || [],
       default_edit_aspect_ratio: (edit.defaults || {}).aspect_ratio || '',
@@ -472,11 +470,6 @@ document.addEventListener('keydown', function(e) {
         if (m === data.default_edit_model) opt.selected = true;
         emSel.appendChild(opt);
       }
-    }
-    const emWarn = document.getElementById('edit-models-warning');
-    if (emWarn) {
-      emWarn.textContent = data.edit_models_warning || '';
-      emWarn.style.display = data.edit_models_warning ? '' : 'none';
     }
     const eaSel = document.getElementById('edit-aspect-sel');
     if (eaSel && Array.isArray(data.edit_aspect_ratios)) {

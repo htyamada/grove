@@ -248,13 +248,16 @@ merged stored tag state after unknown stored tags have been preserved.
 Image generation, upscale, and edit POST bodies always include the provider
 currently selected in the creator. The server does not apply the package's
 default provider to action requests. An image edit also includes an explicit
-model selected from the live `list_edit_models()` result.
+model selected from the live `list_edit_models_with_metadata()` result.
 
-Edit-model discovery has no static or default-model fallback. If discovery
-fails or returns no models, effective edit support is false, the Edit action is
-disabled, and a direct edit request is rejected before a backend action can be
-started. Render and view tests replace discovery with deterministic test data;
-they do not contact provider catalog APIs.
+Edit-model discovery has no static or default-model fallback. A provider
+that does not support editing at all renders normally with editing disabled;
+that is an ordinary supported state, not a discovery case. A provider that
+does support editing but whose discovery fails or returns no models is a
+provider fault: the creator page, the provider/model-refresh endpoint, and a
+direct edit request all fail with HTTP 502 rather than rendering or accepting
+a degraded state. Render and view tests replace discovery with deterministic
+test data; they do not contact provider catalog APIs.
 
 ---
 
@@ -267,4 +270,5 @@ they do not contact provider catalog APIs.
 | Missing `provider` or `model` in GET | Returns `{'error': 'provider and model are required'}` with HTTP 400 |
 | Missing `provider` in a generate/upscale/edit POST | Returns `{'error': 'provider is required'}` with HTTP 400 |
 | Missing edit `model` | Returns `{'error': 'edit model is required'}` with HTTP 400 |
-| Edit-model discovery failed or returned no models | Edit is disabled; a direct POST returns HTTP 400 and no backend action occurs |
+| Edit-model discovery failed, or returned no models for a provider that supports editing | Creator render, provider/model refresh, and a direct edit POST each return `{'error': f'could not list edit models: {message}'}` with HTTP 502; no backend action occurs |
+| Provider does not support editing at all | Ordinary supported state: creator renders with editing disabled and no discovery request is made; a direct edit POST returns `{'error': f"edit not supported by provider {provider!r}"}` with HTTP 400 |

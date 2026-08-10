@@ -185,38 +185,35 @@ class RequiredProviderTests(_DjviewTestCase):
 
 
 class EditDiscoveryTests(_DjviewTestCase):
-    def _metadata(self, side_effect):
+    """list_edit_models_with_metadata() failure/empty listing now raises;
+    _edit_metadata() no longer degrades that into a dict with a warning."""
+
+    def _edit_metadata(self, side_effect):
         with mock.patch.dict(sys.modules, _fake_django_modules()):
             import llemon_djview.imagegen as imagegen
 
-        list_edit_models = (
+        list_edit_models_with_metadata = (
             mock.Mock(side_effect=side_effect)
             if isinstance(side_effect, Exception)
             else mock.Mock(return_value=side_effect)
         )
-        backend_cls = types.SimpleNamespace(list_edit_models=list_edit_models)
-        imagegen._edit_models_cache.clear()
         with mock.patch.object(imagegen, 'supports_edit', return_value=True), \
                 mock.patch.object(
-                    imagegen, 'make_imagegen_backend', return_value=backend_cls,
-                ), mock.patch.object(imagegen.logger, 'warning'):
+                    imagegen, 'list_edit_models_with_metadata',
+                    list_edit_models_with_metadata,
+                ):
             return imagegen._edit_metadata('openrouter', 'images')
 
-    def test_empty_discovery_has_no_fallback_model(self) -> None:
-        metadata = self._metadata(['', '   ', {}, {'id': ''}])
-        self.assertFalse(metadata['supports_edit'])
-        self.assertEqual(metadata['edit_models'], [])
-        self.assertEqual(metadata['default_edit_model'], '')
-        self.assertEqual(metadata['edit_aspect_ratios'], [])
-        self.assertEqual(metadata['edit_image_sizes'], [])
-        self.assertIn('unavailable', metadata['edit_models_warning'])
+    def test_empty_discovery_raises(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self._edit_metadata(RuntimeError(
+                "provider 'openrouter' declares edit support but the "
+                "edit-model listing returned no models"
+            ))
 
-    def test_failed_discovery_has_no_fallback_model(self) -> None:
-        metadata = self._metadata(RuntimeError('catalog unavailable'))
-        self.assertFalse(metadata['supports_edit'])
-        self.assertEqual(metadata['edit_models'], [])
-        self.assertEqual(metadata['default_edit_model'], '')
-        self.assertIn('unavailable', metadata['edit_models_warning'])
+    def test_failed_discovery_raises(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self._edit_metadata(RuntimeError('catalog unavailable'))
 
 
 class _FakeImageBackend:
@@ -415,7 +412,6 @@ class VideoEnhancementPassthroughTests(_DjviewTestCase):
 
 _OPENROUTER_EDIT_META = {
     'edit_models':               ['vendor/edit-model'],
-    'edit_models_warning':       None,
     'default_edit_model':        'vendor/edit-model',
     'edit_aspect_ratios':        ['1:1', '16:9'],
     'default_edit_aspect_ratio': '1:1',
@@ -425,7 +421,6 @@ _OPENROUTER_EDIT_META = {
 
 _VENICE_EDIT_META = {
     'edit_models':               ['qwen-edit'],
-    'edit_models_warning':       None,
     'default_edit_model':        'qwen-edit',
     'edit_aspect_ratios':        ['auto', '1:1'],
     'default_edit_aspect_ratio': 'auto',
@@ -490,24 +485,38 @@ class ImageEditControlTests(_DjviewTestCase):
         self.assertEqual(resp.data['error'], 'edit model is required')
         edit_result.assert_not_called()
 
-    def test_no_discovered_models_disables_edit(self) -> None:
-        no_models = dict(_OPENROUTER_EDIT_META)
-        no_models.update({
-            'supports_edit': False,
-            'edit_models': [],
-            'default_edit_model': '',
-            'edit_aspect_ratios': [],
-            'default_edit_aspect_ratio': '',
-            'edit_image_sizes': [],
-            'default_edit_image_size': '',
-        })
-        resp, edit_result = self._run_edit(
-            {'filename': 'a.png', 'prompt': 'change it',
-             'model': 'vendor/edit-model'},
-            no_models,
-        )
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn('no edit models are available', resp.data['error'])
+    def test_edit_model_discovery_failure_returns_502(self) -> None:
+        # A discovery failure (or an empty listing from a provider that
+        # declares supports_edit) is a provider fault: _edit_metadata() now
+        # raises rather than returning a degraded dict, and _do_edit_image()
+        # turns that into a 502 rather than a 400.
+        with mock.patch.dict(sys.modules, _fake_django_modules()):
+            from llemon_djview.imagegen import LLemonImageGenViewSet
+
+        view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
+        request = types.SimpleNamespace(body=json.dumps({
+            'provider': 'openrouter', 'filename': 'a.png', 'prompt': 'change it',
+            'model': 'vendor/edit-model',
+        }))
+        edit_result = mock.Mock(return_value=({'files': ['out.png']}, 200))
+        patches = {
+            'normalize_provider_api': lambda *a, **k: ('openrouter', 'openrouter'),
+            'supports_edit': lambda *a, **k: True,
+            '_edit_metadata': mock.Mock(
+                side_effect=RuntimeError('could not list edit models: network down'),
+            ),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                        view, '_read_image_as_data_url',
+                        return_value=('data:image/png;base64,x', None),
+                    ), \
+                    mock.patch.object(view, '_edit_result', edit_result), \
+                    mock.patch.dict(view._do_edit_image.__globals__, patches):
+                resp = view._do_edit_image(request, tmp)
+
+        self.assertEqual(resp.status_code, 502)
+        self.assertIn('could not list edit models', resp.data['error'])
         edit_result.assert_not_called()
 
     def test_openrouter_edit_forwards_explicit_size(self) -> None:

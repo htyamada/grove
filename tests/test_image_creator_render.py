@@ -125,7 +125,7 @@ else:
             self.factory = RequestFactory()
             self.view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
 
-        def _render(self):
+        def _render(self, **extra_overrides):
             request = self.factory.get('/')
             overrides = {
                 'normalize_provider_api':        lambda p=None, a=None: ('venice', 'generation'),
@@ -151,7 +151,6 @@ else:
                 '_edit_metadata':                 mock.Mock(return_value={
                     'supports_edit':             True,
                     'edit_models':               ['firered-image-edit', 'qwen-edit'],
-                    'edit_models_warning':       None,
                     'default_edit_model':        'firered-image-edit',
                     'edit_aspect_ratios':        ['auto', '1:1', '16:9'],
                     'default_edit_aspect_ratio': 'auto',
@@ -159,6 +158,7 @@ else:
                     'default_edit_image_size':   '',
                 }),
             }
+            overrides.update(extra_overrides)
             with override_settings(**_DJANGO_TEST_OVERRIDES):
                 with mock.patch.dict(self.view.image_creator.__globals__, overrides):
                     with mock.patch.object(self.view, '_gallery_picker_items', return_value=[]):
@@ -211,6 +211,40 @@ else:
                 html,
             )
 
+        def test_image_creator_returns_502_when_edit_discovery_fails(self) -> None:
+            # Edit-model discovery is live and has no fallback: a provider
+            # that declares edit support and then cannot be listed is an
+            # upstream fault, so the creator reports it instead of rendering
+            # a page with editing silently degraded.
+            response = self._render(_edit_metadata=mock.Mock(
+                side_effect=RuntimeError('catalog unavailable'),
+            ))
+            self.assertEqual(response.status_code, 502)
+            self.assertEqual(
+                json.loads(response.content)['error'],
+                'could not list edit models: catalog unavailable',
+            )
+
+        def test_image_refresh_returns_502_when_edit_discovery_fails(self) -> None:
+            request = self.factory.get('/models-json/?provider=venice')
+            overrides = {
+                'normalize_provider_api': mock.Mock(return_value=('venice', 'generation')),
+                'list_image_models_with_metadata': mock.Mock(return_value=[
+                    {'id': 'm1', 'name': 'One', 'description': 'one'},
+                ]),
+                '_edit_metadata': mock.Mock(
+                    side_effect=RuntimeError('catalog unavailable'),
+                ),
+            }
+            with mock.patch.dict(self.view._models_json.__globals__, overrides):
+                response = self.view._models_json(request)
+
+            self.assertEqual(response.status_code, 502)
+            self.assertEqual(
+                json.loads(response.content)['error'],
+                'could not list edit models: catalog unavailable',
+            )
+
         def test_image_refresh_separates_discovery_from_selected_target_lookup(self) -> None:
             request = self.factory.get(
                 '/models-json/?provider=venice&selected_model=m2'
@@ -237,7 +271,6 @@ else:
                 '_edit_metadata': mock.Mock(return_value={
                     'supports_edit': False,
                     'edit_models': [],
-                    'edit_models_warning': None,
                     'default_edit_model': '',
                     'edit_aspect_ratios': [],
                     'default_edit_aspect_ratio': '',

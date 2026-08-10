@@ -628,7 +628,6 @@ class DjviewMediaSettingsTests(unittest.TestCase):
                 '_edit_metadata': mock.Mock(return_value={
                     'supports_edit': False,
                     'edit_models': [],
-                    'edit_models_warning': None,
                     'default_edit_model': '',
                     'edit_aspect_ratios': [],
                     'default_edit_aspect_ratio': '',
