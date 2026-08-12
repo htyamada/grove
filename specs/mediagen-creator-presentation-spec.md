@@ -79,6 +79,40 @@ authoritative contract. Flat Django context values may remain where the server
 needs them to render HTML, but refresh JSON must not duplicate the contract and
 the browser must not reconstruct a second authoritative model/capability map.
 
+Image refresh responses wrap that presentation with transient model-information
+notices: `{"presentation": {...}, "notices": [...]}`. Initial image render
+supplies the same two values in separate JSON script blocks. Notices preserve
+the complete public LLemon notice fields (`models` is encoded as a JSON array),
+are rendered once only after the response wins the selection sequence, and are
+never part of a cached presentation. Video response shape is unchanged.
+
+For model-bearing image operations, `default_model` is the nullable backend
+default while `selected_model` is the row presented for configuration. Selection
+uses a valid requested row, then a present eligible backend default, then the
+first eligible row in provider order. A summary listing row is provisionally
+eligible; only that selected row is resolved. If detail reports it unavailable,
+the row remains selected and the action is disabled rather than scanning later
+rows. This presentation selection never manufactures a backend default or
+executes an action.
+
+Image model filters may replace a selected row that they hide only with an
+eligible visible row. If no eligible visible row exists, the browser keeps the
+generation selection null and the action disabled; catalog order alone does not
+select an unavailable complete row.
+
+The image creator disables its action button whenever the currently selected
+operation's normalized availability is false. The edit endpoint repeats its
+normalized availability and `data_url` compatibility validation on the server
+before backend construction. The generation endpoint deliberately retains its
+historical action path: it does not perform a new presentation lookup or
+normalized availability recheck. This preserves existing generation catalog
+lookup counts and failure behavior; the browser gate is presentation behavior,
+not a new server authorization boundary. A selected generation-model detail
+failure during initial/provider presentation is a logged HTTP 502. The
+model-only refresh endpoint retains its historical best-effort behavior: a
+detail lookup failure returns its HTTP 200 target with no optional controls,
+leaving the already-applied availability unchanged.
+
 ## Refresh and cache lifecycle
 
 Provider and model changes use the shared browser target controller in
@@ -88,9 +122,11 @@ Provider and model changes use the shared browser target controller in
 - An uncached provider selection retrieves one provider presentation.
 - A model selection retrieves or selects only the chosen model target.
 - A response is applied only when it belongs to the newest selection sequence;
-  delayed older responses are discarded.
+  delayed older responses and their transient notices are discarded.
+- A model reselection nested within an image provider refresh preserves that
+  provider response's notices when the model target is already cached.
 - Returning to a cached target reapplies its presentation without loading it
-  again.
+  again or replaying notices.
 - Existing modality-specific provider failure semantics are preserved: image
   selection rolls back after a failed load, while video selection commits when
   loading begins.

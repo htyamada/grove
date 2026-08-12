@@ -70,6 +70,76 @@ const controller = createMediaRefreshController({
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """)
 
+    def test_transient_envelope_is_not_cached_replayed_or_applied_when_stale(self) -> None:
+        self._run_node(r"""
+const assert = require('node:assert/strict');
+let resolveSlow;
+const transients = [];
+const applied = [];
+const controller = createMediaRefreshController({
+  initialTarget: 'initial',
+  initialData: {provider: 'initial'},
+  load: target => target === 'slow'
+    ? new Promise(resolve => { resolveSlow = resolve; })
+    : Promise.resolve({presentation: {provider: target}, notices: [target]}),
+  value: envelope => envelope.presentation,
+  transient: envelope => transients.push(...envelope.notices),
+  apply: data => applied.push(data.provider),
+});
+(async function () {
+  await controller.select('next');
+  await controller.select('initial');
+  await controller.select('next');
+  assert.deepEqual(transients, ['next']);
+  assert.deepEqual(controller.cache.next, {provider: 'next'});
+  const slow = controller.select('slow');
+  await controller.select('latest');
+  resolveSlow({presentation: {provider: 'slow'}, notices: ['slow']});
+  assert.equal((await slow).stale, true);
+  assert.deepEqual(transients, ['next', 'latest']);
+  assert.deepEqual(applied, ['next', 'initial', 'next', 'latest']);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""")
+
+    def test_nested_cached_model_apply_does_not_erase_provider_notice(self) -> None:
+        self._run_node(r"""
+const assert = require('node:assert/strict');
+let visibleNotices = [];
+const modelTarget = {
+  provider: 'next', api: 'images', operation: 'generate', model: 'm1',
+};
+const modelController = createMediaRefreshController({
+  initialTarget: null,
+  cache: {},
+  load: async () => { throw new Error('seeded target should be cached'); },
+  begin: target => {
+    if (!target.preserve_notices) visibleNotices = [];
+  },
+  apply: () => {},
+});
+const providerController = createMediaRefreshController({
+  initialTarget: 'initial',
+  initialData: {provider: 'initial'},
+  load: async () => ({
+    presentation: {provider: 'next', selectedTarget: {value: 'target'}},
+    notices: ['catalog warning'],
+  }),
+  value: envelope => envelope.presentation,
+  transient: envelope => { visibleNotices = envelope.notices; },
+  apply: presentation => {
+    modelController.cache[mediaPresentationTargetKey(modelTarget)] =
+      presentation.selectedTarget;
+    modelController.select({...modelTarget, preserve_notices: true});
+  },
+});
+(async function () {
+  await providerController.select('next');
+  assert.deepEqual(visibleNotices, ['catalog warning']);
+  await modelController.select({...modelTarget, preserve_notices: false});
+  assert.deepEqual(visibleNotices, []);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""")
+
     def test_commit_on_begin_preserves_video_failure_semantics(self) -> None:
         self._run_node(r"""
 const assert = require('node:assert/strict');

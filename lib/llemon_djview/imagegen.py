@@ -10,6 +10,8 @@ import os
 import queue
 import re
 import threading
+from copy import deepcopy
+from dataclasses import asdict
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 from typing import Any
@@ -24,6 +26,7 @@ from hty7.llemon.mediagen.imagegen import (
     aspect_ratios,
     default_aspect_ratio,
     default_image_model,
+    default_model_for_presentation,
     default_image_size,
     edit_aspect_ratios,
     edit_image_sizes,
@@ -40,8 +43,8 @@ from hty7.llemon.mediagen.imagegen import (
     list_edit_models_with_metadata,
     list_image_models_with_metadata,
     make_imagegen_backend,
-    model_capabilities,
     model_display,
+    model_presentation,
     normalize_provider_api,
     provider_config as _provider_config,
     supports_edit,
@@ -84,8 +87,65 @@ def _sanitize_image_metadata(value: Any) -> Any:
     return sanitize_metadata_data_urls(value)
 
 
-def _discovered_edit_models(provider: str, api: str) -> list[str]:
-    """Return live-discovered edit model IDs.
+def _notice_dict(notice: Any) -> dict[str, Any]:
+    """Return one complete JSON-safe model-information notice."""
+    result = asdict(notice)
+    result['models'] = list(result['models'])
+    return result
+
+
+def _operation_state(
+    row: dict[str, Any], operation: str, *, source_kind: str | None = None,
+) -> tuple[bool, bool, str | None]:
+    """Return (eligible, enabled, brief reason) from normalized presentation."""
+    presentation = row['presentation']
+    detail = presentation['detail']
+    operation_data = presentation['operations'][operation]
+    if detail == 'summary':
+        return True, False, 'model detail has not been resolved'
+    if not operation_data['available']:
+        return False, False, operation_data['unavailable_reason']
+    if source_kind is None:
+        return True, True, None
+    edit_input = presentation['edit_input']
+    if source_kind not in edit_input['accepted_source_kinds']:
+        return False, False, 'data URL unsupported'
+    required = edit_input['required_backend_transports'].get(source_kind)
+    if required and required not in edit_input['available_backend_transports']:
+        return False, False, 'required transport unavailable'
+    return True, True, None
+
+
+def _model_options(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy complete facade rows and add Grove's display label."""
+    options = deepcopy(rows)
+    for option in options:
+        model_id = option['id']
+        name = option.get('name')
+        option['display'] = f'{name} ({model_id})' if name else model_id
+    return options
+
+
+def _select_model(
+    rows: list[dict[str, Any]], operation: str, requested: str | None,
+    default: str | None, *, source_kind: str | None = None,
+) -> str | None:
+    """Select a row for presentation without manufacturing a default."""
+    eligible = {
+        row['id'] for row in rows
+        if _operation_state(row, operation, source_kind=source_kind)[0]
+    }
+    requested_id = requested.strip() if isinstance(requested, str) else ''
+    for candidate in (requested_id or None, default):
+        if candidate in eligible:
+            return candidate
+    return next((row['id'] for row in rows if row['id'] in eligible), None)
+
+
+def _discovered_edit_models(
+    provider: str, api: str, *, on_model_info_notice=None,
+) -> list[dict[str, Any]]:
+    """Return complete live-discovered edit model rows.
 
     Every provider's edit-model discovery is live, cached briefly by LLemon's
     own ``list_edit_models_with_metadata()`` facade so page renders and edit
@@ -94,19 +154,15 @@ def _discovered_edit_models(provider: str, api: str) -> list[str]:
     fault: it raises rather than degrading to a warning, and the caller is
     responsible for turning that into an HTTP error response.
     """
-    entries = list_edit_models_with_metadata(provider, api)
-    discovered: list[str] = []
-    for entry in entries:
-        model_id = entry.get('id') if isinstance(entry, dict) else entry
-        if not isinstance(model_id, str) or not model_id.strip():
-            continue
-        model_id = model_id.strip()
-        if model_id not in discovered:
-            discovered.append(model_id)
-    return discovered
+    return list_edit_models_with_metadata(
+        provider, api, on_model_info_notice=on_model_info_notice,
+    )
 
 
-def _edit_metadata(provider: str, api: str) -> dict[str, Any]:
+def _edit_metadata(
+    provider: str, api: str, *, requested_model: str | None = None,
+    on_model_info_notice=None,
+) -> dict[str, Any]:
     """Edit-control metadata for one provider.
 
     A provider that does not declare ``supports_edit`` is an ordinary
@@ -127,14 +183,23 @@ def _edit_metadata(provider: str, api: str) -> dict[str, Any]:
         return {
             'supports_edit':             False,
             'edit_models':               [],
+            'edit_model_options':        [],
+            'selected_edit_model':       None,
             'default_edit_model':        '',
             'edit_aspect_ratios':        [],
             'default_edit_aspect_ratio': '',
             'edit_image_sizes':          [],
             'default_edit_image_size':   '',
         }
-    models = _discovered_edit_models(provider, api)
-    default_model = models[0]
+    rows = _discovered_edit_models(
+        provider, api, on_model_info_notice=on_model_info_notice,
+    )
+    default_model = default_model_for_presentation(
+        provider, api, operation='edit',
+    )
+    selected_model = _select_model(
+        rows, 'edit', requested_model, default_model, source_kind='data_url',
+    )
     ratios = edit_aspect_ratios(provider, api)
     default_ratio = ''
     if 'auto' in ratios:
@@ -151,8 +216,10 @@ def _edit_metadata(provider: str, api: str) -> dict[str, Any]:
             default_size = sizes[0]
     return {
         'supports_edit':             True,
-        'edit_models':               models,
-        'default_edit_model':        default_model,
+        'edit_models':               [row['id'] for row in rows],
+        'edit_model_options':        _model_options(rows),
+        'selected_edit_model':       selected_model,
+        'default_edit_model':        default_model or '',
         'edit_aspect_ratios':        ratios,
         'default_edit_aspect_ratio': default_ratio,
         'edit_image_sizes':          sizes,
@@ -261,9 +328,12 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
     def image_creator(self, request):
         provider_param = request.GET.get('provider', '').strip() or None
+        notices: list[Any] = []
         try:
             provider, api = normalize_provider_api(provider_param)
-            raw_models = list_image_models_with_metadata(provider, api)
+            raw_models = list_image_models_with_metadata(
+                provider, api, on_model_info_notice=notices.append,
+            )
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
         except Exception as e:
@@ -271,7 +341,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return JsonResponse({'error': f'could not list image generation models: {e}'},
                                 status=502)
         try:
-            edit_data = _edit_metadata(provider, api)
+            edit_data = _edit_metadata(
+                provider, api,
+                requested_model=request.GET.get('selected_edit_model'),
+                on_model_info_notice=notices.append,
+            )
         except Exception as e:
             logger.exception('could not list edit models')
             return JsonResponse({'error': f'could not list edit models: {e}'},
@@ -279,9 +353,19 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         requested_model = (
             request.GET.get('model') if 'model' in request.GET else None
         )
-        creator_data = self._creator_data(
-            provider, api, raw_models, edit_data, requested_model=requested_model,
-        )
+        try:
+            creator_data = self._creator_data(
+                provider, api, raw_models, edit_data,
+                requested_model=requested_model,
+                on_model_info_notice=notices.append,
+            )
+        except Exception as e:
+            logger.exception('could not resolve image model presentation')
+            return JsonResponse(
+                {'error': f'could not resolve model presentation: {e}'},
+                status=502,
+            )
+        creator_data['notices'] = [_notice_dict(notice) for notice in notices]
 
         notes_load_errors = get_notes_load_errors()
         def _safe_url(name: str) -> str | None:
@@ -358,6 +442,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         edit_data: dict[str, Any],
         *,
         requested_model: str | None = None,
+        on_model_info_notice=None,
     ) -> dict[str, Any]:
         """Return the provider data shared by initial render and JSON refresh.
 
@@ -365,36 +450,43 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         that caller can isolate and report an edit-model discovery failure
         distinctly from any other failure in this method.
         """
-        model_options: list[dict[str, Any]] = []
+        model_options = _model_options(raw_models)
         model_descriptions: dict[str, str] = {}
-        for model in raw_models:
-            model_id = model['id']
-            name = model['name']
-            model_options.append({
-                'id': model_id,
-                'display': f'{name} ({model_id})' if name else model_id,
-                'description': model['description'],
-            })
-            model_descriptions[model_id] = model['description']
+        for model in model_options:
+            model_descriptions[model['id']] = model.get('description') or ''
 
         model_tag_states = self._model_tag_states(
             provider, [option['id'] for option in model_options],
         )
         ratios = aspect_ratios(provider, api)
         sizes = image_sizes(provider, api)
-        default_model = default_image_model(provider, api)
+        default_model = default_model_for_presentation(provider, api)
         default_ratio = default_aspect_ratio(provider, api)
         default_size = default_image_size(provider, api)
         provider_fields = _provider_config(provider, api)
         provider_supports_edit = supports_edit(provider, api)
         provider_supports_upscale = supports_upscale(provider, api)
-        model_ids = {option['id'] for option in model_options}
-        selected_model = default_model
-        if requested_model is not None:
-            selected_model = requested_model if requested_model in model_ids else None
+        selected_model = _select_model(
+            model_options, 'generate', requested_model, default_model,
+        )
+        selected_presentation = None
+        if selected_model:
+            selected_row = next(
+                row for row in model_options if row['id'] == selected_model
+            )
+            selected_presentation = selected_row['presentation']
+            if selected_presentation['detail'] == 'summary':
+                selected_presentation = model_presentation(
+                    selected_model, provider, api,
+                    on_model_info_notice=on_model_info_notice,
+                )
+                selected_row['presentation'] = selected_presentation
         selected_target = (
-            self._image_model_target(provider, api, selected_model)
-            if selected_model else None
+            self._image_model_target(
+                provider, api, selected_model,
+                presentation=selected_presentation,
+                on_model_info_notice=on_model_info_notice,
+            ) if selected_model and selected_presentation else None
         )
         model_qualities: dict[str, dict[str, Any]] = {}
         if selected_target and selected_model:
@@ -423,6 +515,27 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             'supports_upscale': provider_supports_upscale,
             **edit_data,
         }
+        generation_enabled = bool(
+            selected_presentation
+            and selected_presentation['operations']['generate']['available']
+        )
+        generation_reason = (
+            None if generation_enabled or not selected_presentation else
+            selected_presentation['operations']['generate']['unavailable_reason']
+        )
+        selected_edit_model = edit_data['selected_edit_model']
+        selected_edit_row = next(
+            (row for row in edit_data['edit_model_options']
+             if row['id'] == selected_edit_model), None,
+        )
+        edit_enabled = False
+        edit_reason = (
+            None if not provider_supports_edit else 'no compatible edit model'
+        )
+        if selected_edit_row:
+            _, edit_enabled, edit_reason = _operation_state(
+                selected_edit_row, 'edit', source_kind='data_url',
+            )
         data['presentation'] = build_creator_presentation(provider, api, {
             'generate': build_operation_presentation(
                 'generate',
@@ -438,7 +551,10 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                     'image_sizes': sizes,
                     'provider_config': provider_fields,
                 },
-                availability={'enabled': True},
+                availability={
+                    'enabled': generation_enabled,
+                    'reason': generation_reason,
+                },
                 selected_target=selected_target,
                 notes={
                     'provider': provider,
@@ -447,9 +563,8 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             ),
             'edit': build_operation_presentation(
                 'edit',
-                model_options=[{'id': model_id, 'display': model_id}
-                               for model_id in edit_data['edit_models']],
-                selected_model=edit_data['default_edit_model'] or None,
+                model_options=edit_data['edit_model_options'],
+                selected_model=selected_edit_model,
                 default_model=edit_data['default_edit_model'] or None,
                 defaults={
                     'aspect_ratio': edit_data['default_edit_aspect_ratio'],
@@ -459,12 +574,16 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                     'aspect_ratios': edit_data['edit_aspect_ratios'],
                     'image_sizes': edit_data['edit_image_sizes'],
                 },
-                availability={'enabled': edit_data['supports_edit']},
+                availability={
+                    'enabled': edit_enabled,
+                    'reason': edit_reason,
+                    'operation_supported': provider_supports_edit,
+                },
                 selected_target=(
                     build_model_target(
-                        provider, api, 'edit', edit_data['default_edit_model'],
+                        provider, api, 'edit', selected_edit_model,
                     )
-                    if edit_data['default_edit_model'] else None
+                    if selected_edit_model else None
                 ),
             ),
             'upscale': build_operation_presentation(
@@ -479,20 +598,35 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         provider: str,
         api: str,
         model: str,
+        *,
+        presentation: dict[str, Any] | None = None,
+        on_model_info_notice=None,
     ) -> dict[str, Any]:
         """Return selected-model controls without repeating model discovery."""
-        controls: dict[str, Any] = {}
-        try:
-            capabilities = model_capabilities(model, provider, api)
-            qualities = capabilities.get('qualities') or []
-            if qualities:
-                controls = {
-                    'qualities': list(qualities),
-                    'default_quality': capabilities.get('default_quality'),
-                }
-        except Exception:
-            # Preserve the creator's historical best-effort quality behavior.
-            pass
+        if presentation is None:
+            try:
+                presentation = model_presentation(
+                    model, provider, api,
+                    on_model_info_notice=on_model_info_notice,
+                )
+            except Exception:
+                # Preserve the historical best-effort model-switch endpoint:
+                # lookup failure yields a target with no optional controls.
+                return build_model_target(provider, api, 'generate', model)
+        generation = presentation['controls']['generate']
+        operation = presentation['operations']['generate']
+        controls: dict[str, Any] = {
+            'availability': {
+                'enabled': operation['available'],
+                'reason': operation['unavailable_reason'],
+            },
+        }
+        qualities = generation.get('qualities') or []
+        if qualities:
+            controls.update({
+                'qualities': list(qualities),
+                'default_quality': generation.get('default_quality'),
+            })
         return build_model_target(
             provider, api, 'generate', model, controls=controls,
         )
@@ -942,6 +1076,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
     def _models_json(self, request):
         provider_param = request.GET.get('provider', '').strip() or None
         target = request.GET.get('target', '').strip()
+        notices: list[Any] = []
         try:
             provider, api = normalize_provider_api(provider_param)
             if target:
@@ -950,8 +1085,17 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 model = request.GET.get('model', '').strip()
                 if not model:
                     raise ValueError('model is required')
-                return JsonResponse(self._image_model_target(provider, api, model))
-            raw_models = list_image_models_with_metadata(provider, api)
+                presentation = self._image_model_target(
+                    provider, api, model,
+                    on_model_info_notice=notices.append,
+                )
+                return JsonResponse({
+                    'presentation': presentation,
+                    'notices': [_notice_dict(notice) for notice in notices],
+                })
+            raw_models = list_image_models_with_metadata(
+                provider, api, on_model_info_notice=notices.append,
+            )
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
         except Exception as e:
@@ -959,16 +1103,36 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                              provider_param)
             return JsonResponse({'error': f'could not list models: {e}'}, status=502)
         try:
-            edit_data = _edit_metadata(provider, api)
+            edit_data = _edit_metadata(
+                provider, api,
+                requested_model=request.GET.get('selected_edit_model'),
+                on_model_info_notice=notices.append,
+            )
         except Exception as e:
             logger.exception('could not list edit models')
             return JsonResponse({'error': f'could not list edit models: {e}'},
                                 status=502)
-        requested_model = request.GET.get('selected_model') or None
-        data = self._creator_data(
-            provider, api, raw_models, edit_data, requested_model=requested_model,
+        requested_model = (
+            request.GET.get('selected_generate_model')
+            or request.GET.get('selected_model')
+            or None
         )
-        return JsonResponse(data['presentation'])
+        try:
+            data = self._creator_data(
+                provider, api, raw_models, edit_data,
+                requested_model=requested_model,
+                on_model_info_notice=notices.append,
+            )
+        except Exception as e:
+            logger.exception('could not resolve image model presentation')
+            return JsonResponse(
+                {'error': f'could not resolve model presentation: {e}'},
+                status=502,
+            )
+        return JsonResponse({
+            'presentation': data['presentation'],
+            'notices': [_notice_dict(notice) for notice in notices],
+        })
 
     def _model_tag_states(self, provider: str, model_ids: list[str]) -> dict[str, dict[str, bool]]:
         try:
@@ -1379,10 +1543,21 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         # successful _edit_metadata() call always carries at least one model;
         # discovery that comes back empty raises instead of returning [].
         valid_models = edit_meta['edit_models']
-        if edit_model not in valid_models:
+        selected_row = next(
+            (row for row in edit_meta['edit_model_options']
+             if row['id'] == edit_model), None,
+        )
+        if selected_row is None:
             return JsonResponse(
                 {'error': f'invalid edit model; use one of: {", ".join(valid_models)}'},
                 status=400,
+            )
+        _, enabled, reason = _operation_state(
+            selected_row, 'edit', source_kind='data_url',
+        )
+        if not enabled:
+            return JsonResponse(
+                {'error': reason or 'edit model is unavailable'}, status=400,
             )
         valid_ratios = edit_meta['edit_aspect_ratios']
         aspect_ratio = (data.get('aspect_ratio') or '').strip() or None

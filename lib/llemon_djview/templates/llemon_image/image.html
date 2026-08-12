@@ -23,6 +23,8 @@
   #result-info { display: none; font-size: 0.9em; line-height: 1.7; color: #333; align-self: flex-start; flex: 1; }
   #result-info .info-label { font-weight: bold; }
   #error-msg { color: #c00; padding: 0.5em 0; }
+  #model-info-notices { white-space: pre-line; padding: 0.25em 0; color: #555; }
+  #model-info-notices.warning { color: #a60; }
 
   .separator { border: none; border-top: 2px solid #ccc; margin: 0.8em 0; }
 
@@ -106,6 +108,7 @@
         <div id="result-info"></div>
       </div>
       <div id="error-msg"></div>
+      <div id="model-info-notices"></div>
 
       <hr class="separator">
 
@@ -160,7 +163,7 @@
           <div class="row">
             <label for="edit-model-sel">Model</label>
             <select id="edit-model-sel" style="font-size:1em;">
-              {% for m in edit_models %}<option value="{{ m }}"{% if m == default_edit_model %} selected{% endif %}>{{ m }}</option>{% endfor %}
+              {% for m in edit_models %}<option value="{{ m }}"{% if m == selected_edit_model %} selected{% endif %}>{{ m }}</option>{% endfor %}
             </select>
           </div>
           <div class="row">
@@ -182,7 +185,7 @@
         <div class="row" id="model-row">
           <label for="model">Model</label>
           <select id="model" name="model">
-            {% for opt in model_options %}<option value="{{ opt.id }}"{% if opt.id == default_model %} selected{% endif %}>{{ opt.display }}</option>{% endfor %}
+            {% for opt in model_options %}<option value="{{ opt.id }}"{% if opt.id == selected_model %} selected{% endif %}>{{ opt.display }}</option>{% endfor %}
           </select>
           <span id="model-filter-empty" style="display:none;">No models match the selected tags.</span>
         </div>
@@ -273,6 +276,7 @@
 </div>
 
 {{ presentation|json_script:"creator-presentation-data" }}
+{{ notices|json_script:"creator-notices-data" }}
 {{ reverse_tags|json_script:"reverse-tags-data" }}
 <script>
 var _lbUrl = '';
@@ -295,6 +299,59 @@ document.addEventListener('keydown', function(e) {
   let CREATOR_PRESENTATION = JSON.parse(
     document.getElementById('creator-presentation-data').textContent
   );
+  const INITIAL_NOTICES = JSON.parse(
+    document.getElementById('creator-notices-data').textContent
+  );
+  function generationOptionState(option) {
+    const presentation = (option || {}).presentation || {};
+    const operation = ((presentation.operations || {}).generate || {});
+    if (presentation.detail === 'summary') {
+      return {
+        eligible: true, enabled: false,
+        reason: 'model detail has not been resolved',
+      };
+    }
+    if (operation.available !== true) {
+      return {
+        eligible: false, enabled: false,
+        reason: operation.unavailable_reason || 'unavailable',
+      };
+    }
+    return {eligible: true, enabled: true, reason: ''};
+  }
+  function editOptionState(option) {
+    const presentation = option.presentation || {};
+    const operation = ((presentation.operations || {}).edit || {});
+    if (presentation.detail === 'summary') {
+      return {disabled: true, reason: 'model detail has not been resolved'};
+    }
+    if (operation.available !== true) {
+      return {disabled: true, reason: operation.unavailable_reason || 'unavailable'};
+    }
+    const input = presentation.edit_input || {};
+    if (!(input.accepted_source_kinds || []).includes('data_url')) {
+      return {disabled: true, reason: 'data URL unsupported'};
+    }
+    const required = (input.required_backend_transports || {}).data_url;
+    if (required && !(input.available_backend_transports || []).includes(required)) {
+      return {disabled: true, reason: 'required transport unavailable'};
+    }
+    return {disabled: false, reason: ''};
+  }
+  function selectedActionAvailability() {
+    const type = (document.getElementById('image-type') || {}).value || 'normal';
+    const operations = CREATOR_PRESENTATION.operations || {};
+    if (type === 'edit') return (operations.edit || {}).availability || {};
+    if (type === 'normal') return (operations.generate || {}).availability || {};
+    return (operations.upscale || {}).availability || {};
+  }
+  function updateActionAvailability() {
+    const button = document.getElementById('generate-btn');
+    if (!button) return;
+    const availability = selectedActionAvailability();
+    button.disabled = availability.enabled !== true;
+    button.title = button.disabled ? (availability.reason || 'Action unavailable') : '';
+  }
   function imageProviderData(presentation) {
     const operations = presentation.operations || {};
     const generate = operations.generate || {};
@@ -328,9 +385,11 @@ document.addEventListener('keydown', function(e) {
       default_aspect_ratio: defaults.aspect_ratio || '',
       default_image_size: defaults.image_size || '',
       provider_config: controls.provider_config || {},
-      supports_edit: (edit.availability || {}).enabled === true,
+      supports_edit: (edit.availability || {}).operation_supported === true,
+      edit_enabled: (edit.availability || {}).enabled === true,
       supports_upscale: (upscale.availability || {}).enabled === true,
-      edit_models: (edit.model_options || []).map(option => option.id),
+      edit_models: edit.model_options || [],
+      selected_edit_model: edit.selected_model || '',
       default_edit_model: edit.default_model || '',
       edit_aspect_ratios: (edit.controls || {}).aspect_ratios || [],
       default_edit_aspect_ratio: (edit.defaults || {}).aspect_ratio || '',
@@ -383,7 +442,7 @@ document.addEventListener('keydown', function(e) {
       image_size:   data.default_image_size,
       temperature:  '',
     };
-    _renderModelOptions(data.selected_model || data.default_model);
+    _renderModelOptions(data.selected_model, data.selected_model != null);
     // Repopulate aspect_ratio select.
     const arSel = document.getElementById('aspect_ratio');
     arSel.innerHTML = '';
@@ -450,7 +509,7 @@ document.addEventListener('keydown', function(e) {
     _renderExtraFields(extraFields.filter(f => !_INLINE_FIELDS.has(f.name)));
     _applyEditMetadata(data);
     if (modelSel.value) {
-      selectImageModel(modelSel.value);
+      selectImageModel(modelSel.value, true);
     } else {
       updateDescription('');
       notesArea.value = '';
@@ -465,9 +524,12 @@ document.addEventListener('keydown', function(e) {
     if (emSel && Array.isArray(data.edit_models)) {
       emSel.innerHTML = '';
       for (const m of data.edit_models) {
+        const state = editOptionState(m);
         const opt = document.createElement('option');
-        opt.value = m; opt.textContent = m;
-        if (m === data.default_edit_model) opt.selected = true;
+        opt.value = m.id;
+        opt.textContent = m.display + (state.reason ? ' — ' + state.reason : '');
+        opt.disabled = state.disabled;
+        if (m.id === data.selected_edit_model) opt.selected = true;
         emSel.appendChild(opt);
       }
     }
@@ -517,6 +579,24 @@ document.addEventListener('keydown', function(e) {
 
   _applyEditMetadata(initialProviderData);
 
+  const editModelSel = document.getElementById('edit-model-sel');
+  if (editModelSel) editModelSel.addEventListener('change', function () {
+    const edit = (CREATOR_PRESENTATION.operations || {}).edit || {};
+    const option = (edit.model_options || []).find(row => row.id === this.value);
+    const state = option ? editOptionState(option) : {disabled: true, reason: 'unavailable'};
+    edit.selected_model = option ? option.id : null;
+    edit.selected_target = option ? {
+      target: {provider: currentProvider, api: CREATOR_PRESENTATION.api,
+               operation: 'edit', model: option.id}, controls: {}
+    } : null;
+    edit.availability = {
+      enabled: !!option && !state.disabled,
+      reason: state.reason || null,
+      operation_supported: (edit.availability || {}).operation_supported === true,
+    };
+    updateActionAvailability();
+  });
+
   function _modelFilterBoxes() {
     return document.querySelectorAll('#model-filter-tags input[type=checkbox]');
   }
@@ -549,8 +629,8 @@ document.addEventListener('keydown', function(e) {
     return MODEL_OPTIONS.filter(opt => _modelPassesTagFilters(opt.id));
   }
 
-  function _renderModelOptions(preferredModelId) {
-    const previous = preferredModelId || modelSel.value || DEFAULTS.model;
+  function _renderModelOptions(preferredModelId, allowFallback = true) {
+    const previous = preferredModelId || (allowFallback ? modelSel.value : '');
     const options = _filteredModelOptions();
     modelSel.innerHTML = '';
     for (const opt of options) {
@@ -560,10 +640,15 @@ document.addEventListener('keydown', function(e) {
       modelSel.appendChild(el);
     }
     const preferredVisible = options.some(opt => opt.id === previous);
-    const defaultVisible = options.some(opt => opt.id === DEFAULTS.model);
+    const eligibleOptions = options.filter(opt => generationOptionState(opt).eligible);
+    const defaultVisible = eligibleOptions.some(opt => opt.id === DEFAULTS.model);
     if (preferredVisible) modelSel.value = previous;
     else if (defaultVisible) modelSel.value = DEFAULTS.model;
-    else if (options.length > 0) modelSel.value = options[0].id;
+    else if (allowFallback && eligibleOptions.length > 0) {
+      modelSel.value = eligibleOptions[0].id;
+    } else {
+      modelSel.selectedIndex = -1;
+    }
     modelSel.disabled = options.length === 0;
     const emptyMsg = document.getElementById('model-filter-empty');
     if (emptyMsg) emptyMsg.style.display = options.length === 0 ? '' : 'none';
@@ -681,14 +766,23 @@ document.addEventListener('keydown', function(e) {
     initialTarget: CREATOR_PRESENTATION.target,
     initialData: CREATOR_PRESENTATION,
     cache: _providerCache,
+    begin: function () { renderModelInfoNotices([]); },
     load: async function (target) {
+      const editSelection = document.getElementById('edit-model-sel');
+      const params = new URLSearchParams({provider: target.provider});
+      if (modelSel.value) params.set('selected_generate_model', modelSel.value);
+      if (editSelection && editSelection.value) {
+        params.set('selected_edit_model', editSelection.value);
+      }
       const resp = await fetch(
-        modelsJsonUrl + '?provider=' + encodeURIComponent(target.provider)
+        modelsJsonUrl + '?' + params.toString()
       );
       const data = await resp.json();
       if (data.error) throw new Error(data.error);
       return data;
     },
+    value: function (envelope) { return envelope.presentation; },
+    transient: function (envelope) { renderModelInfoNotices(envelope.notices || []); },
     apply: function (presentation) {
       CREATOR_PRESENTATION = presentation;
       currentProvider = presentation.provider;
@@ -703,6 +797,7 @@ document.addEventListener('keydown', function(e) {
         ] = generate.selected_target;
       }
       _applyProviderData(imageProviderData(presentation));
+      updateActionAvailability();
     },
   });
 
@@ -739,6 +834,7 @@ document.addEventListener('keydown', function(e) {
     initialTarget: initialModelTarget ? initialModelTarget.target : null,
     initialData: initialModelTarget,
     begin: function (target) {
+      if (!target.preserve_notices) renderModelInfoNotices([]);
       updateDescription(target.model);
       loadNote(target.model);
     },
@@ -752,6 +848,8 @@ document.addEventListener('keydown', function(e) {
       if (data.error) throw new Error(data.error);
       return data;
     },
+    value: function (envelope) { return envelope.presentation; },
+    transient: function (envelope) { renderModelInfoNotices(envelope.notices || []); },
     apply: function (targetData, target) {
       if (target.provider !== currentProvider || target.model !== modelSel.value) return;
       const controls = targetData.controls || {};
@@ -766,24 +864,41 @@ document.addEventListener('keydown', function(e) {
       const operation = CREATOR_PRESENTATION.operations.generate;
       operation.selected_model = target.model;
       operation.selected_target = targetData;
+      if (controls.availability) operation.availability = controls.availability;
+      updateActionAvailability();
       _updateQualityRow(target.model);
     },
   });
 
-  function selectImageModel(modelId) {
+  function selectImageModel(modelId, preserveNotices) {
+    const operation = CREATOR_PRESENTATION.operations.generate;
     if (!modelId) {
-      const operation = CREATOR_PRESENTATION.operations.generate;
       operation.selected_model = null;
       operation.selected_target = null;
+      operation.availability = {
+        enabled: false,
+        reason: 'no eligible generation model',
+      };
       updateDescription('');
       notesArea.value = '';
+      updateActionAvailability();
       return Promise.resolve({applied: false, stale: false});
     }
+    const option = MODEL_OPTIONS.find(row => row.id === modelId);
+    const state = generationOptionState(option);
+    operation.selected_model = modelId;
+    operation.selected_target = null;
+    operation.availability = {
+      enabled: state.enabled,
+      reason: state.reason || null,
+    };
+    updateActionAvailability();
     return _modelController.select({
       provider: currentProvider,
       api: CREATOR_PRESENTATION.api,
       operation: 'generate',
       model: modelId,
+      preserve_notices: preserveNotices === true,
     }).catch(function (error) {
       errMsg.textContent = 'Could not load model controls: ' + error.message;
       return {applied: false, stale: false};
@@ -958,14 +1073,32 @@ document.addEventListener('keydown', function(e) {
   const img        = document.getElementById('result-img');
   const info       = document.getElementById('result-info');
   const errMsg     = document.getElementById('error-msg');
+  const noticeMsg  = document.getElementById('model-info-notices');
+  function renderModelInfoNotices(notices) {
+    notices = Array.isArray(notices) ? notices : [];
+    noticeMsg.textContent = '';
+    noticeMsg.classList.remove('warning');
+    if (!notices.length) return;
+    noticeMsg.textContent = notices.map(function (notice) {
+      return notice.level === 'warning'
+        ? 'Warning: ' + notice.message
+        : notice.message;
+    }).join('\n');
+    noticeMsg.classList.toggle(
+      'warning', notices.some(n => n.level === 'warning')
+    );
+  }
+  renderModelInfoNotices(INITIAL_NOTICES);
   const status     = document.getElementById('status');
   const btn        = document.getElementById('generate-btn');
+
+  updateActionAvailability();
 
   populateFromParams();
 
   window.addEventListener('pageshow', function (e) {
     if (!e.persisted) return;
-    btn.disabled = false;
+    updateActionAvailability();
     status.textContent = '';
     lbHide();
     const picker = document.getElementById('image-picker');
@@ -1060,7 +1193,7 @@ document.addEventListener('keydown', function(e) {
       errMsg.textContent = 'Request failed: ' + err.message;
       status.textContent = '';
     } finally {
-      btn.disabled = false;
+      updateActionAvailability();
     }
   }
 
@@ -1115,7 +1248,7 @@ document.addEventListener('keydown', function(e) {
       errMsg.textContent = 'Request failed: ' + err.message;
       status.textContent = '';
     } finally {
-      btn.disabled = false;
+      updateActionAvailability();
     }
   }
 
@@ -1141,6 +1274,11 @@ document.addEventListener('keydown', function(e) {
   document.getElementById('imagegen-form').addEventListener('submit', async function () {
     const imageTypeSel = document.getElementById('image-type');
     const imageType = imageTypeSel ? imageTypeSel.value : 'normal';
+    const actionAvailability = selectedActionAvailability();
+    if (actionAvailability.enabled !== true) {
+      errMsg.textContent = actionAvailability.reason || 'Selected action is unavailable.';
+      return;
+    }
 
     // Handle upscale mode
     if (imageType === 'upscale') {
@@ -1228,7 +1366,7 @@ document.addEventListener('keydown', function(e) {
       errMsg.textContent = 'Request failed: ' + e.message;
       status.textContent = '';
     } finally {
-      btn.disabled = false;
+      updateActionAvailability();
     }
   });
 
@@ -1355,6 +1493,7 @@ document.addEventListener('keydown', function(e) {
 
     if (promptLabel) promptLabel.textContent = isEdit ? 'Instructions' : 'Prompt';
     if (generateBtn) generateBtn.textContent = isNormal ? 'Generate' : (isUpscale ? 'Upscale' : 'Edit');
+    updateActionAvailability();
   }
 
   if (imageTypeSel) {

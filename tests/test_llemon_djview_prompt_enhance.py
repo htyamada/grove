@@ -163,6 +163,28 @@ class RequiredProviderTests(_DjviewTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data['error'], 'provider is required')
 
+    def test_image_generation_does_not_add_presentation_lookup(self) -> None:
+        with mock.patch.dict(sys.modules, _fake_django_modules()):
+            from llemon_djview.imagegen import LLemonImageGenViewSet
+        view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
+        request = types.SimpleNamespace(body=json.dumps({
+            'provider': 'example', 'prompt': 'draw this', 'model': 'off',
+        }))
+        presentation_lookup = mock.Mock(
+            side_effect=RuntimeError('catalog unavailable'),
+        )
+        with mock.patch.dict(view._generate.__globals__, {
+            'normalize_provider_api': lambda *a: ('example', 'images'),
+            'default_aspect_ratio': lambda *a: '1:1',
+            'default_image_size': lambda *a: '1K',
+            'aspect_ratios': lambda *a: [],
+            'model_presentation': presentation_lookup,
+        }):
+            response = view._generate(request)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['error'], 'invalid aspect_ratio')
+        presentation_lookup.assert_not_called()
+
     def test_image_upscale_requires_provider(self) -> None:
         with mock.patch.dict(sys.modules, _fake_django_modules()):
             from llemon_djview.imagegen import LLemonImageGenViewSet
@@ -410,8 +432,31 @@ class VideoEnhancementPassthroughTests(_DjviewTestCase):
         self.assertNotIn('Generated prompt', [row[0] for row in summary])
 
 
+def _edit_option(model_id):
+    operation = lambda available: {
+        'available': available, 'unavailable_reason': None if available else 'unavailable',
+        'designation': None, 'designation_reason': None,
+    }
+    controls = {
+        'aspect_ratios': [], 'default_aspect_ratio': None,
+        'image_sizes': [], 'default_image_size': None,
+        'qualities': [], 'default_quality': None, 'extra_fields': [],
+    }
+    return {'id': model_id, 'name': model_id, 'display': model_id,
+            'presentation': {
+                'id': model_id, 'name': model_id, 'description': None,
+                'detail': 'complete',
+                'operations': {'generate': operation(False), 'edit': operation(True)},
+                'controls': {'generate': dict(controls), 'edit': dict(controls)},
+                'edit_input': {'accepted_source_kinds': ['data_url'],
+                               'required_backend_transports': {},
+                               'available_backend_transports': []}}}
+
+
 _OPENROUTER_EDIT_META = {
     'edit_models':               ['vendor/edit-model'],
+    'edit_model_options':        [_edit_option('vendor/edit-model')],
+    'selected_edit_model':       'vendor/edit-model',
     'default_edit_model':        'vendor/edit-model',
     'edit_aspect_ratios':        ['1:1', '16:9'],
     'default_edit_aspect_ratio': '1:1',
@@ -421,6 +466,8 @@ _OPENROUTER_EDIT_META = {
 
 _VENICE_EDIT_META = {
     'edit_models':               ['qwen-edit'],
+    'edit_model_options':        [_edit_option('qwen-edit')],
+    'selected_edit_model':       'qwen-edit',
     'default_edit_model':        'qwen-edit',
     'edit_aspect_ratios':        ['auto', '1:1'],
     'default_edit_aspect_ratio': 'auto',
@@ -559,6 +606,21 @@ class ImageEditControlTests(_DjviewTestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertIn('edit model', resp.data['error'])
+        edit_result.assert_not_called()
+
+    def test_edit_rejects_data_url_incompatible_model_before_dispatch(self) -> None:
+        edit_meta = dict(_OPENROUTER_EDIT_META)
+        edit_meta['edit_model_options'] = [_edit_option('vendor/edit-model')]
+        edit_meta['edit_model_options'][0]['presentation']['edit_input'][
+            'accepted_source_kinds'
+        ] = ['https_url']
+        resp, edit_result = self._run_edit(
+            {'filename': 'a.png', 'prompt': 'change it',
+             'model': 'vendor/edit-model', 'aspect_ratio': '1:1'},
+            edit_meta,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data['error'], 'data URL unsupported')
         edit_result.assert_not_called()
 
     def test_venice_edit_defaults_to_auto_source_ratio(self) -> None:

@@ -606,6 +606,26 @@ class DjviewMediaSettingsTests(unittest.TestCase):
             'id': 'model-a',
             'name': 'Model A',
             'description': '',
+            'presentation': {
+                'id': 'model-a', 'name': 'Model A', 'description': None,
+                'detail': 'complete',
+                'operations': {
+                    'generate': {'available': True, 'unavailable_reason': None,
+                                 'designation': None, 'designation_reason': None},
+                    'edit': {'available': False, 'unavailable_reason': 'unavailable',
+                             'designation': None, 'designation_reason': None},
+                },
+                'controls': {
+                    operation: {'aspect_ratios': [], 'default_aspect_ratio': None,
+                                'image_sizes': [], 'default_image_size': None,
+                                'qualities': [], 'default_quality': None,
+                                'extra_fields': []}
+                    for operation in ('generate', 'edit')
+                },
+                'edit_input': {'accepted_source_kinds': [],
+                               'required_backend_transports': {},
+                               'available_backend_transports': []},
+            },
         }
 
         with mock.patch.dict(
@@ -623,11 +643,13 @@ class DjviewMediaSettingsTests(unittest.TestCase):
                 'image_sizes': mock.Mock(return_value=[]),
                 'default_aspect_ratio': mock.Mock(return_value=''),
                 'default_image_size': mock.Mock(return_value=''),
-                'default_image_model': mock.Mock(return_value='model-a'),
+                'default_model_for_presentation': mock.Mock(return_value='model-a'),
                 '_provider_config': mock.Mock(return_value={}),
                 '_edit_metadata': mock.Mock(return_value={
                     'supports_edit': False,
                     'edit_models': [],
+                    'edit_model_options': [],
+                    'selected_edit_model': None,
                     'default_edit_model': '',
                     'edit_aspect_ratios': [],
                     'default_edit_aspect_ratio': '',

@@ -249,11 +249,14 @@ The enhance sub-options are omitted from the POST body when enhance is unchecked
 
 When Type is edit, a panel shows:
 
-- **Model** dropdown: edit models from the `edit_models` context variable.
-  The list comes only from live discovery, through LLemon's public
+- **Model** dropdown: complete edit-model rows from the operation presentation.
+  The rows come only from live discovery, through LLemon's public
   `list_edit_models_with_metadata()` facade (see
   `specs/mediagen-image-spec.md` "Edit-model listing" in the LLemon repo).
-  There is no static or default-model fallback. A provider that does not
+  Grove preserves every facade row and adds only its display label. There is no
+  static fallback. The nullable backend default remains distinct from the
+  selected row; presentation selects a valid request, then the backend default,
+  then the first eligible row. A provider that does not
   support editing at all renders normally with editing absent — see "Backend
   Context Additions" below. A provider that does support editing but whose
   discovery fails or comes back empty is a provider fault: the view does not
@@ -293,14 +296,24 @@ The `image_creator()` view adds to the template context:
 - `upscale_url`: URL path or `None`
 - `edit_image_url`: URL path or `None`
 - `picker_images`: list of dicts with `fname` and `thumb_url` from gallery
+- `model_options`: complete generation metadata rows plus Grove's `display`
+  label
+- `selected_model`: effective generation row selected for form presentation
+- `default_model`: nullable generation backend default
+- `notices`: complete JSON-safe model-information notices, rendered from the
+  separate `creator-notices-data` script block rather than cached presentation
+  state
 - `supports_edit`: effective edit availability; false only when the backend
   itself has no editing support. A backend that does support editing but
   whose discovery fails never reaches template rendering — see "Error
   responses" below.
 - `edit_models`: live-discovered edit model identifiers; never a static
-  fallback; always non-empty when `supports_edit` is true
-- `default_edit_model`: first discovered model for initial UI selection, or
-  `''` when editing is unsupported; it is not a server request fallback
+  fallback; a flat compatibility alias derived from complete presentation rows
+- `edit_model_options`: independently copied complete edit rows plus Grove's
+  `display` label
+- `default_edit_model`: nullable backend default represented as `''` only in
+  flat compatibility context; never synthesized from discovery order
+- `selected_edit_model`: effective row selected for form presentation
 - `edit_aspect_ratios`: the provider's edit ratios (no empty entry)
 - `default_edit_aspect_ratio`: `auto` when offered, else the default ratio
 - `edit_image_sizes`: permitted edit sizes (empty when size is automatic)
@@ -315,6 +328,24 @@ included in the `models_json` response so a provider switch updates the edit
 controls without a page reload. Unit/render tests replace `_edit_metadata()`
 or `list_edit_models_with_metadata()` with deterministic doubles and never
 contact a live provider.
+
+The creator renders notices in `#model-info-notices`, separate from the red
+`#error-msg` area. Informational notices use normal status coloring; a warning
+adds warning coloring and exactly one `Warning: ` prefix. Later validation or
+request errors therefore retain their normal error styling.
+
+Grove's current edit source is always a `data_url`. A complete edit row is
+enabled only when normalized edit availability is true, `data_url` is accepted,
+and any transport required for `data_url` appears in the available transports.
+Other rows remain visible and disabled with a brief normalized explanation.
+The edit action endpoint repeats the same check before backend construction.
+HTTP(S) caller sources and provider uploads remain unavailable until their
+separate storage/transport work is implemented.
+
+Generation availability is applied to presentation and ordinary browser
+submission only. The generation action endpoint retains its established path
+and does not add a model-presentation lookup or normalized availability
+recheck; Task 4 therefore does not add a catalog failure mode to generation.
 
 ### Error responses
 
