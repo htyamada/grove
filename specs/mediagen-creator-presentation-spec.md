@@ -86,6 +86,12 @@ the complete public LLemon notice fields (`models` is encoded as a JSON array),
 are rendered once only after the response wins the selection sequence, and are
 never part of a cached presentation. Video response shape is unchanged.
 
+The image provider-refresh endpoint accepts independent
+`selected_generate_model` and `selected_edit_model` query parameters. Its
+historical `selected_model` parameter remains an input-only alias for
+`selected_generate_model`; it does not affect the video endpoint or add a
+duplicate response field.
+
 For model-bearing image operations, `default_model` is the nullable backend
 default while `selected_model` is the row presented for configuration. Selection
 uses a valid requested row, then a present eligible backend default, then the
@@ -112,6 +118,12 @@ failure during initial/provider presentation is a logged HTTP 502. The
 model-only refresh endpoint retains its historical best-effort behavior: a
 detail lookup failure returns its HTTP 200 target with no optional controls,
 leaving the already-applied availability unchanged.
+
+When the generation model changes, the browser applies the selected listing
+row's normalized availability before starting any target lookup. A summary row
+therefore disables generation until its accepted detail response arrives; an
+empty selection remains disabled. A stale or failed lookup cannot leave the new
+selection enabled by the preceding model's state.
 
 ## Refresh and cache lifecycle
 
