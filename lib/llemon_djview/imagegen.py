@@ -25,11 +25,8 @@ from django.views.decorators.http import require_POST  # type: ignore[import-unt
 from hty7.llemon.mediagen.imagegen import (
     aspect_ratios,
     default_aspect_ratio,
-    default_image_model,
     default_model_for_presentation,
     default_image_size,
-    edit_aspect_ratios,
-    edit_image_sizes,
     extract_extra_params,
     get_model_note,
     get_model_tag_states,
@@ -45,10 +42,14 @@ from hty7.llemon.mediagen.imagegen import (
     make_imagegen_backend,
     model_display,
     model_presentation,
+    model_scoped_parameters,
     normalize_provider_api,
+    preflight_request,
     provider_config as _provider_config,
+    resolve_action_model,
     supports_edit,
     supports_upscale,
+    unsupported_extra_params,
     PROVIDERS,
     write_image_generation_exif_with_sidecar_fallback,
     write_image_metadata,
@@ -190,6 +191,11 @@ def _edit_metadata(
             'default_edit_aspect_ratio': '',
             'edit_image_sizes':          [],
             'default_edit_image_size':   '',
+            'selected_edit_controls':    {
+                'availability': {'enabled': False, 'reason': None},
+                'aspect_ratios': [], 'default_aspect_ratio': None,
+                'image_sizes': [], 'default_image_size': None,
+            },
         }
     rows = _discovered_edit_models(
         provider, api, on_model_info_notice=on_model_info_notice,
@@ -200,30 +206,55 @@ def _edit_metadata(
     selected_model = _select_model(
         rows, 'edit', requested_model, default_model, source_kind='data_url',
     )
-    ratios = edit_aspect_ratios(provider, api)
-    default_ratio = ''
-    if 'auto' in ratios:
-        default_ratio = 'auto'
-    elif ratios:
-        default_ratio = default_aspect_ratio(provider, api)
-        if default_ratio not in ratios:
-            default_ratio = ratios[0]
-    sizes = edit_image_sizes(provider, api)
-    default_size = ''
-    if sizes:
-        default_size = default_image_size(provider, api)
-        if default_size not in sizes:
-            default_size = sizes[0]
+    selected_row = next(
+        (row for row in rows if row['id'] == selected_model), None,
+    )
+    selected_controls = (
+        _edit_row_controls(provider, api, selected_row) if selected_row else {
+            'availability': {'enabled': False, 'reason': 'no compatible edit model'},
+            'aspect_ratios': [], 'default_aspect_ratio': None,
+            'image_sizes': [], 'default_image_size': None,
+        }
+    )
     return {
         'supports_edit':             True,
         'edit_models':               [row['id'] for row in rows],
         'edit_model_options':        _model_options(rows),
         'selected_edit_model':       selected_model,
         'default_edit_model':        default_model or '',
-        'edit_aspect_ratios':        ratios,
-        'default_edit_aspect_ratio': default_ratio,
-        'edit_image_sizes':          sizes,
-        'default_edit_image_size':   default_size,
+        'edit_aspect_ratios':        selected_controls['aspect_ratios'],
+        'default_edit_aspect_ratio': selected_controls['default_aspect_ratio'] or '',
+        'edit_image_sizes':          selected_controls['image_sizes'],
+        'default_edit_image_size':   selected_controls['default_image_size'] or '',
+        'selected_edit_controls':    selected_controls,
+    }
+
+
+def _edit_row_controls(
+    provider: str, api: str, row: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive all edit controls and Grove display defaults from one row."""
+    controls = row['presentation']['controls']['edit']
+    ratios = list(controls['aspect_ratios'])
+    ratio = controls['default_aspect_ratio']
+    if ratio is None:
+        fallback = default_aspect_ratio(provider, api)
+        ratio = ('auto' if 'auto' in ratios else
+                 fallback if fallback in ratios else
+                 ratios[0] if ratios else None)
+    sizes = list(controls['image_sizes'])
+    size = controls['default_image_size']
+    if size is None:
+        fallback_size = default_image_size(provider, api)
+        size = (fallback_size if fallback_size in sizes else
+                sizes[0] if sizes else None)
+    _, enabled, reason = _operation_state(row, 'edit', source_kind='data_url')
+    return {
+        'availability': {'enabled': enabled, 'reason': reason},
+        'aspect_ratios': ratios,
+        'default_aspect_ratio': ratio,
+        'image_sizes': sizes,
+        'default_image_size': size,
     }
 
 
@@ -528,6 +559,14 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             (row for row in edit_data['edit_model_options']
              if row['id'] == selected_edit_model), None,
         )
+        # Production _edit_metadata() always supplies this key.  Derivation is
+        # retained only for callers/tests that inject the documented flat
+        # compatibility aliases instead of invoking that helper.
+        selected_edit_controls = edit_data.get('selected_edit_controls')
+        if selected_edit_controls is None and selected_edit_row is not None:
+            selected_edit_controls = _edit_row_controls(
+                provider, api, selected_edit_row,
+            )
         edit_enabled = False
         edit_reason = (
             None if not provider_supports_edit else 'no compatible edit model'
@@ -582,6 +621,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 selected_target=(
                     build_model_target(
                         provider, api, 'edit', selected_edit_model,
+                        controls=selected_edit_controls,
                     )
                     if selected_edit_model else None
                 ),
@@ -615,18 +655,41 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 return build_model_target(provider, api, 'generate', model)
         generation = presentation['controls']['generate']
         operation = presentation['operations']['generate']
+        provider_fields = _provider_config(provider, api)
+        if model_scoped_parameters(provider, api):
+            ratios = list(generation['aspect_ratios'])
+            ratio_default = generation['default_aspect_ratio']
+            sizes = list(generation['image_sizes'])
+            size_default = generation['default_image_size']
+        else:
+            # API-wide registrations retain their established provider-wide
+            # choices.  A complete model presentation may legitimately omit
+            # those repeated facts (notably OpenRouter model records).
+            ratios = aspect_ratios(provider, api)
+            ratio_default = default_aspect_ratio(provider, api)
+            sizes = image_sizes(provider, api)
+            size_default = default_image_size(provider, api)
         controls: dict[str, Any] = {
             'availability': {
                 'enabled': operation['available'],
                 'reason': operation['unavailable_reason'],
             },
+            'aspect_ratios': ratios,
+            'default_aspect_ratio': ratio_default,
+            'image_sizes': sizes,
+            'default_image_size': size_default,
+            'qualities': list(generation['qualities']),
+            'default_quality': generation['default_quality'],
+            'provider_config': {
+                'supports_temperature': provider_fields.get(
+                    'supports_temperature', False,
+                ),
+                'supports_system_prompt': provider_fields.get(
+                    'supports_system_prompt', False,
+                ),
+                'extra_fields': list(generation['extra_fields']),
+            },
         }
-        qualities = generation.get('qualities') or []
-        if qualities:
-            controls.update({
-                'qualities': list(qualities),
-                'default_quality': generation.get('default_quality'),
-            })
         return build_model_target(
             provider, api, 'generate', model, controls=controls,
         )
@@ -1004,9 +1067,12 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
 
-        model        = (data.get('model') or default_image_model(provider, api)).strip()
-        aspect_ratio = data.get('aspect_ratio', default_aspect_ratio(provider, api))
-        image_size   = data.get('image_size', default_image_size(provider, api))
+        try:
+            model = resolve_action_model(
+                data.get('model'), provider, api, operation='generate',
+            )
+        except LLemonImageParamError as e:
+            return JsonResponse({'error': str(e)}, status=400)
         raw_temperature = data.get('temperature')
         raw_system = data.get('system')
         if raw_temperature in (None, ''):
@@ -1024,21 +1090,84 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         if not prompt:
             return JsonResponse({'error': 'prompt is required'}, status=400)
-        if aspect_ratio not in aspect_ratios(provider, api):
-            return JsonResponse({'error': 'invalid aspect_ratio'}, status=400)
-        if image_size not in image_sizes(provider, api):
-            return JsonResponse({'error': 'invalid image_size'}, status=400)
-
         try:
-            extra_params: dict[str, Any] = extract_extra_params(
-                provider, api, {**data, 'hide_watermark': True, 'embed_exif_metadata': True},
+            valid_ratios = aspect_ratios(provider, api, model=model)
+            ratio_default = default_aspect_ratio(provider, api, model=model)
+            ratio_value = data.get('aspect_ratio')
+            aspect_ratio = (
+                ratio_value.strip() if isinstance(ratio_value, str) else ratio_value
             )
+            if aspect_ratio in (None, ''):
+                aspect_ratio = ratio_default or ''
+            if valid_ratios and aspect_ratio and aspect_ratio not in valid_ratios:
+                return JsonResponse({'error': 'invalid aspect_ratio'}, status=400)
+
+            valid_sizes = image_sizes(provider, api, model=model)
+            size_default = default_image_size(provider, api, model=model)
+            size_value = data.get('image_size')
+            image_size = size_value.strip() if isinstance(size_value, str) else size_value
+            if image_size in (None, ''):
+                image_size = size_default or ''
+            if valid_sizes and image_size and image_size not in valid_sizes:
+                return JsonResponse({'error': 'invalid image_size'}, status=400)
+
+            implicit_extras = {
+                'hide_watermark': True, 'embed_exif_metadata': True,
+            }
+            extra_input = {**data, **implicit_extras}
+            extra_params: dict[str, Any] = extract_extra_params(
+                provider, api, extra_input, model=model,
+            )
+            if model_scoped_parameters(provider, api):
+                envelope = {
+                    'provider', 'prompt', 'model', 'aspect_ratio', 'image_size',
+                    'quality', 'temperature', 'system', 'stream', 'output_subdir',
+                }
+                submitted_extras = [
+                    name for name in extra_input
+                    if name not in envelope and name not in implicit_extras
+                ]
+                unsupported = unsupported_extra_params(
+                    provider, api, submitted_extras, model=model,
+                )
+                if unsupported:
+                    raise LLemonImageParamError(
+                        f'unsupported parameter: {unsupported[0]}'
+                    )
         except LLemonImageParamError as e:
             return JsonResponse({'error': str(e)}, status=400)
+        except Exception:
+            logger.exception('could not validate request against model information')
+            return JsonResponse(
+                {'error': 'could not validate request against model information'},
+                status=502,
+            )
 
         quality_val = data.get('quality')
         if isinstance(quality_val, str) and quality_val.strip():
             extra_params['quality'] = quality_val.strip()
+
+        preflight_params: dict[str, Any] = {
+            'prompt': prompt,
+            'aspect_ratio': aspect_ratio or None,
+            'image_size': image_size or None,
+            'temperature': temperature,
+            'system': system,
+            **extra_params,
+        }
+        try:
+            preflight_request(
+                provider, api, model=model, operation='generate',
+                params=preflight_params,
+            )
+        except LLemonImageParamError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        except Exception:
+            logger.exception('could not validate request against model information')
+            return JsonResponse(
+                {'error': 'could not validate request against model information'},
+                status=502,
+            )
 
         if not self._media_dir():
             return JsonResponse({'error': 'media_dir not configured'}, status=500)
@@ -1559,21 +1688,30 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return JsonResponse(
                 {'error': reason or 'edit model is unavailable'}, status=400,
             )
-        valid_ratios = edit_meta['edit_aspect_ratios']
+        row_controls = _edit_row_controls(provider, api, selected_row)
+        valid_ratios = row_controls['aspect_ratios']
         aspect_ratio = (data.get('aspect_ratio') or '').strip() or None
         if aspect_ratio and valid_ratios and aspect_ratio not in valid_ratios:
             return JsonResponse({'error': 'invalid aspect_ratio'}, status=400)
-        if not aspect_ratio and valid_ratios:
-            if 'auto' in valid_ratios:
+        if not aspect_ratio:
+            normalized_default = selected_row['presentation']['controls']['edit'][
+                'default_aspect_ratio'
+            ]
+            if (
+                isinstance(normalized_default, str)
+                and normalized_default.strip()
+            ):
+                aspect_ratio = normalized_default.strip()
+            elif 'auto' in valid_ratios:
                 aspect_ratio = 'auto'
-            else:
+            elif valid_ratios:
                 return JsonResponse(
                     {'error': (f'{provider} image edits resize to a fixed aspect '
                                f'ratio; set aspect_ratio '
                                f'(one of: {", ".join(valid_ratios)})')},
                     status=400,
                 )
-        valid_sizes = edit_meta['edit_image_sizes']
+        valid_sizes = row_controls['image_sizes']
         image_size = (data.get('image_size') or '').strip() or None
         if image_size and not valid_sizes:
             if provider == 'venice':
@@ -1584,7 +1722,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return JsonResponse({'error': message}, status=400)
         if valid_sizes:
             if not image_size:
-                image_size = edit_meta['default_edit_image_size']
+                image_size = row_controls['default_image_size']
             if image_size not in valid_sizes:
                 return JsonResponse(
                     {'error': f'invalid image_size; use one of: {", ".join(valid_sizes)}'},
@@ -1592,6 +1730,27 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 )
         safe_mode_raw = data.get('safe_mode')
         safe_mode: bool | None = bool(safe_mode_raw) if safe_mode_raw is not None else None
+
+        params: dict[str, Any] = {
+            'prompt': prompt,
+            'image_input': data_url,
+            'aspect_ratio': aspect_ratio,
+            'image_size': image_size,
+        }
+        if safe_mode_raw is not None:
+            params['safe_mode'] = safe_mode
+        try:
+            preflight_request(
+                provider, api, model=edit_model, operation='edit', params=params,
+            )
+        except LLemonImageParamError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        except Exception:
+            logger.exception('could not validate request against model information')
+            return JsonResponse(
+                {'error': 'could not validate request against model information'},
+                status=502,
+            )
 
         if not result_dir:
             return JsonResponse({'error': 'media_dir not configured'}, status=500)

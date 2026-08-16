@@ -87,6 +87,25 @@ class MediaCreatorPresentationTests(unittest.TestCase):
         })
         self.assertEqual(target['controls']['qualities'], ['high'])
 
+    def test_generation_target_can_replace_every_model_control(self) -> None:
+        controls = {
+            'availability': {'enabled': True, 'reason': None},
+            'aspect_ratios': [], 'default_aspect_ratio': None,
+            'image_sizes': [], 'default_image_size': None,
+            'qualities': [], 'default_quality': None,
+            'provider_config': {
+                'supports_temperature': False,
+                'supports_system_prompt': False,
+                'extra_fields': [],
+            },
+        }
+        target = build_model_target(
+            'segmind', 'inference', 'generate', 'model-a', controls=controls,
+        )
+        self.assertEqual(set(target['controls']), set(controls))
+        self.assertEqual(target['controls']['aspect_ratios'], [])
+        self.assertIsNone(target['controls']['default_image_size'])
+
     def test_grove_does_not_import_video_provider_backends_or_parse_model_ids(self) -> None:
         root = Path(__file__).resolve().parents[1]
         view_source = (

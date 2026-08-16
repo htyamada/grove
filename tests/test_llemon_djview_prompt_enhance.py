@@ -175,15 +175,91 @@ class RequiredProviderTests(_DjviewTestCase):
         )
         with mock.patch.dict(view._generate.__globals__, {
             'normalize_provider_api': lambda *a: ('example', 'images'),
-            'default_aspect_ratio': lambda *a: '1:1',
-            'default_image_size': lambda *a: '1K',
-            'aspect_ratios': lambda *a: [],
+            'resolve_action_model': lambda model, *a, **k: model,
+            'default_aspect_ratio': lambda *a, **k: '1:1',
+            'default_image_size': lambda *a, **k: '1K',
+            'aspect_ratios': lambda *a, **k: ['1:1'],
+            'image_sizes': lambda *a, **k: ['1K'],
+            'extract_extra_params': lambda *a, **k: {},
+            'model_scoped_parameters': lambda *a, **k: False,
+            'preflight_request': mock.Mock(side_effect=
+                view._generate.__globals__['LLemonImageParamError'](
+                    'preflight rejected',
+                )),
             'model_presentation': presentation_lookup,
         }):
             response = view._generate(request)
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data['error'], 'invalid aspect_ratio')
+        self.assertEqual(response.data['error'], 'preflight rejected')
         presentation_lookup.assert_not_called()
+
+    def test_image_generation_rejects_membership_before_preflight(self) -> None:
+        with mock.patch.dict(sys.modules, _fake_django_modules()):
+            from llemon_djview.imagegen import LLemonImageGenViewSet
+        view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
+        request = types.SimpleNamespace(body=json.dumps({
+            'provider': 'example', 'prompt': 'draw this', 'model': 'm1',
+            'aspect_ratio': 'bad', 'image_size': '1K',
+        }))
+        preflight = mock.Mock()
+        with mock.patch.dict(view._generate.__globals__, {
+            'normalize_provider_api': lambda *a: ('example', 'images'),
+            'resolve_action_model': lambda model, *a, **k: model,
+            'aspect_ratios': lambda *a, **k: ['1:1'],
+            'default_aspect_ratio': lambda *a, **k: '1:1',
+            'image_sizes': lambda *a, **k: ['1K'],
+            'default_image_size': lambda *a, **k: '1K',
+            'preflight_request': preflight,
+        }):
+            response = view._generate(request)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['error'], 'invalid aspect_ratio')
+        preflight.assert_not_called()
+
+    def test_image_generation_missing_model_fails_before_model_information(self) -> None:
+        with mock.patch.dict(sys.modules, _fake_django_modules()):
+            from hty7.llemon.mediagen.imagegen import LLemonImageParamError
+            from llemon_djview.imagegen import LLemonImageGenViewSet
+        view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
+        request = types.SimpleNamespace(body=json.dumps({
+            'provider': 'segmind', 'prompt': 'draw this', 'model': '   ',
+        }))
+        ratios = mock.Mock()
+        backend = mock.Mock()
+        with mock.patch.dict(view._generate.__globals__, {
+            'normalize_provider_api': lambda *a: ('segmind', 'inference'),
+            'resolve_action_model': mock.Mock(side_effect=LLemonImageParamError(
+                "provider 'segmind' has no default model for image generation; provide a model explicitly"
+            )),
+            'aspect_ratios': ratios,
+            'make_imagegen_backend': backend,
+        }):
+            response = view._generate(request)
+        self.assertEqual(response.status_code, 400)
+        ratios.assert_not_called()
+        backend.assert_not_called()
+
+    def test_image_generation_model_information_failure_is_brief_502(self) -> None:
+        with mock.patch.dict(sys.modules, _fake_django_modules()):
+            from llemon_djview.imagegen import LLemonImageGenViewSet
+        view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
+        request = types.SimpleNamespace(body=json.dumps({
+            'provider': 'segmind', 'prompt': 'draw this', 'model': 'm1',
+        }))
+        backend = mock.Mock()
+        with mock.patch.dict(view._generate.__globals__, {
+            'normalize_provider_api': lambda *a: ('segmind', 'inference'),
+            'resolve_action_model': lambda model, *a, **k: model,
+            'aspect_ratios': mock.Mock(side_effect=RuntimeError('secret record body')),
+            'make_imagegen_backend': backend,
+        }):
+            response = view._generate(request)
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.data['error'],
+            'could not validate request against model information',
+        )
+        backend.assert_not_called()
 
     def test_image_upscale_requires_provider(self) -> None:
         with mock.patch.dict(sys.modules, _fake_django_modules()):
@@ -487,10 +563,19 @@ class ImageEditControlTests(_DjviewTestCase):
             request_body['provider'] = provider
         request = types.SimpleNamespace(body=json.dumps(request_body))
         edit_result = mock.Mock(return_value=({'files': ['out.png']}, 200))
+        edit_meta = __import__('copy').deepcopy(edit_meta)
+        row_controls = edit_meta['edit_model_options'][0]['presentation']['controls']['edit']
+        row_controls.update({
+            'aspect_ratios': edit_meta['edit_aspect_ratios'],
+            'image_sizes': edit_meta['edit_image_sizes'],
+        })
         patches = {
             'normalize_provider_api': lambda *a, **k: (provider, provider),
             'supports_edit': lambda *a, **k: True,
             '_edit_metadata': lambda *a, **k: dict(edit_meta),
+            'default_aspect_ratio': lambda *a, **k: edit_meta['default_edit_aspect_ratio'],
+            'default_image_size': lambda *a, **k: edit_meta['default_edit_image_size'],
+            'preflight_request': lambda *a, **k: None,
         }
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(

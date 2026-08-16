@@ -116,8 +116,11 @@ lookup counts and failure behavior; the browser gate is presentation behavior,
 not a new server authorization boundary. A selected generation-model detail
 failure during initial/provider presentation is a logged HTTP 502. The
 model-only refresh endpoint retains its historical best-effort behavior: a
-detail lookup failure returns its HTTP 200 target with no optional controls,
-leaving the already-applied availability unchanged.
+detail lookup failure returns an HTTP-200 target whose empty `controls` mapping
+is the unresolved-target sentinel. The browser clears controls inherited from
+the preceding model, keeps generation disabled with the generic model-control
+load reason, and treats application as failed. Failed application is not
+cached, so reselecting the model retries the lookup.
 
 When the generation model changes, the browser applies the selected listing
 row's normalized availability before starting any target lookup. A summary row
@@ -139,6 +142,9 @@ Provider and model changes use the shared browser target controller in
   provider response's notices when the model target is already cached.
 - Returning to a cached target reapplies its presentation without loading it
   again or replaying notices.
+- A target enters the cache only after its modality-specific application
+  succeeds; an unresolved sentinel or other application failure is retried on
+  reselection.
 - Existing modality-specific provider failure semantics are preserved: image
   selection rolls back after a failed load, while video selection commits when
   loading begins.

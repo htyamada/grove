@@ -334,6 +334,14 @@ else:
                 r'if \(!target\.preserve_notices\) renderModelInfoNotices\(\[\]\);',
             )
             self.assertIn('selectImageModel(modelSel.value, true)', html)
+            self.assertIn('let currentProviderData = initialProviderData', html)
+            self.assertIn('let ACTIVE_GENERATE_DEFAULTS =', html)
+            self.assertIn('mediaSetVisibleChoiceControl', html)
+            self.assertIn('mediaVisibleChoiceControlValue', html)
+            self.assertIn('mediaAfterTargetReady(targetReady, function ()', html)
+            self.assertIn('mediaApplyChoiceControl(', html)
+            self.assertNotIn('DEFAULTS.aspect_ratio = controls.', html)
+            self.assertNotIn('{...initialProviderData, edit_models:', html)
             self.assertIn(
                 '_renderModelOptions(data.selected_model, data.selected_model != null)',
                 html,
@@ -348,7 +356,7 @@ else:
                 r'operation\.selected_model = modelId;\s*'
                 r'operation\.selected_target = null;\s*'
                 r'operation\.availability = \{\s*'
-                r'enabled: state\.enabled,',
+                r'enabled: false,',
             )
             self.assertRegex(
                 html,
@@ -604,6 +612,43 @@ else:
             envelope = json.loads(response.content)
             self.assertEqual(envelope['presentation']['controls'], {})
             self.assertEqual(envelope['notices'], [])
+
+        def test_api_wide_generation_target_retains_provider_choices(self) -> None:
+            presentation = _presentation('m1')
+            presentation['controls']['generate'].update({
+                'aspect_ratios': [], 'default_aspect_ratio': None,
+                'image_sizes': [], 'default_image_size': None,
+            })
+            with mock.patch.dict(imagegen_view.LLemonImageGenViewSet._image_model_target.__globals__, {
+                'model_scoped_parameters': mock.Mock(return_value=False),
+                'aspect_ratios': mock.Mock(return_value=['1:1', '16:9']),
+                'default_aspect_ratio': mock.Mock(return_value='1:1'),
+                'image_sizes': mock.Mock(return_value=['1K', '2K']),
+                'default_image_size': mock.Mock(return_value='1K'),
+                '_provider_config': mock.Mock(return_value=_PROVIDER_CONFIG),
+            }):
+                target = self.view._image_model_target(
+                    'openrouter', 'chat_completions', 'm1',
+                    presentation=presentation,
+                )
+            self.assertEqual(target['controls']['aspect_ratios'], ['1:1', '16:9'])
+            self.assertEqual(target['controls']['image_sizes'], ['1K', '2K'])
+
+        def test_model_scoped_target_preserves_meaningful_empty_choices(self) -> None:
+            presentation = _presentation('m1')
+            presentation['controls']['generate'].update({
+                'aspect_ratios': [], 'default_aspect_ratio': None,
+                'image_sizes': [], 'default_image_size': None,
+            })
+            with mock.patch.dict(imagegen_view.LLemonImageGenViewSet._image_model_target.__globals__, {
+                'model_scoped_parameters': mock.Mock(return_value=True),
+                '_provider_config': mock.Mock(return_value=_PROVIDER_CONFIG),
+            }):
+                target = self.view._image_model_target(
+                    'segmind', 'inference', 'm1', presentation=presentation,
+                )
+            self.assertEqual(target['controls']['aspect_ratios'], [])
+            self.assertEqual(target['controls']['image_sizes'], [])
 
         def test_video_refresh_returns_one_nonduplicated_contract(self) -> None:
             view = LLemonVideoGenViewSet('llemon_video', 'llemon_image')

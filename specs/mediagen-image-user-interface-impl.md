@@ -314,12 +314,18 @@ The `image_creator()` view adds to the template context:
 - `default_edit_model`: nullable backend default represented as `''` only in
   flat compatibility context; never synthesized from discovery order
 - `selected_edit_model`: effective row selected for form presentation
-- `edit_aspect_ratios`: the provider's edit ratios (no empty entry)
-- `default_edit_aspect_ratio`: `auto` when offered, else the default ratio
-- `edit_image_sizes`: permitted edit sizes (empty when size is automatic)
+- `edit_aspect_ratios`: the selected complete row's edit ratios
+- `default_edit_aspect_ratio`: the row's normalized default when non-null;
+  otherwise `auto`, the current provider fallback when offered, or the first
+  row choice, in that order
+- `edit_image_sizes`: the selected complete row's permitted edit sizes (empty
+  when size is automatic)
 - `default_edit_image_size`: default selected edit size (`''` when automatic)
 
 These edit keys are produced by the module-level `_edit_metadata()` helper.
+The authoritative selected edit controls are derived from that complete row
+by `_edit_row_controls()`. A non-null normalized row default wins; otherwise
+Grove retains its `auto`, provider fallback, and first-choice display policy.
 It no longer maintains its own cache: `list_edit_models_with_metadata()`
 caches live edit-model discovery in LLemon itself (300 seconds, keyed by
 provider/api/URL), so page renders and edit requests still do not each pay a
@@ -342,10 +348,77 @@ The edit action endpoint repeats the same check before backend construction.
 HTTP(S) caller sources and provider uploads remain unavailable until their
 separate storage/transport work is implemented.
 
+Generation model targets carry availability, ratio and size choices/defaults,
+quality choices/default, temperature/system visibility, and extra-field
+descriptors. Model-scoped providers use the complete normalized presentation
+as the source of those controls. API-wide providers retain their established
+provider-wide ratio/size choices and defaults when a per-model presentation
+omits them; an empty OpenRouter model-record enum therefore cannot replace the
+API-wide dropdown with an open input. Every target key is present, including
+empty lists and null defaults, so a new model can clear prior controls.
+
+The browser retains provider fallback defaults separately from active selected-
+generation defaults. Accepted model targets replace only the active layer.
+Generation Reset uses the active layer; edit-model fallback calculation uses
+the current provider layer. Provider switching replaces both layers and the
+current provider metadata object before edit model changes are handled.
+
+Ratio and size render as selects when the effective choice list is nonempty and
+as optional free-text controls when it is empty. The open size placeholder
+documents `WIDTHxHEIGHT`; open controls start and reset blank so omission lets
+the model apply its own default. In select mode, a normalized default that is
+null or absent from the choices resolves to the first choice; Reset restores
+that effective value rather than the unresolved normalized default.
+Submission, query restoration, and Reset use
+one visible-control helper. Query restoration waits for the accepted model
+target before setting values, so cache hits and asynchronous fetches behave
+identically. Controls hidden by an accepted target are cleared and only visible
+controls are serialized.
+
+An HTTP-200 target with an empty `controls` mapping is the model-detail failure
+sentinel, not a partial overlay. The browser clears prior model controls,
+disables generation with the generic model-control error, and rejects target
+application. The shared refresh controller caches only after successful
+application, so the sentinel is not retained and a later selection retries the
+lookup. Partial nonempty targets overlay by key presence; meaningful empty
+lists and null defaults replace provider fallbacks.
+
+Model changes rebuild dynamic extra-field DOM when descriptors change. Values
+are retained only for fields whose complete normalized descriptor is unchanged;
+removed, hidden, or changed fields are cleared. This preserves provider-wide
+Venice values across ordinary model changes without leaking a value into a
+different model-specific control schema.
+
+The extracted, DOM-independent browser state helpers have executable Node
+coverage for target keying and stale-response behavior, presence-based control
+overlay, unresolved-target retry semantics, enumerated/open choice resolution,
+extra-field descriptor equality, concrete select/open DOM application, visible-
+control serialization, and target-ready sequencing used by Reset and query
+restoration. Creator render and view tests additionally verify that the template
+uses those shared helpers. These are offline acceptance tests. Live provider
+execution is outside this UI specification's implementation acceptance and is
+performed independently when authorized.
+
 Generation availability is applied to presentation and ordinary browser
-submission only. The generation action endpoint retains its established path
-and does not add a model-presentation lookup or normalized availability
-recheck; Task 4 therefore does not add a catalog failure mode to generation.
+submission only. The action resolves its explicit/registered model without a
+presentation lookup, strips ratio/size strings, treats absent/empty/whitespace
+values as model-default requests, membership-checks only nonempty choice lists,
+validates model-scoped dynamic fields, and calls provider-neutral
+`preflight_request()` before backend construction. Parameter errors return HTTP
+400. Model-information or unexpected preflight failures are logged and return
+HTTP 502 with `could not validate request against model information`. When both
+the request and normalized default omit ratio or size, preflight sees it as not
+supplied while backend dispatch and metadata receive canonical `''`, never
+`None`. This adds no generation `model_presentation()` authorization lookup.
+
+Edit action validation selects the submitted complete row, repeats availability
+and data-URL transport compatibility, derives controls through
+`_edit_row_controls()`, and preflights the actual data URL before backend
+construction. A supplied edit ratio is checked against nonempty row choices.
+For omission, a non-null normalized ratio default wins, then `auto` when
+offered; fixed-choice rows otherwise require an explicit ratio. A displayed
+provider/first-choice fallback does not become an action omission default.
+Size retains the separate existing automatic/source-determined policy.
 
 ### Error responses
 

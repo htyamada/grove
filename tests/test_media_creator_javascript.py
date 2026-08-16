@@ -181,6 +181,125 @@ const controller = createMediaRefreshController({
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """)
 
+    def test_generation_control_overlay_distinguishes_empty_sentinel(self) -> None:
+        self._run_node(r"""
+const assert = require('node:assert/strict');
+const fallback = {aspect_ratios: ['1:1'], default_aspect_ratio: '1:1'};
+assert.equal(mediaOverlayControls(fallback, {}, Object.keys(fallback)), null);
+assert.deepEqual(
+  mediaOverlayControls(fallback, {aspect_ratios: []}, Object.keys(fallback)),
+  {aspect_ratios: [], default_aspect_ratio: '1:1'},
+);
+assert.deepEqual(
+  mediaOverlayControls(fallback, {default_aspect_ratio: null}, Object.keys(fallback)),
+  {aspect_ratios: ['1:1'], default_aspect_ratio: null},
+);
+assert.deepEqual(mediaUnresolvedGenerationState('model-a'), {
+  selected_model: 'model-a', selected_target: null,
+  availability: {enabled: false, reason: 'model controls could not be loaded'},
+});
+""")
+
+    def test_generation_choice_modes_keep_open_controls_blank(self) -> None:
+        self._run_node(r"""
+const assert = require('node:assert/strict');
+assert.deepEqual(mediaChoiceControlState(['1:1', '16:9'], '16:9'), {
+  mode: 'select', choices: ['1:1', '16:9'], value: '16:9',
+});
+assert.deepEqual(mediaChoiceControlState(['1:1', '16:9'], null), {
+  mode: 'select', choices: ['1:1', '16:9'], value: '1:1',
+});
+assert.deepEqual(mediaChoiceControlState([], 'model-default'), {
+  mode: 'open', choices: [], value: '',
+});
+""")
+
+    def test_generation_choice_dom_application_and_target_ready_sequence(self) -> None:
+        self._run_node(r"""
+const assert = require('node:assert/strict');
+function choiceElement() {
+  let options = [];
+  return {
+    style: {display: ''}, value: 'stale',
+    get options() { return options; },
+    set innerHTML(value) { options = []; this.value = ''; },
+    appendChild(option) {
+      options.push(option);
+      if (option.selected || options.length === 1) this.value = option.value;
+    },
+  };
+}
+const elements = {
+  aspect_ratio: choiceElement(),
+  aspect_ratio_open: {style: {display: 'none'}, value: 'stale-open'},
+};
+const doc = {
+  getElementById: name => elements[name] || null,
+  createElement: () => ({value: '', textContent: '', selected: false}),
+};
+
+const selected = mediaApplyChoiceControl(
+  doc, 'aspect_ratio', ['1:1', '16:9'], null,
+);
+assert.equal(selected.value, '1:1');
+assert.equal(elements.aspect_ratio.value, '1:1');
+assert.equal(elements.aspect_ratio_open.value, '');
+mediaSetVisibleChoiceControl(doc, 'aspect_ratio', '16:9');
+assert.equal(mediaVisibleChoiceControlValue(doc, 'aspect_ratio'), '16:9');
+
+const open = mediaApplyChoiceControl(doc, 'aspect_ratio', [], '16:9');
+assert.equal(open.mode, 'open');
+assert.equal(elements.aspect_ratio.value, '');
+assert.equal(elements.aspect_ratio_open.value, '');
+mediaSetVisibleChoiceControl(doc, 'aspect_ratio', '  2:3  ');
+assert.equal(mediaVisibleChoiceControlValue(doc, 'aspect_ratio'), '2:3');
+
+let release;
+const ready = new Promise(resolve => { release = resolve; });
+const applied = mediaAfterTargetReady(ready, () => {
+  mediaApplyChoiceControl(doc, 'aspect_ratio', ['4:3'], '4:3');
+  mediaSetVisibleChoiceControl(doc, 'aspect_ratio', '4:3');
+});
+assert.equal(elements.aspect_ratio_open.value, '  2:3  ');
+release();
+(async function () {
+  await applied;
+  assert.equal(elements.aspect_ratio.style.display, '');
+  assert.equal(elements.aspect_ratio.value, '4:3');
+  assert.equal(elements.aspect_ratio_open.value, '');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""")
+
+    def test_failed_apply_is_not_cached_and_reselection_retries(self) -> None:
+        self._run_node(r"""
+const assert = require('node:assert/strict');
+let loads = 0;
+let fail = true;
+const controller = createMediaRefreshController({
+  initialTarget: 'initial', initialData: {controls: {ok: true}},
+  load: async () => { loads += 1; return {controls: {}}; },
+  apply: data => {
+    if (fail && Object.keys(data.controls).length === 0) throw new Error('unresolved');
+  },
+});
+(async function () {
+  await assert.rejects(controller.select('model-a'), /unresolved/);
+  assert.equal(Object.hasOwn(controller.cache, 'model-a'), false);
+  fail = false;
+  await controller.select('model-a');
+  assert.equal(loads, 2);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""")
+
+    def test_compatible_extra_field_descriptors_can_retain_values(self) -> None:
+        self._run_node(r"""
+const assert = require('node:assert/strict');
+const seed = {name: 'seed', type: 'number', min: -1, max: 100};
+assert.equal(mediaSameFieldDescriptor(seed, {...seed}), true);
+assert.equal(mediaSameFieldDescriptor(seed, {...seed, max: 200}), false);
+assert.equal(mediaSameFieldDescriptor(seed, null), false);
+""")
+
 
 if __name__ == '__main__':
     unittest.main()

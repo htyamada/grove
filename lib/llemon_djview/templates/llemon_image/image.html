@@ -194,10 +194,12 @@
           <select id="aspect_ratio" name="aspect_ratio">
             {% for r in aspect_ratios %}<option value="{{ r }}"{% if r == default_aspect_ratio %} selected{% endif %}>{{ r }}</option>{% endfor %}
           </select>
+          <input id="aspect_ratio_open" type="text" placeholder="optional" style="display:none; width:8em;">
           <label for="image_size" style="width:auto; margin-left:1em;">Size</label>
           <select id="image_size" name="image_size">
             {% for s in image_sizes %}<option value="{{ s }}"{% if s == default_image_size %} selected{% endif %}>{{ s }}</option>{% endfor %}
           </select>
+          <input id="image_size_open" type="text" placeholder="optional WIDTHxHEIGHT" style="display:none; width:12em;">
           <span id="inline-output-format" style="display:none;">
             <label for="xf_output_format" style="width:auto; margin-left:1em;">Format</label>
             <select id="xf_output_format" name="output_format" style="font-size:1em;"></select>
@@ -338,6 +340,12 @@ document.addEventListener('keydown', function(e) {
     }
     return {disabled: false, reason: ''};
   }
+  function operationEvidence(option, operationName) {
+    const operation = ((((option || {}).presentation || {}).operations || {})[operationName] || {});
+    if (!operation.designation) return '';
+    return ' — ' + operation.designation
+      + (operation.designation_reason ? ': ' + operation.designation_reason : '');
+  }
   function selectedActionAvailability() {
     const type = (document.getElementById('image-type') || {}).value || 'normal';
     const operations = CREATOR_PRESENTATION.operations || {};
@@ -398,7 +406,8 @@ document.addEventListener('keydown', function(e) {
     };
   }
   const INITIAL_PROVIDER = CREATOR_PRESENTATION.provider;
-  let initialProviderData = imageProviderData(CREATOR_PRESENTATION);
+  const initialProviderData = imageProviderData(CREATOR_PRESENTATION);
+  let currentProviderData = initialProviderData;
   let MODEL_DESCRIPTIONS = initialProviderData.model_descriptions;
   let MODEL_OPTIONS = initialProviderData.model_options;
   let MODEL_TAG_STATES = initialProviderData.model_tag_states;
@@ -409,6 +418,11 @@ document.addEventListener('keydown', function(e) {
     image_size: initialProviderData.default_image_size,
     temperature: '',
   };
+  let ACTIVE_GENERATE_DEFAULTS = {
+    aspect_ratio: initialProviderData.default_aspect_ratio,
+    image_size: initialProviderData.default_image_size,
+  };
+  let ACTIVE_EXTRA_FIELDS = [];
   const generateUrl           = '{{ generate_url|escapejs }}';
   const imageFileUrl          = '{{ image_file_url|escapejs }}';
   const largeThumbnailFileUrl = '{{ large_thumbnail_file_url|escapejs }}';
@@ -430,8 +444,10 @@ document.addEventListener('keydown', function(e) {
   const systemArea   = document.getElementById('system-prompt');
 
   let _noteLoadSeq = 0;
+  let _providerModelTargetReady = Promise.resolve();
 
   function _applyProviderData(data) {
+    currentProviderData = data;
     MODEL_DESCRIPTIONS   = data.model_descriptions;
     MODEL_OPTIONS        = data.model_options || [];
     MODEL_TAG_STATES     = data.model_tag_states || {};
@@ -441,6 +457,10 @@ document.addEventListener('keydown', function(e) {
       aspect_ratio: data.default_aspect_ratio,
       image_size:   data.default_image_size,
       temperature:  '',
+    };
+    ACTIVE_GENERATE_DEFAULTS = {
+      aspect_ratio: data.default_aspect_ratio,
+      image_size: data.default_image_size,
     };
     _renderModelOptions(data.selected_model, data.selected_model != null);
     // Repopulate aspect_ratio select.
@@ -507,9 +527,10 @@ document.addEventListener('keydown', function(e) {
     // Render remaining extra fields (inline ones handled above).
     const _INLINE_FIELDS = new Set(['output_format', 'style_preset', 'hide_watermark', 'embed_exif_metadata']);
     _renderExtraFields(extraFields.filter(f => !_INLINE_FIELDS.has(f.name)));
+    ACTIVE_EXTRA_FIELDS = extraFields.map(field => JSON.parse(JSON.stringify(field)));
     _applyEditMetadata(data);
     if (modelSel.value) {
-      selectImageModel(modelSel.value, true);
+      _providerModelTargetReady = selectImageModel(modelSel.value, true);
     } else {
       updateDescription('');
       notesArea.value = '';
@@ -527,7 +548,13 @@ document.addEventListener('keydown', function(e) {
         const state = editOptionState(m);
         const opt = document.createElement('option');
         opt.value = m.id;
-        opt.textContent = m.display + (state.reason ? ' — ' + state.reason : '');
+        opt.textContent = m.display + operationEvidence(m, 'edit')
+          + (state.reason ? ' — ' + state.reason : '');
+        const editOperation = (
+          (((m || {}).presentation || {}).operations || {}).edit || {}
+        );
+        opt.title = (editOperation.designation_reason || '')
+          + (state.reason ? ((editOperation.designation_reason ? '; ' : '') + state.reason) : '');
         opt.disabled = state.disabled;
         if (m.id === data.selected_edit_model) opt.selected = true;
         emSel.appendChild(opt);
@@ -585,10 +612,30 @@ document.addEventListener('keydown', function(e) {
     const option = (edit.model_options || []).find(row => row.id === this.value);
     const state = option ? editOptionState(option) : {disabled: true, reason: 'unavailable'};
     edit.selected_model = option ? option.id : null;
+    const normalized = option ? option.presentation.controls.edit : null;
+    const ratios = normalized ? normalized.aspect_ratios : [];
+    const sizes = normalized ? normalized.image_sizes : [];
+    const ratioDefault = normalized && normalized.default_aspect_ratio != null
+      ? normalized.default_aspect_ratio
+      : (ratios.includes('auto') ? 'auto'
+         : (ratios.includes(DEFAULTS.aspect_ratio)
+            ? DEFAULTS.aspect_ratio : (ratios[0] || '')));
+    const sizeDefault = normalized && normalized.default_image_size != null
+      ? normalized.default_image_size
+      : (sizes.includes(DEFAULTS.image_size)
+         ? DEFAULTS.image_size : (sizes[0] || ''));
     edit.selected_target = option ? {
       target: {provider: currentProvider, api: CREATOR_PRESENTATION.api,
-               operation: 'edit', model: option.id}, controls: {}
+               operation: 'edit', model: option.id},
+      controls: {availability: {enabled: !state.disabled, reason: state.reason || null},
+                 aspect_ratios: ratios, default_aspect_ratio: ratioDefault,
+                 image_sizes: sizes, default_image_size: sizeDefault}
     } : null;
+    _applyEditMetadata({...currentProviderData, edit_models: edit.model_options,
+      selected_edit_model: option ? option.id : '', edit_aspect_ratios: ratios,
+      default_edit_aspect_ratio: ratioDefault, edit_image_sizes: sizes,
+      default_edit_image_size: sizeDefault});
+    if (!option) this.selectedIndex = -1;
     edit.availability = {
       enabled: !!option && !state.disabled,
       reason: state.reason || null,
@@ -636,7 +683,9 @@ document.addEventListener('keydown', function(e) {
     for (const opt of options) {
       const el = document.createElement('option');
       el.value = opt.id;
-      el.textContent = opt.display;
+      const state = generationOptionState(opt);
+      el.textContent = opt.display + operationEvidence(opt, 'generate')
+        + (state.reason ? ' — ' + state.reason : '');
       modelSel.appendChild(el);
     }
     const preferredVisible = options.some(opt => opt.id === previous);
@@ -828,6 +877,96 @@ document.addEventListener('keydown', function(e) {
     _updateQualityRow(modelId);
   }
 
+  function _fieldValues() {
+    const result = {};
+    for (const element of document.querySelectorAll('[id^="xf_"]')) {
+      result[element.id.slice(3)] = element.type === 'checkbox'
+        ? element.checked : element.value;
+    }
+    return result;
+  }
+
+  function _clearSelectedGenerateControls() {
+    for (const id of ['aspect_ratio', 'aspect_ratio_open', 'image_size', 'image_size_open']) {
+      const element = document.getElementById(id);
+      if (element) { element.value = ''; element.style.display = 'none'; }
+    }
+    const qualityRow = document.getElementById('quality-row');
+    const quality = document.getElementById('quality');
+    if (qualityRow) qualityRow.style.display = 'none';
+    if (quality) quality.innerHTML = '';
+    for (const id of ['inline-output-format', 'inline-style-preset']) {
+      const element = document.getElementById(id);
+      if (element) element.style.display = 'none';
+    }
+    const temperature = document.getElementById('temperature');
+    const temperatureRow = temperature ? temperature.closest('.row') : null;
+    if (temperature) temperature.value = '';
+    if (temperatureRow) temperatureRow.style.display = 'none';
+    const systemSection = document.getElementById('system-section');
+    if (systemArea) systemArea.value = '';
+    if (systemSection) systemSection.style.display = 'none';
+    _renderExtraFields([]);
+    ACTIVE_EXTRA_FIELDS = [];
+  }
+
+  function _applySelectedGenerateControls(controls) {
+    const previousFields = ACTIVE_EXTRA_FIELDS;
+    const previousValues = _fieldValues();
+    const ratioState = mediaApplyChoiceControl(
+      document, 'aspect_ratio', controls.aspect_ratios,
+      controls.default_aspect_ratio);
+    const sizeState = mediaApplyChoiceControl(
+      document, 'image_size', controls.image_sizes,
+      controls.default_image_size);
+    ACTIVE_GENERATE_DEFAULTS = {
+      aspect_ratio: ratioState.value,
+      image_size: sizeState.value,
+    };
+    const cfg = controls.provider_config;
+    const temp = document.getElementById('temperature');
+    const tempRow = temp ? temp.closest('.row') : null;
+    if (tempRow) tempRow.style.display = cfg.supports_temperature ? '' : 'none';
+    if (!cfg.supports_temperature) temp.value = '';
+    const systemSection = document.getElementById('system-section');
+    if (systemSection) systemSection.style.display = cfg.supports_system_prompt ? '' : 'none';
+    if (!cfg.supports_system_prompt) systemArea.value = '';
+    const fields = cfg.extra_fields || [];
+    const inlineNames = new Set(['output_format', 'style_preset', 'hide_watermark', 'embed_exif_metadata']);
+    for (const name of ['output_format', 'style_preset']) {
+      const field = fields.find(item => item.name === name);
+      const span = document.getElementById('inline-' + name.replace('_', '-'));
+      const select = document.getElementById('xf_' + name);
+      if (field && span && select) {
+        select.innerHTML = '';
+        for (const [value, label] of field.choices || []) {
+          const option = document.createElement('option');
+          option.value = value; option.textContent = label;
+          if (field.default === value) option.selected = true;
+          select.appendChild(option);
+        }
+        span.style.display = '';
+      } else if (span) {
+        span.style.display = 'none';
+        if (select) select.innerHTML = '';
+      }
+    }
+    _renderExtraFields(fields.filter(field => !inlineNames.has(field.name)));
+    for (const field of fields) {
+      const previous = previousFields.find(item => item.name === field.name);
+      if (!mediaSameFieldDescriptor(previous, field) || !(field.name in previousValues)) continue;
+      const element = document.getElementById('xf_' + field.name);
+      if (!element) continue;
+      if (element.type === 'checkbox') element.checked = previousValues[field.name];
+      else element.value = previousValues[field.name];
+    }
+    ACTIVE_EXTRA_FIELDS = fields.map(field => JSON.parse(JSON.stringify(field)));
+    MODEL_QUALITIES[modelSel.value] = {
+      qualities: controls.qualities, default: controls.default_quality,
+    };
+    _updateQualityRow(modelSel.value);
+  }
+
   const initialGenerate = CREATOR_PRESENTATION.operations.generate || {};
   const initialModelTarget = initialGenerate.selected_target || undefined;
   const _modelController = createMediaRefreshController({
@@ -852,21 +991,33 @@ document.addEventListener('keydown', function(e) {
     transient: function (envelope) { renderModelInfoNotices(envelope.notices || []); },
     apply: function (targetData, target) {
       if (target.provider !== currentProvider || target.model !== modelSel.value) return;
-      const controls = targetData.controls || {};
-      if (controls.qualities && controls.qualities.length) {
-        MODEL_QUALITIES[target.model] = {
-          qualities: controls.qualities,
-          default: controls.default_quality,
-        };
-      } else {
-        delete MODEL_QUALITIES[target.model];
-      }
       const operation = CREATOR_PRESENTATION.operations.generate;
+      const controls = mediaOverlayControls({
+        availability: {
+          enabled: false,
+          reason: 'model availability was not supplied',
+        },
+        aspect_ratios: currentProviderData.aspect_ratios || [],
+        default_aspect_ratio: currentProviderData.default_aspect_ratio || null,
+        image_sizes: currentProviderData.image_sizes || [],
+        default_image_size: currentProviderData.default_image_size || null,
+        qualities: [], default_quality: null,
+        provider_config: currentProviderData.provider_config || {},
+      }, targetData.controls || {}, [
+        'availability', 'aspect_ratios', 'default_aspect_ratio', 'image_sizes',
+        'default_image_size', 'qualities', 'default_quality', 'provider_config',
+      ]);
+      if (controls === null) {
+        _clearSelectedGenerateControls();
+        Object.assign(operation, mediaUnresolvedGenerationState(target.model));
+        updateActionAvailability();
+        throw new Error('model controls could not be loaded');
+      }
+      _applySelectedGenerateControls(controls);
       operation.selected_model = target.model;
       operation.selected_target = targetData;
       if (controls.availability) operation.availability = controls.availability;
       updateActionAvailability();
-      _updateQualityRow(target.model);
     },
   });
 
@@ -889,8 +1040,8 @@ document.addEventListener('keydown', function(e) {
     operation.selected_model = modelId;
     operation.selected_target = null;
     operation.availability = {
-      enabled: state.enabled,
-      reason: state.reason || null,
+      enabled: false,
+      reason: state.reason || 'model controls are loading',
     };
     updateActionAvailability();
     return _modelController.select({
@@ -1023,32 +1174,35 @@ document.addEventListener('keydown', function(e) {
     if (!p.toString()) return;
     const promptEl = document.getElementById('prompt');
     if (p.has('prompt') && promptEl) promptEl.value = p.get('prompt');
+    let targetReady = Promise.resolve();
     if (p.has('model')) {
       const requestedModel = p.get('model');
       modelSel.value = requestedModel;
-      const currentTarget = _modelController.current();
-      if (!currentTarget || currentTarget.model !== requestedModel) {
-        selectImageModel(modelSel.value);
+      targetReady = selectImageModel(modelSel.value);
+    } else if (modelSel.value) {
+      targetReady = _providerModelTargetReady;
+    }
+    mediaAfterTargetReady(targetReady, function () {
+      const qualityParamEl = document.getElementById('quality');
+      if (p.has('quality') && qualityParamEl) qualityParamEl.value = p.get('quality');
+      if (p.has('aspect_ratio')) {
+        mediaSetVisibleChoiceControl(
+          document, 'aspect_ratio', p.get('aspect_ratio'));
       }
-    }
-    const qualityParamEl = document.getElementById('quality');
-    if (p.has('quality') && qualityParamEl) qualityParamEl.value = p.get('quality');
-    const ar = document.getElementById('aspect_ratio');
-    if (p.has('aspect_ratio') && ar) ar.value = p.get('aspect_ratio');
-    const isz = document.getElementById('image_size');
-    if (p.has('image_size') && isz) isz.value = p.get('image_size');
-    const tempEl  = document.getElementById('temperature');
-    if (p.has('temperature') && tempEl) tempEl.value = p.get('temperature');
-    if (p.has('system')) {
-      systemArea.value = p.get('system');
-    }
-    // Restore provider extra fields (e.g. Venice params).
-    for (const [key, val] of p.entries()) {
-      const el = document.getElementById('xf_' + key);
-      if (!el) continue;
-      if (el.type === 'checkbox') el.checked = (val === '1' || val === 'true');
-      else el.value = val;
-    }
+      if (p.has('image_size')) {
+        mediaSetVisibleChoiceControl(
+          document, 'image_size', p.get('image_size'));
+      }
+      const tempEl = document.getElementById('temperature');
+      if (p.has('temperature') && tempEl) tempEl.value = p.get('temperature');
+      if (p.has('system') && systemArea) systemArea.value = p.get('system');
+      for (const [key, val] of p.entries()) {
+        const el = document.getElementById('xf_' + key);
+        if (!el) continue;
+        if (el.type === 'checkbox') el.checked = (val === '1' || val === 'true');
+        else el.value = val;
+      }
+    });
     if (p.has('fname')) {
       const fname = p.get('fname');
       _lbUrl = imageFileUrl.replace('PLACEHOLDER', encodeURIComponent(fname));
@@ -1115,29 +1269,31 @@ document.addEventListener('keydown', function(e) {
       switchProvider(INITIAL_PROVIDER);
     } else {
       _applyModelFilters();
-      if (modelSel.value) {
-        selectImageModel(modelSel.value);
-      }
-      document.getElementById('image_size').value = DEFAULTS.image_size;
-      const tempEl = document.getElementById('temperature');
-      if (tempEl) { tempEl.value = ''; tempEl.disabled = false; }
-      const ar = document.getElementById('aspect_ratio');
-      for (let i = 0; i < ar.options.length; i++) {
-        ar.options[i].selected = (ar.options[i].value === DEFAULTS.aspect_ratio);
-      }
-      // Reset inline fields to their first (default) option.
-      const fmtSel = document.getElementById('xf_output_format');
-      if (fmtSel) fmtSel.selectedIndex = 0;
-      const spSel = document.getElementById('xf_style_preset');
-      if (spSel) spSel.selectedIndex = 0;
-      // Clear remaining extra fields.
-      const extraContainer = document.getElementById('provider-extra-fields');
-      if (extraContainer) {
-        for (const el of extraContainer.querySelectorAll('input, select, textarea')) {
-          if (el.type === 'checkbox') el.checked = (el.dataset.defaultChecked === 'true');
-          else el.value = el.tagName === 'SELECT' ? (el.options[0]?.value || '') : '';
+      const targetReady = modelSel.value
+        ? selectImageModel(modelSel.value) : Promise.resolve();
+      mediaAfterTargetReady(targetReady, function () {
+        mediaSetVisibleChoiceControl(
+          document, 'image_size', document.getElementById('image_size').style.display !== 'none'
+            ? ACTIVE_GENERATE_DEFAULTS.image_size : '',
+        );
+        const tempEl = document.getElementById('temperature');
+        if (tempEl) { tempEl.value = ''; tempEl.disabled = false; }
+        mediaSetVisibleChoiceControl(
+          document, 'aspect_ratio', document.getElementById('aspect_ratio').style.display !== 'none'
+            ? ACTIVE_GENERATE_DEFAULTS.aspect_ratio : '',
+        );
+        const fmtSel = document.getElementById('xf_output_format');
+        if (fmtSel) fmtSel.selectedIndex = 0;
+        const spSel = document.getElementById('xf_style_preset');
+        if (spSel) spSel.selectedIndex = 0;
+        const extraContainer = document.getElementById('provider-extra-fields');
+        if (extraContainer) {
+          for (const el of extraContainer.querySelectorAll('input, select, textarea')) {
+            if (el.type === 'checkbox') el.checked = (el.dataset.defaultChecked === 'true');
+            else el.value = el.tagName === 'SELECT' ? (el.options[0]?.value || '') : '';
+          }
         }
-      }
+      });
     }
   });
 
@@ -1303,14 +1459,18 @@ document.addEventListener('keydown', function(e) {
       prompt:       prompt,
       provider:     currentProvider,
       model:        document.getElementById('model').value.trim(),
-      aspect_ratio: document.getElementById('aspect_ratio').value,
-      image_size:   document.getElementById('image_size').value,
+      aspect_ratio: mediaVisibleChoiceControlValue(document, 'aspect_ratio'),
+      image_size: mediaVisibleChoiceControlValue(document, 'image_size'),
       stream:       true,
     };
-    const systemValue = systemArea.value.trim();
+    const systemSection = systemArea ? systemArea.closest('#system-section') : null;
+    const systemValue = systemArea && systemSection && systemSection.style.display !== 'none'
+      ? systemArea.value.trim() : '';
     if (systemValue !== '') body.system = systemValue;
     const temperatureEl    = document.getElementById('temperature');
-    const temperatureValue = temperatureEl && !temperatureEl.disabled ? temperatureEl.value : '';
+    const temperatureRow = temperatureEl ? temperatureEl.closest('.row') : null;
+    const temperatureValue = temperatureEl && temperatureRow && temperatureRow.style.display !== 'none'
+      ? temperatureEl.value : '';
     if (temperatureValue !== '') body.temperature = parseFloat(temperatureValue);
 
     // Collect inline provider fields (Format, Style preset).
@@ -1335,6 +1495,7 @@ document.addEventListener('keydown', function(e) {
     const extraContainer = document.getElementById('provider-extra-fields');
     if (extraContainer) {
       for (const el of extraContainer.querySelectorAll('input, select, textarea')) {
+        if (el.offsetParent === null) continue;
         const name = el.name;
         if (!name) continue;
         if (el.type === 'checkbox') {
