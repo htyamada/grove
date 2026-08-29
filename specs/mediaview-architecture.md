@@ -14,7 +14,7 @@ cache_dir = "~/var/mediaview/cache"
 
 [[hty7.roots]]
 name = "AI Images"
-path = "/srv/cloud/OpahSSD/pictures/ai"
+path = "/srv/cloud/store/pictures/ai"
 
 [[qat.roots]]
 name = "AI Images"
