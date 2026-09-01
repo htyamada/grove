@@ -1,3 +1,5 @@
+Addition: Should have an option to view blacklisted files and unblacklist files.
+
 # UPGRADE: Image Blacklist for imhandler
 
 This document replaces imhandler's deferred deletion plan with a persistent
