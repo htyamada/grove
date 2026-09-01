@@ -1,11 +1,13 @@
-Addition: Should have an option to view blacklisted files and unblacklist files.
-
 # UPGRADE: Image Blacklist for imhandler
 
 This document replaces imhandler's deferred deletion plan with a persistent
 image blacklist. Django never deletes, moves, or modifies source images in an
 archive. Hiding an image records its path, and both the viewer and the
-`imh`/imhandler pipeline exclude it.
+`imh`/imhandler pipeline exclude it. Authorized users can view blacklisted
+files and restore them to normal processing. Although the feature does not
+provide online file removal, its CLI export is intended to support
+operator-controlled offline removal, including removal performed by separate
+local scripts.
 
 ---
 
@@ -61,9 +63,10 @@ removes the path from the blacklist but does not recreate purged thumbnails,
 embeddings, or clusters; normal viewer and `imh` workflows rebuild them.
 
 The blacklist is exportable only through the local `imh` CLI. The web UI has
-no download or export action. Export produces data for a later, explicitly
-offline deletion-list conversion; it does not delete files and does not emit
-an executable shell script.
+no download or export action. Export produces data that a separate local
+script or manual process can use for explicitly offline file removal. The
+export command itself does not delete files or emit an executable shell
+script.
 
 ### 1.4 Path scope and identity
 
@@ -118,7 +121,9 @@ permissions and never write into a source-image directory.
 - Bulk hide/restore.
 - Content-hash or inode tracking across moves.
 - Sharing a blacklist between variants that have different `cache_dir` values.
-- Performing deletion or generating an executable deletion script from `imh`.
+- Performing deletion or generating an executable deletion script from `imh`
+  itself. Consuming an export with a separate, operator-invoked offline script
+  is supported.
 
 ---
 
@@ -211,8 +216,10 @@ data, inspect or modify source files, or invoke another program.
 
 The paths format is deliberately data, not shell syntax: paths are not quoted
 as commands, and no shebang, `rm`, or other executable content is generated.
-This allows a separate offline tool or manual process to convert the export
-into a deletion list without giving the web application deletion capability.
+It is suitable as input to a separate, operator-invoked local script or manual
+process that reviews and removes archive files offline. This assists offline
+removal without giving the web application or the `imh` export command file
+deletion capability.
 
 Each configured variant uses its own `cache_dir` and blacklist. An intentionally
 unconfigured `imh list DIR` has no blacklist to load and retains its current
@@ -277,12 +284,14 @@ cd llime && ./manage.py check
 cd llime && ./manage.py test
 ```
 
-Manually hide an image and confirm that all viewer surfaces and old media URLs
+Manually hide an image, confirm it appears on the Hidden images page, and
+confirm that all viewer surfaces and old media URLs
 block it while the source remains unchanged. Run every `imh` command, restore
 the image, and confirm normal regeneration makes it eligible again. Also test a
 missing path, concurrent updates, and a malformed blacklist. Export both
-formats from the local CLI and confirm that neither output is executable and
-that no web route offers the same export.
+formats from the local CLI, confirm that neither output is executable, verify
+that the paths output can be consumed safely as data by an offline script, and
+confirm that no web route offers the same export.
 
 ### Step 5 — Rollout and rollback
 
@@ -291,4 +300,3 @@ and `../qat/knip`. No archive write permission is required. Back up
 `cache_dir/blacklist.json` as user-maintained state. Old code ignores the
 file and would expose hidden images, so rolling back while the old viewer is
 reachable is not policy-safe.
-
