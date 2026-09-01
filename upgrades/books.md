@@ -1,8 +1,9 @@
-# TASK 2: Directory-Based Document Viewer
+# TASK 2: Directory-Based Document Previewer
 
-Add a new reusable Django app for browsing and reading a configured collection
+Add a new reusable Django app for browsing and previewing a configured collection
 of documents organized by directory. This is separate from the imhandler
-blacklist and should be implemented and reviewed independently.
+blacklist and should be implemented and reviewed independently. The goal is selection
+of files for access via downloads or a directory of active items for offline sync.
 
 ## 1 — Requirements
 
@@ -55,9 +56,10 @@ and decompression bombs, and never extract archives into the collection.
   errors.
 
 Reader pages show title, relative path, type, size, modification time,
-**Download**, and **Add to reader** state. Large files stream rather than being
-loaded wholly into Django memory. Downloads preserve original bytes and
-filename, use attachment disposition, and share the content path validation.
+**Download**, and **Add to reader** state.  Downloads preserve original
+bytes and filename, use attachment disposition, and share the content
+path validation. Emphasis is on previewing, not reading, so only the initial
+part of the document needs to be quickly available.
 
 ### 1.4 Basic operations
 
