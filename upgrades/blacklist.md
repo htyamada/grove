@@ -279,7 +279,7 @@ Then run:
 
 ```sh
 python3 -m py_compile lib/imhandler/*.py lib/imhandler/cli/*.py lib/imhandler/djview/*.py bin/imh
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests -t .
 cd llime && ./manage.py check
 cd llime && ./manage.py test
 ```

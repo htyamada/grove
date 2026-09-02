@@ -1,0 +1,3 @@
+from ._hty7_install_check import check_hty7_install_freshness
+
+check_hty7_install_freshness()

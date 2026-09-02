@@ -25,7 +25,14 @@ app’s `static/` directory. Tests, where present, use each app’s `tests.py`.
 - `cd llime && ./start-server` starts the local Django development server.
 - `python3 -m py_compile lib/mediaview/*.py lib/llemon_djview/*.py lib/imhandler/*.py lib/imhandler/cli/*.py lib/imhandler/djview/*.py bin/imh` checks the
   shared Python packages for syntax errors.
-- `python3 -m unittest discover -s tests` runs the repository-level unit tests.
+- `python3 -m unittest discover -s tests -t .` runs the repository-level unit
+  tests. The explicit `-t .` (top-level directory = repo root) is required,
+  not cosmetic: without it, `-s`/`-t` default to the same directory and
+  `unittest` never imports `tests/__init__.py` as a package at all — test
+  modules load as bare top-level names instead of `tests.test_*`, and
+  `tests/__init__.py`'s own top-level code (the check that fails fast on a
+  stale installed `hty7` — see `tests/_hty7_install_check.py`) silently
+  never runs.
 - `cd llime && ./manage.py test` runs Django tests for apps that define them.
 
 ## Coding Style & Naming Conventions
