@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     'base',
     'to_do_list',
     'mediaview',
+    'documentview',
 ]
 
 MIDDLEWARE = [
@@ -140,6 +141,10 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = '/zorf/llime/static/'
+
+# documentview -- see ../../lib/documentview/README.md
+DOCUMENT_VIEWER_ROOT = Path('/srv/cloud/store/books-and-text/')
+DOCUMENT_VIEWER_ACTIVE_DIR = Path('~/Documents/Reader')
 
 _log_dir = LLEMON_LOG_DIR
 if _log_dir:

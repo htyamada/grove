@@ -25,4 +25,5 @@ urlpatterns = [
     path('image_handler/', include('imhandler.djview.urls')),
     path('to-do-list/', include('to_do_list.urls')),
     path('mediaview/', include('mediaview.urls', namespace='mediaview')),
+    path('documents/', include('documentview.urls', namespace='documentview')),
 ]

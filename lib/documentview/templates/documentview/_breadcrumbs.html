@@ -1,0 +1,6 @@
+<nav class="dv-breadcrumbs">
+  <a href="{% url 'documentview:index' %}">Library</a>
+  {% for crumb in breadcrumbs %}
+    &raquo; <a href="{% url 'documentview:browse' rel_path=crumb.rel_path %}">{{ crumb.name }}</a>
+  {% endfor %}
+</nav>

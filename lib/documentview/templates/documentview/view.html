@@ -1,0 +1,113 @@
+{% extends "base/base.html" %}
+{% load static %}
+
+{% block title %}{{ document.title }}{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{% static 'documentview/documentview.css' %}">{% endblock %}
+
+{% block content %}
+{% include "documentview/_breadcrumbs.html" %}
+
+<img class="dv-detail-cover"
+     src="{% url 'documentview:cover' rel_path=document.rel_path %}?size=detail"
+     alt="{{ document.title }}">
+
+<h2 class="dv-detail-title">{{ document.title }}</h2>
+<p class="dv-detail-path">{{ rel_path }}</p>
+
+<form method="post" action="{% url 'documentview:cover_refresh' %}" class="dv-cover-refresh">
+  {% csrf_token %}
+  <input type="hidden" name="rel_path" value="{{ rel_path }}">
+  <button type="submit">Refresh cover</button>
+</form>
+
+{% if document.errors %}
+<div class="dv-error">
+  <strong>Collection error:</strong>
+  <ul>
+    {% for err in document.errors %}<li>{{ err }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if active_error %}<div class="dv-error">{{ active_error }}</div>{% endif %}
+{% if active_notice %}<div class="dv-notice">{{ active_notice }}</div>{% endif %}
+
+<table class="dv-variant-table">
+  <thead><tr><th>Format</th><th>File</th><th>Size</th><th></th><th></th></tr></thead>
+  <tbody>
+  {% for row in variant_rows %}
+    <tr>
+      <td><span class="dv-badge">{{ row.variant.suffix|upper }}</span></td>
+      <td>{{ row.variant.filename }}</td>
+      <td>{{ row.variant.size|filesizeformat }}</td>
+      <td><a href="{% url 'documentview:download' rel_path=row.variant.rel_path %}">Download</a></td>
+      <td>
+        {% if row.active_link %}
+        <form method="post" action="{% url 'documentview:active_remove' %}" class="dv-active-form">
+          {% csrf_token %}
+          <input type="hidden" name="link_name" value="{{ row.active_link }}">
+          <input type="hidden" name="rel_path" value="{{ rel_path }}">
+          <button type="submit">Remove from reader</button>
+        </form>
+        {% else %}
+        <form method="post" action="{% url 'documentview:active_add' %}" class="dv-active-form">
+          {% csrf_token %}
+          <input type="hidden" name="rel_path" value="{{ row.variant.rel_path }}">
+          <button type="submit">Add to reader</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<div class="dv-preview">
+{% if preview.kind == 'epub' %}
+  {% if preview.toc %}
+  <h3>Contents</h3>
+  <ul class="dv-toc">
+    {% for entry in preview.toc %}<li>{{ entry.label }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% for section in preview.sections %}
+    <h3>{{ section.label }}</h3>
+    <div class="dv-epub-section">{{ section.html|safe }}</div>
+  {% empty %}
+    <p class="dv-empty">No preview available for this EPUB.</p>
+  {% endfor %}
+
+{% elif preview.kind == 'pdf' %}
+  {% if preview.pages %}
+  <div class="dv-page-preview">
+    {% for page in preview.pages %}
+      <img class="dv-page-image"
+           src="{% url 'documentview:preview' rel_path=preview.rel_path %}?kind=pdf-page&page={{ page }}"
+           alt="Page {{ page }}">
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="dv-empty">No preview available for this PDF.</p>
+  {% endif %}
+
+{% elif preview.kind == 'cbz' %}
+  {% if preview.pages %}
+  <div class="dv-page-preview">
+    {% for page in preview.pages %}
+      <img class="dv-page-image"
+           src="{% url 'documentview:preview' rel_path=preview.rel_path %}?kind=cbz-page&page={{ page }}"
+           alt="Page {{ page }}">
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="dv-empty">No preview available for this comic.</p>
+  {% endif %}
+
+{% elif preview.kind == 'markdown' %}
+  <div class="dv-markdown-preview">{{ preview.html|safe }}</div>
+
+{% elif preview.kind == 'text' %}
+  <pre class="dv-text-preview">{{ preview.text }}</pre>
+{% endif %}
+</div>
+{% endblock %}
