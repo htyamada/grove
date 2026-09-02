@@ -438,8 +438,8 @@ with defaults, all referenced by tests instead of restated as literals:
 | `DOCUMENT_VIEWER_COVER_SIZES` | `{"thumb": (150, 220), "detail": (300, 440)}` | `covers.py`, `cover` view — the only sizes a request may ask for |
 | `DOCUMENT_VIEWER_MAX_PREVIEW_SECTIONS` | 3 | `previews.py` EPUB |
 | `DOCUMENT_VIEWER_MAX_PREVIEW_BYTES` | 200 KiB | `previews.py` Markdown/text/EPUB section |
-| `DOCUMENT_VIEWER_MAX_CBZ_PREVIEW_IMAGES` | 6 | `previews.py` CBZ |
-| `DOCUMENT_VIEWER_MAX_PDF_PREVIEW_PAGES` | 3 | `previews.py`/`covers.py` PDF |
+| `DOCUMENT_VIEWER_MAX_CBZ_PREVIEW_IMAGES` | 10 | `previews.py` CBZ |
+| `DOCUMENT_VIEWER_MAX_PDF_PREVIEW_PAGES` | 10 | `previews.py`/`covers.py` PDF |
 | `DOCUMENT_VIEWER_PDF_RENDER_DPI` | 96 | PDF wrapper |
 | `DOCUMENT_VIEWER_MAX_PDF_RENDER_DIMENSION` | 2048 | PDF wrapper; maximum width or height passed to `pdftoppm` |
 | `DOCUMENT_VIEWER_SUBPROCESS_TIMEOUT` | 10s | PDF wrapper |

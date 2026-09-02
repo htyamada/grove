@@ -1,8 +1,8 @@
 {% extends "base/base.html" %}
-{% load static documentview_extras %}
+{% load documentview_extras %}
 
 {% block title %}Library{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="{% static 'documentview/documentview.css' %}">{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{{ documentview_stylesheet_url }}">{% endblock %}
 
 {% block content %}
 {% include "documentview/_breadcrumbs.html" %}

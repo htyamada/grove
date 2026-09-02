@@ -1,8 +1,6 @@
 {% extends "base/base.html" %}
-{% load static %}
-
 {% block title %}{{ document.title }}{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="{% static 'documentview/documentview.css' %}">{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{{ documentview_stylesheet_url }}">{% endblock %}
 
 {% block content %}
 {% include "documentview/_breadcrumbs.html" %}
@@ -92,9 +90,9 @@
 
 {% elif preview.kind == 'cbz' %}
   {% if preview.pages %}
-  <div class="dv-page-preview">
+  <div class="dv-page-preview dv-cbz-preview">
     {% for page in preview.pages %}
-      <img class="dv-page-image"
+      <img class="dv-page-image dv-cbz-page-image"
            src="{% url 'documentview:preview' rel_path=preview.rel_path %}?kind=cbz-page&page={{ page }}"
            alt="Page {{ page }}">
     {% endfor %}

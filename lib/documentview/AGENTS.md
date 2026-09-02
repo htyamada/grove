@@ -43,6 +43,7 @@ Optional, with defaults:
 | `DOCUMENT_VIEWER_CACHE_DIR` | `~/var/documentview/cache` |
 | `DOCUMENT_VIEWER_ACTIVE_MANIFEST` | `~/var/documentview/active_manifest.json` |
 | `DOCUMENT_VIEWER_AUTHORIZE` | `lambda request, action: request.user.is_authenticated` |
+| `DOCUMENT_VIEWER_STYLESHEET_URL` | Django static URL for `documentview/documentview.css` |
 | `DOCUMENT_VIEWER_COVER_SIZES` | `{"thumb": (150, 220), "detail": (300, 440)}` |
 
 `DOCUMENT_VIEWER_AUTHORIZE(request, action)` is called with `action` one of
@@ -64,8 +65,8 @@ overridable settings with the defaults below):
 | `DOCUMENT_VIEWER_COVER_SIZES` | see above | The only named boxes a cover request may ask for |
 | `DOCUMENT_VIEWER_MAX_PREVIEW_SECTIONS` | 3 | EPUB preview sections (TOC + preface + opening chapters) |
 | `DOCUMENT_VIEWER_MAX_PREVIEW_BYTES` | 200 KiB | Markdown/text/EPUB-section preview excerpt |
-| `DOCUMENT_VIEWER_MAX_CBZ_PREVIEW_IMAGES` | 6 | CBZ preview pages |
-| `DOCUMENT_VIEWER_MAX_PDF_PREVIEW_PAGES` | 3 | PDF preview pages |
+| `DOCUMENT_VIEWER_MAX_CBZ_PREVIEW_IMAGES` | 10 | CBZ preview pages |
+| `DOCUMENT_VIEWER_MAX_PDF_PREVIEW_PAGES` | 10 | PDF preview pages |
 | `DOCUMENT_VIEWER_PDF_RENDER_DPI` | 96 | `pdftoppm` render DPI |
 | `DOCUMENT_VIEWER_MAX_PDF_RENDER_DIMENSION` | 2048 | Max width/height `pdftoppm` may produce (via `-scale-to`) |
 | `DOCUMENT_VIEWER_SUBPROCESS_TIMEOUT` | 10s | `pdftoppm` hard timeout |

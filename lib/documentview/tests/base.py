@@ -22,6 +22,9 @@ class DocumentViewTestCase(TestCase):
             DOCUMENT_VIEWER_ACTIVE_DIR=self.active,
             DOCUMENT_VIEWER_CACHE_DIR=self.cache,
             DOCUMENT_VIEWER_ACTIVE_MANIFEST=self.manifest,
+            DOCUMENT_VIEWER_AUTHORIZE=(
+                lambda request, action: request.user.is_authenticated
+            ),
         )
         override.enable()
         self.addCleanup(override.disable)

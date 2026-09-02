@@ -1,8 +1,6 @@
 {% extends "base/base.html" %}
-{% load static %}
-
 {% block title %}Reader{% endblock %}
-{% block extra_head %}<link rel="stylesheet" href="{% static 'documentview/documentview.css' %}">{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{{ documentview_stylesheet_url }}">{% endblock %}
 
 {% block content %}
 <nav class="dv-breadcrumbs"><a href="{% url 'documentview:index' %}">Library</a></nav>

@@ -54,6 +54,13 @@ _IMG_TAG_RE = re.compile(r'<img\b[^>]*>', re.IGNORECASE)
 _A_HREF_RE = re.compile(r'<a\b([^>]*?)\shref="([^"]*)"([^>]*)>', re.IGNORECASE)
 _ATTR_RE = re.compile(r'\b([A-Za-z_:][-\w:.]*)="([^"]*)"')
 
+_CHAPTER_LABEL_RE = re.compile(r'\bchapter\s+(?:\d+|[ivxlcdm]+|one|two|three)\b', re.IGNORECASE)
+_FRONT_MATTER_LABEL_RE = re.compile(
+    r'^(?:cover|title(?: page)?|table of contents|contents|copyright|'
+    r'revision history|dedication|acknowledg(?:e)?ments|colophon)$',
+    re.IGNORECASE,
+)
+
 
 class PreviewError(Exception):
     pass
@@ -187,7 +194,24 @@ def _spine_fallback_toc(manifest, spine, opf_dir):
     return entries
 
 
-def _select_preview_hrefs(opf_root, manifest, spine, opf_dir, max_sections):
+def _first_substantive_toc_href(toc, spine_hrefs):
+    """Prefer an explicitly labelled chapter, falling back to the first
+    TOC entry that is not recognizable front matter.
+    """
+    entries = [entry for entry in toc if entry['href'] in spine_hrefs]
+    for entry in entries:
+        if _CHAPTER_LABEL_RE.search(entry['label']):
+            return entry['href']
+    for entry in entries:
+        if not _FRONT_MATTER_LABEL_RE.fullmatch(entry['label'].strip()):
+            return entry['href']
+    return None
+
+
+def _select_preview_hrefs(opf_root, manifest, spine, opf_dir, toc, max_sections):
+    if max_sections <= 0:
+        return []
+
     hrefs = []
 
     preface_href = epub.guide_reference_href(opf_root, {'preface', 'introduction', 'foreword'})
@@ -195,6 +219,7 @@ def _select_preview_hrefs(opf_root, manifest, spine, opf_dir, max_sections):
         hrefs.append(epub.resolve_href(opf_dir, preface_href))
 
     nav_ids = {i for i, info in manifest.items() if 'nav' in info['properties']}
+    spine_hrefs = []
     for idref in spine:
         if idref in nav_ids:
             continue
@@ -202,11 +227,24 @@ def _select_preview_hrefs(opf_root, manifest, spine, opf_dir, max_sections):
         if info is None or not info['href']:
             continue
         candidate = epub.resolve_href(opf_dir, info['href'])
+        spine_hrefs.append(candidate)
+
+    chapter_href = _first_substantive_toc_href(toc, set(spine_hrefs))
+    # Reserve one of the bounded preview slots for the first semantically
+    # identified chapter. Otherwise cover/contents/copyright pages at the
+    # head of the spine can consume the whole preview budget.
+    fill_limit = max_sections - 1 if chapter_href else max_sections
+    for candidate in spine_hrefs:
+        if len(hrefs) >= fill_limit:
+            break
+        if candidate == chapter_href:
+            continue
         if candidate in hrefs:
             continue
         hrefs.append(candidate)
-        if len(hrefs) >= max_sections:
-            break
+
+    if chapter_href and chapter_href not in hrefs:
+        hrefs.append(chapter_href)
 
     return hrefs[:max_sections]
 
@@ -301,7 +339,7 @@ def _epub_preview_from_archive(reader, resolved, rel_path, max_sections, max_byt
     if toc is None:
         toc = _spine_fallback_toc(manifest, spine, opf_dir)
 
-    hrefs = _select_preview_hrefs(opf_root, manifest, spine, opf_dir, max_sections)
+    hrefs = _select_preview_hrefs(opf_root, manifest, spine, opf_dir, toc, max_sections)
 
     sections = []
     for href in hrefs:

@@ -145,6 +145,15 @@ STATIC_URL = '/zorf/llime/static/'
 # documentview -- see ../../lib/documentview/README.md
 DOCUMENT_VIEWER_ROOT = Path('/srv/cloud/store/books-and-text/')
 DOCUMENT_VIEWER_ACTIVE_DIR = Path('~/Documents/Reader')
+DOCUMENT_VIEWER_STYLESHEET_URL = '/zorf/llime/static/base/css/documentview.css'
+
+
+def _authorize_document_viewer(request, action):
+    """Llime is authenticated by the web server, outside Django."""
+    return True
+
+
+DOCUMENT_VIEWER_AUTHORIZE = _authorize_document_viewer
 
 _log_dir = LLEMON_LOG_DIR
 if _log_dir:

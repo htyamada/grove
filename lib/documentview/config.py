@@ -19,6 +19,7 @@ from pathlib import Path, PurePath
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.templatetags.static import static
 
 DEFAULT_CACHE_DIR = '~/var/documentview/cache'
 DEFAULT_ACTIVE_MANIFEST = '~/var/documentview/active_manifest.json'
@@ -37,8 +38,8 @@ _LIMIT_DEFAULTS = {
     'DOCUMENT_VIEWER_MAX_IMAGE_PIXELS': 40_000_000,
     'DOCUMENT_VIEWER_MAX_PREVIEW_SECTIONS': 3,
     'DOCUMENT_VIEWER_MAX_PREVIEW_BYTES': 200 * 1024,
-    'DOCUMENT_VIEWER_MAX_CBZ_PREVIEW_IMAGES': 6,
-    'DOCUMENT_VIEWER_MAX_PDF_PREVIEW_PAGES': 3,
+    'DOCUMENT_VIEWER_MAX_CBZ_PREVIEW_IMAGES': 10,
+    'DOCUMENT_VIEWER_MAX_PDF_PREVIEW_PAGES': 10,
     'DOCUMENT_VIEWER_PDF_RENDER_DPI': 96,
     'DOCUMENT_VIEWER_MAX_PDF_RENDER_DIMENSION': 2048,
     'DOCUMENT_VIEWER_SUBPROCESS_TIMEOUT': 10,
@@ -76,6 +77,14 @@ def active_manifest_lock_path() -> Path:
 
 def cover_sizes() -> dict:
     return getattr(settings, 'DOCUMENT_VIEWER_COVER_SIZES', DEFAULT_COVER_SIZES)
+
+
+def stylesheet_url() -> str:
+    return getattr(
+        settings,
+        'DOCUMENT_VIEWER_STYLESHEET_URL',
+        static('documentview/documentview.css'),
+    )
 
 
 def authorize(request, action: str) -> bool:

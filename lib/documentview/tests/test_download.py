@@ -55,6 +55,13 @@ class DownloadTests(DocumentViewClientTestCase):
 
 
 class PreviewSubresourceHttpTests(DocumentViewClientTestCase):
+    def test_cbz_detail_marks_pages_for_responsive_scaling(self):
+        self.mkdir('a')
+        fixtures.make_cbz(self.root / 'a' / 'Comic.cbz')
+        r = self.get('/documents/view/a/Comic.cbz/')
+        self.assertContains(r, 'class="dv-page-preview dv-cbz-preview"')
+        self.assertContains(r, 'class="dv-page-image dv-cbz-page-image"', count=3)
+
     def test_pdf_page_subresource(self):
         self.mkdir('a')
         fixtures.make_pdf(self.root / 'a' / 'Doc.pdf')

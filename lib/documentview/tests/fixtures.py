@@ -173,6 +173,38 @@ def make_epub_no_cover(path):
         zf.writestr('OEBPS/chapter1.xhtml', _CHAPTER_XHTML)
 
 
+def make_epub_with_front_matter(path):
+    items = ('cover', 'contents', 'copyright', 'revision-history', 'chapter1')
+    manifest = '\n'.join(
+        f'    <item id="{name}" href="{name}.xhtml" media-type="application/xhtml+xml"/>'
+        for name in items
+    )
+    spine = '\n'.join(f'    <itemref idref="{name}"/>' for name in items)
+    opf = f"""<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+{manifest}
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+{spine}
+  </spine>
+</package>
+""".encode()
+    nav = b"""<html xmlns="http://www.w3.org/1999/xhtml"><body><nav>
+<a href="cover.xhtml">Cover</a><a href="contents.xhtml">Contents</a>
+<a href="copyright.xhtml">Copyright</a><a href="revision-history.xhtml">Revision History</a>
+<a href="chapter1.xhtml">Chapter 1</a>
+</nav></body></html>"""
+    with zipfile.ZipFile(path, 'w') as zf:
+        zf.writestr('mimetype', 'application/epub+zip')
+        zf.writestr('META-INF/container.xml', _CONTAINER_XML)
+        zf.writestr('OEBPS/content.opf', opf)
+        zf.writestr('OEBPS/nav.xhtml', nav)
+        for name in items:
+            zf.writestr(f'OEBPS/{name}.xhtml', f'<html><body><h1>{name}</h1></body></html>')
+
+
 def make_cbz(path, page_colors=((10, 10, 200), (10, 200, 10), (200, 10, 10))):
     with zipfile.ZipFile(path, 'w') as zf:
         for i, color in enumerate(page_colors, start=1):

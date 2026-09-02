@@ -30,6 +30,15 @@ class EpubPreviewTests(DocumentViewTestCase):
             result = previews.epub_preview(resolved, resolved.rel_path)
         self.assertEqual(len(result['sections']), 1)
 
+    def test_front_matter_does_not_use_every_slot_before_first_chapter(self):
+        self.mkdir('a')
+        fixtures.make_epub_with_front_matter(self.root / 'a' / 'Book.epub')
+        with paths.resolve_document('a/Book.epub') as resolved:
+            result = previews.epub_preview(resolved, resolved.rel_path)
+        labels = [section['label'] for section in result['sections']]
+        self.assertEqual(len(labels), 3)
+        self.assertIn('chapter1.xhtml', labels)
+
     def test_malformed_epub_degrades_gracefully(self):
         self.mkdir('a')
         fixtures.make_malformed_zip(self.root / 'a' / 'Book.epub')
@@ -239,6 +248,16 @@ class EpubImageSubresourceTests(DocumentViewTestCase):
 
 
 class CbzPreviewTests(DocumentViewTestCase):
+    def test_default_page_count_includes_ten_samples(self):
+        self.mkdir('a')
+        fixtures.make_cbz(
+            self.root / 'a' / 'Comic.cbz',
+            page_colors=[(i, i, i) for i in range(12)],
+        )
+        with paths.resolve_document('a/Comic.cbz') as resolved:
+            count = previews.cbz_preview_page_count(resolved)
+        self.assertEqual(count, 10)
+
     def test_page_count_capped_by_setting(self):
         self.mkdir('a')
         fixtures.make_cbz(

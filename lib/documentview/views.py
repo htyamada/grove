@@ -50,6 +50,7 @@ def _secure_resource(response):
 
 
 def _render_page(request, template, context, *, allow_remote_images=False):
+    context.setdefault('documentview_stylesheet_url', config.stylesheet_url())
     response = render(request, template, context)
     response['X-Content-Type-Options'] = 'nosniff'
     response['Content-Security-Policy'] = _html_csp(
