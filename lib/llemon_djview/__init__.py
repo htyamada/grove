@@ -95,6 +95,51 @@ def media_settings(appconfig) -> dict[str, str | None]:
     }
 
 
+def persona_settings(appconfig) -> dict[str, tuple[str, ...]]:
+    """Return the validated persona_hosts allowlist as a Django setting.
+
+    Read from [*.llemon.persona] persona_hosts -- Grove-local host-
+    selection configuration (see upgrade.md's Task 11), not a persona-layer
+    or CLI concept, so it lives in the llemon_djview.conf overlay merged
+    into `appconfig` by django_settings(), not llemon.conf itself. Absent
+    or empty defaults to (); a present but malformed or duplicate entry is
+    fatal to Django startup, matching media_settings()'s precedent for a
+    bad *-rewrite.json selector -- there is no partial/best-effort loading
+    of this list.
+    """
+    raw = appconfig.get('llemon', 'persona', 'persona_hosts')
+    if raw is None:
+        raw = []  # Absent: empty allowlist, not a config error.
+    if not isinstance(raw, list):
+        # Substituting [] only for None above (not `raw or []`, which
+        # would also swallow "", False, 0, and {} -- all malformed but
+        # falsy) means every malformed non-list value, falsy or not,
+        # reaches this check. A bare string (e.g. persona_hosts = "opah",
+        # meant as an array) is itself iterable character-by-character,
+        # and each character is valid hostname syntax on its own --
+        # silently producing ('o', 'p', 'a', 'h') instead of failing
+        # loudly. Only the list shape hty7.config's TOML parser actually
+        # produces for an array is accepted.
+        raise _ConfigError(
+            f"[*.llemon.persona] persona_hosts must be an array, got {raw!r}"
+        )
+    seen: set[str] = set()
+    hosts: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            raise _ConfigError(
+                f"[*.llemon.persona] persona_hosts entries must be strings, got {entry!r}"
+            )
+        discover.validate_host_syntax(entry)
+        if entry in seen:
+            raise _ConfigError(
+                f"[*.llemon.persona] persona_hosts: duplicate host {entry!r}"
+            )
+        seen.add(entry)
+        hosts.append(entry)
+    return {'LLEMON_PERSONA_HOSTS': tuple(hosts)}
+
+
 def _expand_djview_value(value: object, path: str, section: str, key: str) -> _ConfigValue:
     if isinstance(value, bool):
         return value
@@ -194,7 +239,9 @@ def _setup_startup_logging(appconfig) -> None:
         pass
 
 
-def django_settings(variant: str, conf_path: str = _DEFAULT_CONF) -> dict[str, str | None]:
+def django_settings(
+    variant: str, conf_path: str = _DEFAULT_CONF,
+) -> dict[str, str | None | tuple[str, ...]]:
     """Load installed LLemon config for variant and return Django settings values."""
     appconfig = _AppConfig(os.path.expanduser(conf_path), variant)
     if os.path.exists(_DEFAULT_DJVIEW_CONF):
@@ -204,7 +251,7 @@ def django_settings(variant: str, conf_path: str = _DEFAULT_CONF) -> dict[str, s
     # notifications are captured rather than lost.
     _setup_startup_logging(appconfig)
     discover.init(appconfig)
-    return media_settings(appconfig)
+    return {**media_settings(appconfig), **persona_settings(appconfig)}
 
 
 def _load_display_history_from_file(path):

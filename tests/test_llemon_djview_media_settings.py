@@ -336,17 +336,28 @@ class DjviewMediaSettingsTests(unittest.TestCase):
         with mock.patch.object(djview, '_AppConfig', return_value=fake_appconfig) as appconfig_cls:
             with mock.patch('os.path.exists', return_value=False):
                 with mock.patch.object(djview.discover, 'init') as discover_init:
-                    with mock.patch.object(
-                        djview,
-                        'media_settings',
-                        return_value={'LLEMON_IMAGEGEN_MEDIA_DIR': '/tmp/media'},
-                    ) as media_settings:
+                    with (
+                        mock.patch.object(
+                            djview,
+                            'media_settings',
+                            return_value={'LLEMON_IMAGEGEN_MEDIA_DIR': '/tmp/media'},
+                        ) as media_settings,
+                        mock.patch.object(
+                            djview,
+                            'persona_settings',
+                            return_value={'LLEMON_PERSONA_HOSTS': ('opah',)},
+                        ) as persona_settings,
+                    ):
                         settings = djview.django_settings('qat')
 
         appconfig_cls.assert_called_once_with(str(Path('~/etc/llemon.conf').expanduser()), 'qat')
         discover_init.assert_called_once_with(fake_appconfig)
         media_settings.assert_called_once_with(fake_appconfig)
-        self.assertEqual(settings, {'LLEMON_IMAGEGEN_MEDIA_DIR': '/tmp/media'})
+        persona_settings.assert_called_once_with(fake_appconfig)
+        self.assertEqual(
+            settings,
+            {'LLEMON_IMAGEGEN_MEDIA_DIR': '/tmp/media', 'LLEMON_PERSONA_HOSTS': ('opah',)},
+        )
 
     def test_django_settings_overlays_grove_local_djview_conf(self) -> None:
         djview = self._import_djview()
@@ -372,10 +383,14 @@ class DjviewMediaSettingsTests(unittest.TestCase):
             with mock.patch.object(djview, '_AppConfig', return_value=fake_appconfig):
                 with mock.patch.object(djview, '_DEFAULT_DJVIEW_CONF', conf.name):
                     with mock.patch.object(djview.discover, 'init'):
-                        with mock.patch.object(djview, 'media_settings', return_value={}) as media_settings:
+                        with (
+                            mock.patch.object(djview, 'media_settings', return_value={}) as media_settings,
+                            mock.patch.object(djview, 'persona_settings', return_value={}) as persona_settings,
+                        ):
                             djview.django_settings('hty7')
 
         media_settings.assert_called_once_with(fake_appconfig)
+        persona_settings.assert_called_once_with(fake_appconfig)
         self.assertEqual(
             fake_appconfig._data['hty7.llemon.mediagen'],
             {
@@ -386,6 +401,82 @@ class DjviewMediaSettingsTests(unittest.TestCase):
                 'input_files': ['Pictures=/srv/pictures'],
             },
         )
+
+    def test_persona_settings_defaults_to_an_empty_tuple(self) -> None:
+        djview = self._import_djview()
+        fake_appconfig = types.SimpleNamespace(get=lambda *a, **k: None)
+        self.assertEqual(
+            djview.persona_settings(fake_appconfig),
+            {'LLEMON_PERSONA_HOSTS': ()},
+        )
+
+    def test_persona_settings_returns_the_validated_host_tuple(self) -> None:
+        djview = self._import_djview()
+        fake_appconfig = types.SimpleNamespace(
+            get=lambda project, layer, key: ['opah', 'aku', 'geekom']
+            if (layer, key) == ('persona', 'persona_hosts') else None,
+        )
+        self.assertEqual(
+            djview.persona_settings(fake_appconfig),
+            {'LLEMON_PERSONA_HOSTS': ('opah', 'aku', 'geekom')},
+        )
+
+    def test_persona_settings_rejects_a_duplicate_host(self) -> None:
+        djview = self._import_djview()
+        fake_appconfig = types.SimpleNamespace(
+            get=lambda project, layer, key: ['opah', 'opah']
+            if (layer, key) == ('persona', 'persona_hosts') else None,
+        )
+        with self.assertRaises(djview._ConfigError):
+            djview.persona_settings(fake_appconfig)
+
+    def test_persona_settings_rejects_a_non_string_entry(self) -> None:
+        djview = self._import_djview()
+        fake_appconfig = types.SimpleNamespace(
+            get=lambda project, layer, key: [123]
+            if (layer, key) == ('persona', 'persona_hosts') else None,
+        )
+        with self.assertRaises(djview._ConfigError):
+            djview.persona_settings(fake_appconfig)
+
+    def test_persona_settings_rejects_a_bare_string_instead_of_an_array(self) -> None:
+        """persona_hosts = "opah" (meant as an array, written as a scalar)
+        is itself iterable character-by-character, and each character is
+        valid hostname syntax on its own -- must be rejected outright
+        rather than silently producing ('o', 'p', 'a', 'h')."""
+        djview = self._import_djview()
+        fake_appconfig = types.SimpleNamespace(
+            get=lambda project, layer, key: 'opah'
+            if (layer, key) == ('persona', 'persona_hosts') else None,
+        )
+        with self.assertRaises(djview._ConfigError):
+            djview.persona_settings(fake_appconfig)
+
+    def test_persona_settings_rejects_a_falsy_non_list_scalar(self) -> None:
+        """"", False, 0, and {} are all malformed but falsy -- a bare
+        `raw or []` would silently substitute [] for any of them and
+        bypass the isinstance(raw, list) check entirely, since [] passes
+        it. Only an absent key (None) may become []."""
+        djview = self._import_djview()
+        for bad_value in ('', False, 0, {}):
+            with self.subTest(bad_value=bad_value):
+                fake_appconfig = types.SimpleNamespace(
+                    get=lambda project, layer, key, _v=bad_value: _v
+                    if (layer, key) == ('persona', 'persona_hosts') else None,
+                )
+                with self.assertRaises(djview._ConfigError):
+                    djview.persona_settings(fake_appconfig)
+
+    def test_persona_settings_rejects_invalid_host_syntax(self) -> None:
+        from hty7.llemon.persona.config import ConfigError as PersonaConfigError
+
+        djview = self._import_djview()
+        fake_appconfig = types.SimpleNamespace(
+            get=lambda project, layer, key: ['not a host']
+            if (layer, key) == ('persona', 'persona_hosts') else None,
+        )
+        with self.assertRaises(PersonaConfigError):
+            djview.persona_settings(fake_appconfig)
 
     def test_videogen_empty_upload_matches_image_error_message(self) -> None:
         class FakeJsonResponse:
