@@ -497,7 +497,14 @@ loading. Two entries differing only in case are distinct, non-duplicate
 allowlist members — this loader does not fold or normalize case, matching
 `validate_host_selection()`'s own case-sensitive matching below. Grove
 synthesizes no local/default choice of its own: the only selectable values
-are exactly the configured `persona_hosts` entries, presented as-is.
+are exactly the configured `persona_hosts` entries, presented as-is. This
+loader runs once at Django settings-import time; changing `persona_hosts`
+takes effect only after a Django restart, the same as every other
+`llemon_djview.conf`/`llemon.conf` setting — there is no runtime reload and
+no host discovery/probing of any kind. Grove never inspects `~/.ssh/config`
+or exposes jump-host configuration in the UI; an administrator adds a host
+to `persona_hosts` only once its alias (and any `ProxyJump` it needs) is
+already configured there, the same precondition `--host` assumes.
 
 **Visibility and enablement.** The `configs()` page shows a Host control
 (a scrollable list, `-- no host selected --` plus one entry per configured
@@ -596,6 +603,16 @@ hosting-capable provider is reachable the same way a manual one is.
 page last rendered, and passes `hosted=bool(host)` — never inferred from
 `url_override` — to `Persona()`, matching `llemon-cli-impl.md` §6's flag
 contract exactly.
+
+**Persistence and display.** A selected host is launch-only request/session
+state, the same as `--host` on the terminal frontends: it is never written
+to a persona description file, an `.llmac` macro, a history file's header
+or turns, or any other saved artifact — a macro recorded while a host was
+selected does not carry it, matching `--host`'s own "macros cannot set it"
+rule. It is, however, meant to be seen: the running chat page (`chat.html`)
+shows the effective host in its page title/header so the destination stays
+visible for as long as prompts are being sent there, distinct from (and in
+addition to) its purely internal role as a query/session-state key.
 
 Direct `discover` calls by view:
 
