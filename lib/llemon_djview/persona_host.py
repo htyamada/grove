@@ -37,6 +37,20 @@ def validate_host_selection(persona_hosts: tuple[str, ...], host: str, provider:
     discover.validate_host_provider(provider)
 
 
+def provider_supports_hosting(provider: str) -> bool:
+    """Return whether `provider` is one a hosted connection supports.
+
+    A boolean sibling of `discover.validate_host_provider()`'s raise-based
+    check, for UI gating (whether to show/enable the Host control at all)
+    rather than request validation.
+    """
+    try:
+        discover.validate_host_provider(provider)
+    except ConfigError:
+        return False
+    return True
+
+
 def resolve_effective_provider_and_model(
     config_path: str, service_name: str, manual_provider: str, manual_model: str,
 ) -> tuple[str, str]:

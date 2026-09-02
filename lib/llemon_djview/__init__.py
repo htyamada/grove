@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 
 import markdown as _markdown  # type: ignore[import-untyped]
 
+from django.conf import settings  # type: ignore[import-untyped]
 from django.http import JsonResponse, StreamingHttpResponse  # type: ignore[import-untyped]
 from django.shortcuts import redirect, render  # type: ignore[import-untyped]
 from django.urls import reverse  # type: ignore[import-untyped]
@@ -33,7 +34,12 @@ from hty7.llemon.persona.session import Session
 from hty7.llemon.persona import discover
 from hty7.llemon.core.history import History
 
-from .persona_host import resolve_effective_provider_and_model
+from .persona_host import (
+    host_url_override,
+    provider_supports_hosting,
+    resolve_effective_provider_and_model,
+    validate_host_selection,
+)
 
 _md = _markdown.Markdown(extensions=['fenced_code', 'tables', 'nl2br'])
 _md_doc = _markdown.Markdown(extensions=['fenced_code', 'tables'])
@@ -328,6 +334,20 @@ def _manual_query_params(*, provider=None, model=None) -> dict[str, str]:
         params['provider'] = str(provider)
     if model not in (None, ''):
         params['model'] = str(model)
+    return params
+
+
+def _host_query_params(*, host=None) -> dict[str, str]:
+    """Return `{'host': host}` when set, else `{}`.
+
+    A separate helper from `_manual_query_params()`, not a key inside it:
+    a selected host must survive a request with no manual provider/model
+    at all (a picked service whose provider happens to be hosted-capable
+    still carries a host selection).
+    """
+    params: dict[str, str] = {}
+    if host not in (None, ''):
+        params['host'] = str(host)
     return params
 
 
@@ -670,6 +690,8 @@ class LLemonViewSet:
         debug = request.GET.get('debug', '')
         manual_provider = request.GET.get('provider', '')
         manual_model = request.GET.get('model', '')
+        host = request.GET.get('host', '')
+        persona_hosts = getattr(settings, 'LLEMON_PERSONA_HOSTS', ())
         if init_choice:
             init_mode = ''
             start_fname = ''
@@ -693,6 +715,7 @@ class LLemonViewSet:
             provider=manual_provider,
             model=manual_model,
         )
+        host_params = _host_query_params(host=host)
         if service_choice:
             service_name = service_choice
         session = Session()
@@ -756,10 +779,33 @@ class LLemonViewSet:
         manual_model_error = None
         if manual_provider:
             try:
-                manual_models = discover.list_models(manual_provider)
+                validate_host_selection(persona_hosts, host, manual_provider)
+            except ConfigError:
+                # Stale/incompatible selection in a GET render: clear
+                # silently rather than erroring -- see the Task 11 Phase 3
+                # "silent-clear vs. hard-reject" note in upgrade.md.
+                host = ''
+                host_params = _host_query_params(host=host)
+            manual_url_override = None
+            try:
+                if host:
+                    manual_url_override = host_url_override(manual_provider, host)
+                manual_models = discover.list_models(manual_provider, url_override=manual_url_override)
             except Exception as exc:
+                # Covers both a tunnel/runtime failure resolving the host
+                # (host stays selected -- the user may retry) and an
+                # ordinary model-listing failure, uniformly.
                 logger.exception('could not list models for provider %s', manual_provider)
                 manual_model_error = str(exc)
+            if host and not manual_model and manual_models:
+                # A remote host's model list is unfamiliar and changes per
+                # machine; default to the alphabetically-first entry
+                # (list_models() is already sorted) rather than leaving
+                # chat launch blocked on an explicit pick. The user may
+                # still choose a different model.
+                manual_model = manual_models[0]
+                manual_params = _manual_query_params(provider=manual_provider, model=manual_model)
+                manual_ready = True
         if manual_model and manual_model not in manual_models:
             manual_model = ''
             manual_params = _manual_query_params(provider=manual_provider, model=manual_model)
@@ -806,6 +852,27 @@ class LLemonViewSet:
             )
             if manual_ready:
                 status_rows[3]['value'] = 'manual'
+            # Manual-provider hosts were already validated (and cleared if
+            # stale) above; only the service-only path still needs it,
+            # since service_provider only resolves to the picked service's
+            # provider once manual_provider is falsy.
+            service_provider = manual_provider or next(
+                (s[2] for s in services if s[0] == service_name), '',
+            )
+            if host and not manual_provider:
+                try:
+                    validate_host_selection(persona_hosts, host, service_provider)
+                except ConfigError:
+                    host = ''
+                    host_params = _host_query_params(host=host)
+            host_capable = bool(persona_hosts) and provider_supports_hosting(service_provider)
+            if host_capable:
+                status_rows.append({
+                    'field': 'Host',
+                    'value': host,
+                    'title': '',
+                    'url': None,
+                })
             init_entries.append({
                 'name': 'new',
                 'title': 'New session',
@@ -818,6 +885,7 @@ class LLemonViewSet:
                     **({'service': service_name} if service_name and not manual_selection else {}),
                     **override_params,
                     **manual_params,
+                    **host_params,
                 }),
             })
             for hfname, hpath in discover.list_history_files(fname):
@@ -841,6 +909,7 @@ class LLemonViewSet:
                         **({'service': service_name} if service_name and not manual_selection else {}),
                         **override_params,
                         **manual_params,
+                        **host_params,
                     }),
                 })
             start_entries = []
@@ -860,6 +929,7 @@ class LLemonViewSet:
                         **({'service': service_name} if service_name and not manual_selection else {}),
                         **override_params,
                         **manual_params,
+                        **host_params,
                     }),
                     'invalid': invalid,
                     'error': discover.invalid_description_error(sf_full) or '',
@@ -916,6 +986,7 @@ class LLemonViewSet:
                     'config': fname,
                     **override_params,
                     **manual_params,
+                    **host_params,
                 }
                 if service_name and not manual_selection:
                     init_reset_params['service'] = service_name
@@ -932,6 +1003,7 @@ class LLemonViewSet:
                             provider=manual_provider,
                             model=manual_model,
                         ))
+                    chat_params.update(host_params)
                     if init_mode == 'start':
                         chat_params['start'] = start_fname
                     elif init_mode == 'history':
@@ -943,6 +1015,7 @@ class LLemonViewSet:
                     'type':   type_id,
                     'config': fname,
                     **override_params,
+                    **host_params,
                 }
                 if init_mode:
                     service_reset_params['init'] = init_mode
@@ -1014,6 +1087,7 @@ class LLemonViewSet:
                         **({'start': start_fname} if start_fname else {}),
                         **({'history': history_fname} if history_fname else {}),
                         **override_params,
+                        **host_params,
                         'service': s[0],
                     }),
                 } for s in services],
@@ -1038,6 +1112,10 @@ class LLemonViewSet:
                 'override_error': override_error,
                 'history':     history_entries,
                 'start_files': start_entries,
+                'host': host,
+                'host_query_params': host_params,
+                'host_capable': host_capable,
+                'persona_hosts': persona_hosts,
             })
         selected = config_list[0] if config_list else None
         page_title = 'LLemon Persona - Select config'
@@ -1053,7 +1131,8 @@ class LLemonViewSet:
 
     def _load_chat_config(self, config_path, service_name,
                           *, provider=None, model=None,
-                          temperature=None, write_history=None, debug=None):
+                          temperature=None, write_history=None, debug=None,
+                          url_override=None, hosted=False):
         try:
             config = _load_persona_config(
                 config_path,
@@ -1063,7 +1142,7 @@ class LLemonViewSet:
             )
             _apply_chat_overrides(config, temperature=temperature,
                                   write_history=write_history, debug=debug)
-            persona = Persona(config)
+            persona = Persona(config, url_override=url_override, hosted=hosted)
             return {
                 'header_text':    persona.header or '',
                 'user_tag':       persona.user_tag or 'You',
@@ -1088,6 +1167,7 @@ class LLemonViewSet:
         start_fname   = request.GET.get('start')
         manual_provider = request.GET.get('provider', '')
         manual_model = request.GET.get('model', '')
+        host          = request.GET.get('host', '')
         temperature   = request.GET.get('temperature', '')
         write_history = request.GET.get('write_history', '')
         debug         = request.GET.get('debug', '')
@@ -1106,6 +1186,33 @@ class LLemonViewSet:
         effective_provider, effective_model = resolve_effective_provider_and_model(
             config_path, service_name, manual_provider, manual_model,
         )
+        persona_hosts = getattr(settings, 'LLEMON_PERSONA_HOSTS', ())
+        try:
+            validate_host_selection(persona_hosts, host, effective_provider)
+        except ConfigError:
+            # A stale/incompatible selection in a GET-driven render clears
+            # silently rather than erroring -- see upgrade.md's Task 11
+            # Phase 3 "silent-clear vs. hard-reject" note. _stream()'s own
+            # POST-time revalidation is the actual trust boundary.
+            host = ''
+
+        page_title = 'LLemon Persona — Running session'
+        url_override = None
+        if host:
+            try:
+                url_override = host_url_override(effective_provider, host)
+            except ConfigError as exc:
+                # A tunnel/runtime failure, not a bad selection: retain the
+                # host (the user may retry) and show the error instead of
+                # silently clearing it, unlike the validation failure above.
+                return render(request, self._t('system.html'), self._ctx(f'Error — {page_title}', {
+                    'display_name': display_name,
+                    'config_fname': config_fname,
+                    'service_name': service_name,
+                    'system_text':  None,
+                    'error':        str(exc),
+                }))
+
         chat_config  = self._load_chat_config(
             config_path, service_name,
             provider=manual_provider if manual_ready else None,
@@ -1113,8 +1220,9 @@ class LLemonViewSet:
             temperature=temperature,
             write_history=write_history,
             debug=debug,
+            url_override=url_override,
+            hosted=bool(host),
         )
-        page_title   = 'LLemon Persona — Running session'
 
         if chat_config['error']:
             return render(request, self._t('system.html'), self._ctx(f'Error — {page_title}', {
@@ -1179,6 +1287,7 @@ class LLemonViewSet:
             'service_name':  service_name,
             'provider_name': effective_provider,
             'model_name': effective_model,
+            'host':          host,
             'display_name':  display_name,
             'page_title':    page_title,
             'type_id':       type_id,
@@ -1213,6 +1322,7 @@ class LLemonViewSet:
         service_name  = data.get('service')
         provider_name = data.get('provider')
         model_name    = data.get('model')
+        host          = data.get('host') or ''
         user_input    = data.get('message', '').strip()
         start_fname   = data.get('start') or None
         temperature   = data.get('temperature')
@@ -1233,11 +1343,27 @@ class LLemonViewSet:
             return StreamingHttpResponse(status=400)
         history_path = discover.resolve_history_path(history_fname)
 
+        # Never trust the page render that produced `host`: this is the
+        # actual trust boundary, so an invalid/incompatible selection is
+        # rejected outright here -- zero tunnel calls -- rather than
+        # cleared silently the way a stale GET request would be.
+        persona_hosts = getattr(settings, 'LLEMON_PERSONA_HOSTS', ())
+        try:
+            validate_host_selection(persona_hosts, host, provider_name or '')
+        except ConfigError:
+            return StreamingHttpResponse(status=400)
+
         def generate():
             try:
                 start_path = None
                 if start_fname:
                     start_path = discover.resolve_start_file(config_path, start_fname)
+                url_override = None
+                if host:
+                    # A tunnel failure here is a runtime error, not a bad
+                    # request: let it propagate to the except block below,
+                    # which already turns it into a streamed SSE error.
+                    url_override = host_url_override(provider_name, host)
                 config = _load_persona_config(
                     config_path,
                     service_name,
@@ -1248,7 +1374,7 @@ class LLemonViewSet:
                 )
                 _apply_chat_overrides(config, temperature=temperature,
                                       write_history=write_history, debug=debug)
-                persona = Persona(config)
+                persona = Persona(config, url_override=url_override, hosted=bool(host))
                 if current_state is not None and persona.has_structured_output():
                     persona.set_state(current_state)
 

@@ -108,7 +108,7 @@
 </head>
 <body>
   <div id="top-bar">
-    <h1>{{ site_name }}: {{ page_title }}<span id="enc-badge">{% if e2ee %} E2EE{% elif tee %} TEE{% endif %}</span></h1>
+    <h1>{{ site_name }}: {{ page_title }}<span id="enc-badge">{% if e2ee %} E2EE{% elif tee %} TEE{% endif %}</span>{% if host %}<span id="host-badge" title="Reaching {{ provider_name }} through this host instead of the default endpoint"> via {{ host }}</span>{% endif %}</h1>
     <div class="navbar">
         <div class="text-left">
           {% for item in base_nav %}<a href="{{ item.url }}">{{ item.name }}</a>&nbsp;&nbsp;{% endfor %}
@@ -161,6 +161,7 @@
   {{ service_name|json_script:"service-data" }}
   {{ provider_name|json_script:"provider-data" }}
   {{ model_name|json_script:"model-data" }}
+  {{ host|json_script:"host-data" }}
   {{ type_id|json_script:"type-data" }}
   {{ page_title|json_script:"page-title-data" }}
   {{ user_tag|json_script:"user-tag-data" }}
@@ -190,6 +191,7 @@
     const serviceName = JSON.parse(document.getElementById('service-data').textContent);
     const providerName = JSON.parse(document.getElementById('provider-data').textContent);
     const modelName = JSON.parse(document.getElementById('model-data').textContent);
+    const hostName = JSON.parse(document.getElementById('host-data').textContent);
     const typeId = JSON.parse(document.getElementById('type-data').textContent);
     const pageTitle = JSON.parse(document.getElementById('page-title-data').textContent);
     const userTag = JSON.parse(document.getElementById('user-tag-data').textContent);
@@ -412,7 +414,7 @@
         const resp = await fetch(URL_STREAM, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ config: configFname, history: historyFname, service: serviceName, provider: providerName, model: modelName, message, state: currentState, history_data: currentHistory, last_mtime: lastMtime, start: startFname, generated_start: generatedStart, temperature: temperatureOverride, write_history: writeHistoryOverride, debug: debugOverride }),
+          body: JSON.stringify({ config: configFname, history: historyFname, service: serviceName, provider: providerName, model: modelName, host: hostName, message, state: currentState, history_data: currentHistory, last_mtime: lastMtime, start: startFname, generated_start: generatedStart, temperature: temperatureOverride, write_history: writeHistoryOverride, debug: debugOverride }),
         });
         if (!resp.ok) {
           lastError = 'server returned ' + resp.status;
