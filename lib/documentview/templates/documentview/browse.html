@@ -26,20 +26,23 @@
   {% if view_mode == 'cover' %}
   <div class="dv-cover-grid">
     {% for doc in documents %}
-    <a class="dv-cover-tile" href="{% url 'documentview:view' rel_path=doc.rel_path %}">
+    <div class="dv-cover-tile">
+      <a class="dv-cover-link" href="{% url 'documentview:view' rel_path=doc.rel_path %}">
       <img class="dv-cover-image" loading="lazy"
            src="{% url 'documentview:cover' rel_path=doc.rel_path %}?size=thumb"
            alt="{{ doc.title }}">
       <div class="dv-cover-title">{{ doc.title }}</div>
       <div class="dv-format-badges">
-        {% with active=active_suffixes|dict_get:doc.rel_path %}
+        {% with active=active_links|dict_get:doc.rel_path %}
         {% for suffix, variant in doc.variants.items %}
           <span class="dv-badge">{{ suffix|upper }}{% if suffix in active %} <span class="dv-active-badge">reader</span>{% endif %}</span>
         {% endfor %}
         {% endwith %}
       </div>
+      </a>
+      {% include "documentview/_reader_controls.html" with active=active_links|dict_get:doc.rel_path %}
       {% if doc.errors %}<div class="dv-error">collection error</div>{% endif %}
-    </a>
+    </div>
     {% endfor %}
   </div>
   {% else %}
@@ -50,11 +53,12 @@
       <tr>
         <td><a href="{% url 'documentview:view' rel_path=doc.rel_path %}">{{ doc.title }}</a></td>
         <td class="dv-format-badges">
-          {% with active=active_suffixes|dict_get:doc.rel_path %}
+          {% with active=active_links|dict_get:doc.rel_path %}
           {% for suffix, variant in doc.variants.items %}
             <span class="dv-badge">{{ suffix|upper }}{% if suffix in active %} <span class="dv-active-badge">reader</span>{% endif %}</span>
           {% endfor %}
           {% endwith %}
+          {% include "documentview/_reader_controls.html" with active=active_links|dict_get:doc.rel_path %}
           {% if doc.errors %}<span class="dv-error">collection error</span>{% endif %}
         </td>
       </tr>

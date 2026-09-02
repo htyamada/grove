@@ -378,6 +378,46 @@ class ActiveHttpTests(DocumentViewClientTestCase):
         r = self.get('/documents/browse/a/')
         self.assertIn(b'reader', r.content)
 
+    def test_browse_offers_per_format_reader_controls_in_both_views(self):
+        self.touch('a/Book.epub')
+        self.touch('a/Book.pdf')
+        for mode in ('cover', 'title'):
+            r = self.get(f'/documents/browse/a/?view={mode}')
+            self.assertContains(r, 'Add EPUB to reader')
+            self.assertContains(r, 'Add PDF to reader')
+
+    def test_add_and_remove_from_browse_return_to_the_listing(self):
+        self.touch('a/Book.epub')
+        listing = '/documents/browse/a/?view=cover'
+
+        added = self.post(
+            '/documents/active/add/',
+            {'rel_path': 'a/Book.epub', 'return_to': listing},
+        )
+        self.assertRedirects(added, listing, fetch_redirect_response=False)
+        r = self.get(listing)
+        self.assertContains(r, 'Remove EPUB from reader')
+
+        removed = self.post(
+            '/documents/active/remove/',
+            {
+                'link_name': 'Book.epub',
+                'rel_path': 'a/Book.epub',
+                'return_to': listing,
+            },
+        )
+        self.assertRedirects(removed, listing, fetch_redirect_response=False)
+        self.assertIsNone(active.find_link_for_source('a/Book.epub'))
+
+    def test_mutation_does_not_redirect_to_an_external_host(self):
+        self.touch('a/Book.epub')
+        r = self.post(
+            '/documents/active/add/',
+            {'rel_path': 'a/Book.epub', 'return_to': 'https://example.com/'},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'Remove from reader', r.content)
+
     def test_remove_succeeds_through_the_view_when_source_is_missing(self):
         # Regression: the endpoint must operate on link_name (manifest
         # identity) first. Resolving rel_path back to a document is only

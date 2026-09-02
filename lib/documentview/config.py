@@ -22,7 +22,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.templatetags.static import static
 
 DEFAULT_CACHE_DIR = '~/var/documentview/cache'
-DEFAULT_ACTIVE_MANIFEST = '~/var/documentview/active_manifest.json'
+DEFAULT_ACTIVE_MANIFEST = '~/var/documentview/state/active_manifest.json'
 
 DEFAULT_COVER_SIZES = {
     'thumb': (150, 220),

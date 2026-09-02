@@ -59,7 +59,7 @@ Configure:
 
 ```python
 DOCUMENT_VIEWER_ROOT = Path('~/Documents/Library').expanduser()
-DOCUMENT_VIEWER_ACTIVE_DIR = Path('~/Documents/Reader').expanduser()
+DOCUMENT_VIEWER_ACTIVE_DIR = Path('~/var/documentview/reader').expanduser()
 ```
 
 The collection may be read-only. The active directory is a separate writable
@@ -556,7 +556,7 @@ Django tests, and a browsable page all require it:
 - `config.py` — the settings table in 4.1, `DOCUMENT_VIEWER_ROOT`,
   `DOCUMENT_VIEWER_ACTIVE_DIR`, `DOCUMENT_VIEWER_CACHE_DIR` (default
   `~/var/documentview/cache`), `DOCUMENT_VIEWER_ACTIVE_MANIFEST` (default
-  `~/var/documentview/active_manifest.json`, deliberately outside
+  `~/var/documentview/state/active_manifest.json`, deliberately outside
   `DOCUMENT_VIEWER_ACTIVE_DIR` so reader-sync software never sees it),
   `DOCUMENT_VIEWER_AUTHORIZE`, and `DOCUMENT_VIEWER_COVER_SIZES`.
   **`AppConfig.ready()` only validates shape**: every
@@ -1015,6 +1015,6 @@ verification only:
   user-facing reason rather than a generic error or a silent no-op (1.5, 4.5).
 - `DOCUMENT_VIEWER_CACHE_DIR` defaults to `~/var/documentview/cache`,
   `DOCUMENT_VIEWER_ACTIVE_MANIFEST` to
-  `~/var/documentview/active_manifest.json` (4.2) — still worth a quick
+  `~/var/documentview/state/active_manifest.json` (4.2) — still worth a quick
   confirmation against actual deployment paths before Step 1 lands, since
   `config.py` and the llime settings wiring both depend on them.

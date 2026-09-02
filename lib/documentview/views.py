@@ -4,6 +4,7 @@ from django.core.exceptions import PermissionDenied
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
 from . import active, config, covers, documents, paths, previews, subresources
@@ -92,6 +93,17 @@ def _view_mode(request):
     return mode if mode in ('cover', 'title') else 'cover'
 
 
+def _return_after_mutation(request):
+    target = request.POST.get('return_to', '')
+    if target and url_has_allowed_host_and_scheme(
+        target,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return HttpResponseRedirect(target)
+    return None
+
+
 def _resolve_logical(rel_path):
     """Resolve a collection-relative path to `(document, resolved)`, or
     `(None, None)` if it doesn't name a valid document. `resolved` (already
@@ -161,8 +173,12 @@ def browse(request, rel_path=''):
         raise Http404('directory not found')
     subdirs, docs = documents.scan_directory(resolved.abs_path, resolved.rel_path)
     active_sources = active.load_manifest_sources()
-    active_suffixes = {
-        doc.rel_path: {suffix for suffix, variant in doc.variants.items() if variant.rel_path in active_sources}
+    active_links = {
+        doc.rel_path: {
+            suffix: active_sources[variant.rel_path]
+            for suffix, variant in doc.variants.items()
+            if variant.rel_path in active_sources
+        }
         for doc in docs
     }
     context = {
@@ -170,7 +186,7 @@ def browse(request, rel_path=''):
         'breadcrumbs': _breadcrumbs(resolved.rel_path),
         'subdirs': subdirs,
         'documents': docs,
-        'active_suffixes': active_suffixes,
+        'active_links': active_links,
         'view_mode': _view_mode(request),
         'format_preference': documents.FORMAT_PREFERENCE,
     }
@@ -345,12 +361,16 @@ def active_add(request):
     document, resolved = _resolve_logical(request.POST.get('rel_path', ''))
     if document is None:
         raise Http404('document not found')
-    context = _view_context(document, resolved.rel_path)
     try:
         active.add_active(resolved.rel_path)
     except active.ActiveError as e:
+        context = _view_context(document, resolved.rel_path)
         context['active_error'] = str(e)
     else:
+        return_response = _return_after_mutation(request)
+        if return_response is not None:
+            return return_response
+        context = _view_context(document, resolved.rel_path)
         context['variant_rows'] = _variant_rows(document)
         context['active_notice'] = f'Added "{resolved.abs_path.name}" to the reader.'
     return _render_view_page(request, context)
@@ -379,6 +399,11 @@ def active_remove(request):
             notice = f'Removed "{result.link_name}" from the reader ({label}).'
         else:
             notice = f'Removed "{result.link_name}" from the reader.'
+
+    if error is None:
+        return_response = _return_after_mutation(request)
+        if return_response is not None:
+            return return_response
 
     document, resolved = _resolve_logical(request.POST.get('rel_path', ''))
     if document is not None:

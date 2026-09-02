@@ -29,7 +29,7 @@ Required, no default (host must set both):
 
 ```python
 DOCUMENT_VIEWER_ROOT = Path('/srv/cloud/store/books-and-text/')  # llime's value
-DOCUMENT_VIEWER_ACTIVE_DIR = Path('~/Documents/Reader')
+DOCUMENT_VIEWER_ACTIVE_DIR = Path('~/var/documentview/reader')
 ```
 
 `~` expands under the account running `manage.py` / the WSGI process,
@@ -41,7 +41,7 @@ Optional, with defaults:
 | Setting | Default |
 |---|---|
 | `DOCUMENT_VIEWER_CACHE_DIR` | `~/var/documentview/cache` |
-| `DOCUMENT_VIEWER_ACTIVE_MANIFEST` | `~/var/documentview/active_manifest.json` |
+| `DOCUMENT_VIEWER_ACTIVE_MANIFEST` | `~/var/documentview/state/active_manifest.json` |
 | `DOCUMENT_VIEWER_AUTHORIZE` | `lambda request, action: request.user.is_authenticated` |
 | `DOCUMENT_VIEWER_STYLESHEET_URL` | Django static URL for `documentview/documentview.css` |
 | `DOCUMENT_VIEWER_COVER_SIZES` | `{"thumb": (150, 220), "detail": (300, 440)}` |
@@ -212,7 +212,7 @@ serves the explicitly selected file, never a substituted preferred format.
 ## Active-Reader Staging
 
 `active.py` maintains an app-controlled JSON manifest (default
-`~/var/documentview/active_manifest.json`, deliberately outside
+`~/var/documentview/state/active_manifest.json`, deliberately outside
 `DOCUMENT_VIEWER_ACTIVE_DIR` so reader-sync software never sees it) mapping
 active-link names to their canonical source. Each entry is
 `{"source": "<canonical rel_path>"}`, plus `"requested"` when the document

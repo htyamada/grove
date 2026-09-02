@@ -144,7 +144,8 @@ STATIC_URL = '/zorf/llime/static/'
 
 # documentview -- see ../../lib/documentview/README.md
 DOCUMENT_VIEWER_ROOT = Path('/srv/cloud/store/books-and-text/')
-DOCUMENT_VIEWER_ACTIVE_DIR = Path('~/Documents/Reader')
+DOCUMENT_VIEWER_ACTIVE_DIR = Path('~/var/documentview/reader')
+DOCUMENT_VIEWER_ACTIVE_MANIFEST = Path('~/var/documentview/state/active_manifest.json')
 DOCUMENT_VIEWER_STYLESHEET_URL = '/zorf/llime/static/base/css/documentview.css'
 
 
