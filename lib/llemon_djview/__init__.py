@@ -33,6 +33,8 @@ from hty7.llemon.persona.session import Session
 from hty7.llemon.persona import discover
 from hty7.llemon.core.history import History
 
+from .persona_host import resolve_effective_provider_and_model
+
 _md = _markdown.Markdown(extensions=['fenced_code', 'tables', 'nl2br'])
 _md_doc = _markdown.Markdown(extensions=['fenced_code', 'tables'])
 
@@ -1101,19 +1103,9 @@ class LLemonViewSet:
         display_name = Config.display_name(config_path)
         type_id      = Config.read_type(config_path)
         config_id    = discover.config_id(config_path)
-        effective_provider = manual_provider if manual_ready else ''
-        effective_model = manual_model if manual_ready else ''
-        if not manual_ready and service_name:
-            try:
-                services = discover.list_services(config_path)
-            except Exception:
-                logger.exception('could not list services for %s', config_path)
-            else:
-                for svc_name, _svc_display, svc_provider, svc_model, *_rest in services:
-                    if svc_name == service_name:
-                        effective_provider = svc_provider or ''
-                        effective_model = svc_model or ''
-                        break
+        effective_provider, effective_model = resolve_effective_provider_and_model(
+            config_path, service_name, manual_provider, manual_model,
+        )
         chat_config  = self._load_chat_config(
             config_path, service_name,
             provider=manual_provider if manual_ready else None,
