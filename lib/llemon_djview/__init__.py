@@ -306,18 +306,6 @@ def _read_config_summary(path: str, fallback_name: str) -> tuple[str, str]:
         return discover.config_base(fallback_name), discover.invalid_description_label(path)
 
 
-def _parse_temperature_override(value) -> float | None:
-    if value in (None, ''):
-        return None
-    return float(value)
-
-
-def _parse_bool_override(value) -> bool | None:
-    if value in (None, ''):
-        return None
-    return str(value).lower() not in ('0', 'false', 'no', 'off')
-
-
 def _apply_chat_overrides(config, *, temperature=None, write_history=None,
                           debug=None) -> None:
     _persona_apply_chat_overrides(
