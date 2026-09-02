@@ -467,6 +467,23 @@ class DjviewMediaSettingsTests(unittest.TestCase):
                 with self.assertRaises(djview._ConfigError):
                     djview.persona_settings(fake_appconfig)
 
+    def test_persona_settings_accepts_case_differing_hosts_as_distinct_entries(
+        self,
+    ) -> None:
+        """Case-differing SSH aliases are administrator misconfiguration, not
+        something this loader accommodates or folds together (see
+        persona_host.py's matching `validate_host_selection()` behavior) --
+        'opah' and 'Opah' are two distinct, non-duplicate entries here."""
+        djview = self._import_djview()
+        fake_appconfig = types.SimpleNamespace(
+            get=lambda project, layer, key: ['opah', 'Opah']
+            if (layer, key) == ('persona', 'persona_hosts') else None,
+        )
+        self.assertEqual(
+            djview.persona_settings(fake_appconfig),
+            {'LLEMON_PERSONA_HOSTS': ('opah', 'Opah')},
+        )
+
     def test_persona_settings_rejects_invalid_host_syntax(self) -> None:
         from hty7.llemon.persona.config import ConfigError as PersonaConfigError
 

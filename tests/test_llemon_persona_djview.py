@@ -387,6 +387,55 @@ class PersonaDjviewManualSelectionTests(unittest.TestCase):
         joined = b''.join(chunks).decode()
         self.assertIn('SSH connection to opah could not be created.', joined)
 
+    def test_stream_busy_lock_error_surfaces_as_sse_error(self) -> None:
+        """The one-active-hosted-generation gate's ConfigError (raised deep
+        inside the real Persona.stream() when discover.host_connection_slot()
+        is already held elsewhere) needs no new Grove exception handling:
+        because a generator's body does not run until first iterated, it
+        reaches generate()'s existing outer except Exception -- the same
+        path the tunnel-failure test above exercises -- and is turned into
+        the same kind of streamed SSE error."""
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._stream_request(host='opah')
+        busy_message = (
+            'another hosted ollama/llama.cpp connection is already active; '
+            'try again once it finishes.'
+        )
+
+        def raising_stream(_user_input):
+            raise djview.ConfigError(busy_message)
+            yield  # pragma: no cover - unreachable; keeps this a generator fn
+
+        fake_persona = mock.Mock()
+        fake_persona.history_path = None
+        fake_persona.iterate_history.return_value = iter([])
+        fake_persona.stream.side_effect = raising_stream
+
+        with (
+            mock.patch.object(
+                djview, 'settings',
+                types.SimpleNamespace(LLEMON_PERSONA_HOSTS=('opah',)),
+            ),
+            mock.patch.object(
+                djview.discover, 'resolve_path', return_value='/configs/demo.cfg.json',
+            ),
+            mock.patch.object(djview.os.path, 'exists', return_value=True),
+            mock.patch.object(
+                djview.discover, 'resolve_history_path', return_value='/hist/demo.jsonl',
+            ),
+            mock.patch.object(
+                djview, 'host_url_override', return_value='http://127.0.0.1:15000',
+            ),
+            mock.patch.object(djview, '_load_persona_config', return_value=mock.Mock()),
+            mock.patch.object(djview, '_apply_chat_overrides'),
+            mock.patch.object(djview, 'Persona', return_value=fake_persona),
+        ):
+            response = view._stream(request)
+            chunks = list(response.streaming_content)
+
+        joined = b''.join(chunks).decode()
+        self.assertIn(busy_message, joined)
+
     def test_stream_unhosted_request_never_calls_host_url_override(self) -> None:
         view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
         request = self._stream_request()  # no 'host' key at all
@@ -422,6 +471,344 @@ class PersonaDjviewManualSelectionTests(unittest.TestCase):
         host_url_override.assert_not_called()
         self.assertIsNone(persona_cls.call_args.kwargs['url_override'])
         self.assertFalse(persona_cls.call_args.kwargs['hosted'])
+
+
+class _FakeConfigsSession:
+    """Stands in for `Session()` in `configs()` tests.
+
+    `configs()` drives `Session` through `set_type()`/`set_config()`/
+    `list_services()`/`set_service()` and reads `config_display`/
+    `config_fname`/`config_path` back off it; replacing the whole object
+    (rather than mocking the `discover`/`Config` calls the real `Session`
+    makes internally to implement those methods) keeps these tests focused
+    on `configs()`'s own host-selection logic.
+    """
+
+    def __init__(self, *, services=(), config_fname='demo.cfg.json',
+                 config_path='/configs/does-not-exist/demo.cfg.json',
+                 config_display='Demo Config'):
+        self._services = list(services)
+        self.config_fname = config_fname
+        self.config_path = config_path
+        self.config_display = config_display
+        self.service_name = None
+
+    def set_type(self, type_id: str) -> None:
+        pass
+
+    def set_config(self, path: str) -> None:
+        pass
+
+    def list_configs(self):
+        return []
+
+    def list_services(self):
+        return self._services
+
+    def set_service(self, name: str) -> None:
+        self.service_name = name
+
+
+@unittest.skipIf(djview is None, f'djview import failed: {_IMPORT_ERROR}')
+class PersonaDjviewConfigsHostTests(unittest.TestCase):
+    """`configs()`'s own host-selection surface: visibility/enablement of
+    the Host control through both selection paths, silent clearing of a
+    now-incompatible host, hosted model discovery/defaulting, and launch
+    gating on a complete manual pair -- see upgrade.md's Task 11 Phase 4
+    Grove test list."""
+
+    def _request(self, **overrides) -> types.SimpleNamespace:
+        get = {'type': 'chat', 'config': 'demo.cfg.json'}
+        get.update(overrides)
+        return types.SimpleNamespace(GET=get)
+
+    def _mocks(self, *, persona_hosts=(), services=(), session=None, extra=()):
+        fake_session = session or _FakeConfigsSession(services=services)
+        return [
+            mock.patch.object(
+                djview, 'render', side_effect=lambda request, template, context: context,
+            ),
+            mock.patch.object(djview, 'reverse', return_value='/x/'),
+            mock.patch.object(
+                djview, 'settings',
+                types.SimpleNamespace(LLEMON_PERSONA_HOSTS=persona_hosts),
+            ),
+            mock.patch.object(djview, 'Session', return_value=fake_session),
+            mock.patch.object(
+                djview.discover, 'resolve_path', return_value='/configs/demo.cfg.json',
+            ),
+            mock.patch.object(djview.discover, 'type_descr', return_value='Chat'),
+            mock.patch.object(djview.discover, 'config_base', return_value='demo'),
+            mock.patch.object(djview.discover, 'list_history_files', return_value=[]),
+            mock.patch.object(djview.discover, 'find_start_files', return_value=[]),
+            mock.patch.object(djview.discover, 'find_providers', return_value=[]),
+            mock.patch.object(djview.discover, 'service_features_label', return_value=''),
+            mock.patch.object(
+                djview, '_read_config_summary', return_value=('demo', 'Demo Title'),
+            ),
+            *extra,
+        ]
+
+    def _entry(self, context) -> dict:
+        return context['configs'][0]
+
+    def _host_row(self, entry: dict) -> dict | None:
+        return next(
+            (row for row in entry['status_rows'] if row.get('field') == 'Host'), None,
+        )
+
+    # -- visibility/enablement through both selection paths ------------ #
+
+    def test_host_row_absent_when_no_persona_hosts_configured(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(service='svc-a')
+        services = [('svc-a', 'Service A', 'ollama', 'llama3', [])]
+        with contextlib.ExitStack() as stack:
+            for cm in self._mocks(persona_hosts=(), services=services):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertFalse(entry['host_capable'])
+        self.assertIsNone(self._host_row(entry))
+
+    def test_host_capable_tracks_effective_provider_via_service_selection(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(service='svc-a')
+        services = [('svc-a', 'Service A', 'ollama', 'llama3', [])]
+        with contextlib.ExitStack() as stack:
+            for cm in self._mocks(persona_hosts=('opah',), services=services):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertTrue(entry['host_capable'])
+        self.assertIsNotNone(self._host_row(entry))
+
+    def test_host_capable_tracks_effective_provider_via_manual_selection(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama')
+        with contextlib.ExitStack() as stack:
+            list_models = stack.enter_context(
+                mock.patch.object(djview.discover, 'list_models', return_value=[]),
+            )
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertTrue(entry['host_capable'])
+        self.assertIsNotNone(self._host_row(entry))
+        list_models.assert_called_once_with('ollama', url_override=None)
+
+    def test_host_capable_false_for_a_non_hosting_provider(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(service='svc-a')
+        services = [('svc-a', 'Service A', 'openai', 'gpt-4', [])]
+        with contextlib.ExitStack() as stack:
+            for cm in self._mocks(persona_hosts=('opah',), services=services):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertFalse(entry['host_capable'])
+        self.assertIsNone(self._host_row(entry))
+
+    def test_no_synthesized_local_choice_among_persona_hosts(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(service='svc-a')
+        services = [('svc-a', 'Service A', 'ollama', 'llama3', [])]
+        with contextlib.ExitStack() as stack:
+            for cm in self._mocks(persona_hosts=('opah', 'aku'), services=services):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['persona_hosts'], ('opah', 'aku'))
+
+    # -- silent clearing of a now-incompatible host --------------------- #
+
+    def test_manual_provider_change_clears_an_incompatible_host_silently(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='openai', host='opah')
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(djview.discover, 'list_models', return_value=['gpt-4']),
+            )
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['host'], '')
+        self.assertFalse(entry['host_capable'])
+        self.assertIsNone(context['error'])
+
+    def test_service_selection_clears_an_incompatible_host_silently(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(service='svc-a', host='opah')
+        services = [('svc-a', 'Service A', 'openai', 'gpt-4', [])]
+        with contextlib.ExitStack() as stack:
+            for cm in self._mocks(persona_hosts=('opah',), services=services):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['host'], '')
+        self.assertFalse(entry['host_capable'])
+        self.assertIsNone(context['error'])
+
+    # -- hosted model discovery, defaulting, and override --------------- #
+
+    def test_provider_only_hosted_model_discovery_uses_no_url_override(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama')
+        with contextlib.ExitStack() as stack:
+            host_url_override = stack.enter_context(
+                mock.patch.object(djview, 'host_url_override'),
+            )
+            list_models = stack.enter_context(
+                mock.patch.object(djview.discover, 'list_models', return_value=['a']),
+            )
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            view.configs(request)
+        host_url_override.assert_not_called()
+        list_models.assert_called_once_with('ollama', url_override=None)
+
+    def test_provider_and_host_hosted_model_discovery_uses_resolved_url_override(
+        self,
+    ) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama', host='opah')
+        with contextlib.ExitStack() as stack:
+            host_url_override = stack.enter_context(mock.patch.object(
+                djview, 'host_url_override', return_value='http://127.0.0.1:15000',
+            ))
+            list_models = stack.enter_context(mock.patch.object(
+                djview.discover, 'list_models', return_value=['a', 'b'],
+            ))
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            view.configs(request)
+        host_url_override.assert_called_once_with('ollama', 'opah')
+        list_models.assert_called_once_with('ollama', url_override='http://127.0.0.1:15000')
+
+    def test_model_list_order_from_discovery_is_preserved(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama', host='opah')
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                djview, 'host_url_override', return_value='http://127.0.0.1:15000',
+            ))
+            stack.enter_context(mock.patch.object(
+                djview.discover, 'list_models', return_value=['alpha', 'beta', 'gamma'],
+            ))
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['manual_models'], ['alpha', 'beta', 'gamma'])
+
+    def test_first_model_defaults_when_host_selected_without_an_explicit_model(
+        self,
+    ) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama', host='opah')
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                djview, 'host_url_override', return_value='http://127.0.0.1:15000',
+            ))
+            stack.enter_context(mock.patch.object(
+                djview.discover, 'list_models', return_value=['alpha', 'beta'],
+            ))
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['manual_model'], 'alpha')
+
+    def test_explicit_model_choice_is_respected_over_the_auto_default(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama', host='opah', model='beta')
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                djview, 'host_url_override', return_value='http://127.0.0.1:15000',
+            ))
+            stack.enter_context(mock.patch.object(
+                djview.discover, 'list_models', return_value=['alpha', 'beta'],
+            ))
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['manual_model'], 'beta')
+
+    def test_stale_manual_model_not_in_the_discovered_list_is_cleared(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama', host='opah', model='ghost')
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                djview, 'host_url_override', return_value='http://127.0.0.1:15000',
+            ))
+            stack.enter_context(mock.patch.object(
+                djview.discover, 'list_models', return_value=['alpha', 'beta'],
+            ))
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['manual_model'], '')
+
+    # -- launch gating and state retention ------------------------------ #
+
+    def test_incomplete_manual_pair_blocks_launch_when_discovery_is_empty(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama', host='opah')
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                djview, 'host_url_override', return_value='http://127.0.0.1:15000',
+            ))
+            stack.enter_context(
+                mock.patch.object(djview.discover, 'list_models', return_value=[]),
+            )
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['manual_model'], '')
+        selected_init = entry['selected_init']
+        self.assertIsNotNone(selected_init)
+        self.assertNotIn('url', selected_init)
+        self.assertNotIn('chat_params', selected_init)
+
+    def test_host_state_retained_after_failed_model_discovery(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama', host='opah')
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                djview, 'host_url_override', return_value='http://127.0.0.1:15000',
+            ))
+            stack.enter_context(mock.patch.object(
+                djview.discover, 'list_models', side_effect=RuntimeError('boom'),
+            ))
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['host'], 'opah')
+        self.assertEqual(entry['manual_model_error'], 'boom')
+
+    def test_host_state_retained_after_empty_model_discovery(self) -> None:
+        view = djview.LLemonViewSet('llemon_persona', 'llemon_persona')
+        request = self._request(provider='ollama', host='opah')
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                djview, 'host_url_override', return_value='http://127.0.0.1:15000',
+            ))
+            stack.enter_context(
+                mock.patch.object(djview.discover, 'list_models', return_value=[]),
+            )
+            for cm in self._mocks(persona_hosts=('opah',)):
+                stack.enter_context(cm)
+            context = view.configs(request)
+        entry = self._entry(context)
+        self.assertEqual(entry['host'], 'opah')
+        self.assertEqual(entry['manual_models'], [])
+        self.assertIsNone(entry['manual_model_error'])
 
 
 if __name__ == '__main__':

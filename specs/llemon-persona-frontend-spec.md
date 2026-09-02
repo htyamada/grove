@@ -117,8 +117,11 @@ appended after any items supplied via `nav`.
 `LLemonViewSet` does not call `discover.init()`. The host Django project
 loads LLemon settings at application startup through
 `llemon_djview.django_settings(<variant>)`, which initializes the configured
-variant and returns the Django settings required by the shared views.
-Media support is initialized through top-level `mediagen.init(appconfig)`,
+variant and returns the Django settings required by the shared views,
+including the optional host-selection allowlist (`LLEMON_PERSONA_HOSTS`,
+via `persona_settings()` — see §3, "Host selection", for the full
+allowlist-validation and request contract). Media support is initialized
+through top-level `mediagen.init(appconfig)`,
 which loads API keys, validates every prompt-enhancement `*-rewrite.json`
 selector, builds the enhancer mapping, and initializes the imagegen and
 videogen subpackages. Every rewrite selector must contain all fields, including
@@ -469,19 +472,144 @@ The Django UI may keep transient chat state in the browser between requests,
 but saved sessions are durable only after they have been written to
 `history_dir`.
 
+### Host selection (optional remote Ollama/llama.cpp)
+
+Grove can optionally reach `ollama`/`llama.cpp` on a configured remote
+machine instead of the provider's local default endpoint, over the same
+SSH-tunneling mechanism `llemon-cli`'s/`llemon-tui`'s `--host` flag uses
+(see `llemon-cli-impl.md` §6, "Shared Launcher Engine", for the persona-
+layer mechanism this section builds on: `discover.validate_host_syntax()`,
+`discover.resolve_host_endpoint()`, the process-global tunnel cache and its
+lock, and the one-active-hosted-generation gate). This section is the
+durable owner of Grove's own request/response contract on top of that
+mechanism; the persona-layer mechanism itself is documented once, in
+`llemon-cli-impl.md`, not duplicated here.
+
+**Configuration.** The allowlist of selectable hosts is
+`[*.llemon.persona] persona_hosts` (an array of hostname/IPv4 strings, the
+same grammar `--host` accepts), read into the Django setting
+`LLEMON_PERSONA_HOSTS` by `llemon_djview.persona_settings()`. Absent or
+missing defaults to an empty allowlist — the Host control never appears.
+Present but malformed (not a list, a non-string entry, invalid host syntax,
+or a duplicate entry) is fatal to Django startup, matching every other
+`llemon_djview.conf` validation error; there is no partial/best-effort
+loading. Two entries differing only in case are distinct, non-duplicate
+allowlist members — this loader does not fold or normalize case, matching
+`validate_host_selection()`'s own case-sensitive matching below. Grove
+synthesizes no local/default choice of its own: the only selectable values
+are exactly the configured `persona_hosts` entries, presented as-is.
+
+**Visibility and enablement.** The `configs()` page shows a Host control
+(a scrollable list, `-- no host selected --` plus one entry per configured
+host, mirroring the manual provider/model controls) only when
+`host_capable` is true: `persona_hosts` is non-empty *and* the request's
+*effective* provider (the service- or manually-selected provider — see
+"Request propagation" below) supports hosting (`ollama`/`llama.cpp`). This
+is tracked identically through both selection
+paths — a picked service whose provider supports hosting, or a manually
+picked provider that supports hosting — via one expression,
+`service_provider = manual_provider or next(service's provider)`, not two
+separate code paths that could drift. A selected host survives across
+requests as its own query/session-state key (`host`), parallel to but
+independent of `provider`/`model`, since it must persist even when the
+active selection is a service with no manual provider/model at all.
+
+**Validation and trust boundary.** `llemon_djview.persona_host.validate_host_selection()`
+is the single request-time check: an empty `host` is always valid (no
+selection); otherwise `host` must exactly, case-sensitively match one
+configured `persona_hosts` entry (case-differing aliases are administrator
+misconfiguration, not something this validator accommodates — see
+`llemon-cli-impl.md`'s parallel note on `persona_hosts` itself), and the
+effective provider must be one hosting supports. Two distinct outcomes
+follow a failure, chosen by request kind, not by mistake:
+
+- An ordinary `GET`-driven render (`configs()`, `chat()`) treats a stale or
+  incompatible `host` as a rendering nicety, not an error: it clears the
+  selection silently (no `error` banner) and re-derives `host_capable`
+  from the request as it now stands. This covers the ordinary case of a
+  provider change making a previously-valid host incompatible, and a
+  history/macro/bookmark link carrying a `host` value no longer configured.
+- `_stream()`'s `POST` handling is the actual trust boundary: it never
+  trusts the `host` value a prior page render produced, and a forged or
+  stale `host`/provider combination is rejected outright — `400`, zero
+  tunnel calls — rather than cleared silently.
+
+**Hosted endpoint resolution.** When a valid `host` is selected,
+`llemon_djview.persona_host.host_url_override(provider, host)` resolves the
+endpoint through `discover.resolve_host_endpoint()`, overriding both a
+selected service's own URL and the provider default — the same override
+precedence `--host` uses. A tunnel failure there is normalized to a fixed,
+brief message, `SSH connection to HOST could not be created.`, with the
+underlying `sshtunnel.TunnelError` (jump-host hints, other SSH diagnostics)
+logged with a full traceback but never reaching the browser. `chat()`
+treats this as a retryable runtime failure, not a bad selection: it shows
+the error and **retains** the selected host (the user may retry) rather
+than clearing it the way an incompatible selection is cleared above.
+`_stream()`'s own tunnel-failure path needs no dedicated exception
+handling: because a generator's body does not run until first iterated, the
+`ConfigError` `host_url_override()` raises resolving the host surfaces at
+the existing `for chunk in gen:` line inside `generate()`'s `try`, reaching
+the same outer `except Exception` that already turns any runtime failure
+into a streamed `{'error': ...}` SSE event — including the one-active-
+hosted-generation lock's own busy message
+(`llemon-cli-impl.md` §6), raised even deeper, inside `Persona.stream()`
+itself, and requiring no Grove-side handling either.
+
+**Hosted model discovery.** Picking a provider that supports hosting (with
+or without a host selected) triggers `discover.list_models()` for that
+provider — `url_override=None` when no host is selected (provider-only,
+against the provider's local default), or the resolved endpoint when one
+is. The returned list is used exactly as `discover.list_models()` returns
+it (already alphabetically sorted; Grove does not re-sort it). When a host
+is selected, no model is yet chosen, and discovery returned a non-empty
+list, the alphabetically-first model becomes the default selection — a
+remote host's model list is unfamiliar and changes per machine, so leaving
+chat launch blocked on an explicit pick would be needless friction; the
+user may still choose a different model from the list. An explicitly
+chosen model already present in the discovered list is left as-is, never
+overwritten by the default. A model no longer present in a fresh discovery
+(a stale query parameter, or a host/provider change) is cleared. A failed
+or empty discovery **retains** the selected host — the same
+retain-on-runtime-failure rule `host_url_override()`'s tunnel-failure
+handling above follows — showing a model-listing error alongside it rather
+than clearing the selection.
+
+**Launch gating.** Reaching the final **Connect**/launch state requires
+either a picked service or a *complete* manual provider/model pair — the
+same completeness rule the "Django — `Session` per request" subsection
+above already applies to manual provider/model selection, unchanged by
+host selection. A manual provider selection with no model chosen and no
+auto-defaulted model available (an empty or still-pending discovery) is
+incomplete: the page
+still renders the Host and model controls, but no launch URL is generated
+until the pair is complete, exactly as an incomplete manual selection
+blocks launch when no host is involved at all.
+
+**Request propagation.** `chat()` resolves the *effective* provider via
+`resolve_effective_provider_and_model()` (service or manual — manual wins
+when both a provider and a model are given, else the picked service's own
+provider/model apply) before validating and resolving the host, so a
+service-only launch with a
+hosting-capable provider is reachable the same way a manual one is.
+`_stream()` receives `host` as an explicit JSON body field alongside
+`provider`/`model`/`service`, revalidates it independently of whatever the
+page last rendered, and passes `hosted=bool(host)` — never inferred from
+`url_override` — to `Persona()`, matching `llemon-cli-impl.md` §6's flag
+contract exactly.
+
 Direct `discover` calls by view:
 
 | View | `discover` calls |
 |------|-----------------|
 | `index` | `find_types()`, `find_macro_files()` |
 | `session` | `resolve_path()` (macro file); commands are applied through `Session.configure_from_macro_file()` and redirect to the appropriate staged setup URL |
-| `configs` | `find_configs(type_filter=…)`, `get_services()`, `list_history_files()`, `find_start_files()`, `history_preview()`, `start_file_name()`, `start_file_display()`, `resolve_path()` |
+| `configs` | `find_configs(type_filter=…)`, `get_services()`, `list_history_files()`, `find_start_files()`, `history_preview()`, `start_file_name()`, `start_file_display()`, `resolve_path()`, `list_models()`; host selection via `persona_host.validate_host_selection()`, `persona_host.provider_supports_hosting()`, `persona_host.host_url_override()` |
 | `services` | `find_service_files()` |
 | `service` | `resolve_path()` |
 | `models` | `find_providers()`, `list_models()` |
 | `system` | `resolve_path()` |
-| `chat` | `resolve_path()`, `resolve_history_path()`, `resolve_start_file()`, `start_file_body()`; new history filenames come from `Session.create_history_path()` |
-| `_stream` | `resolve_path()`, `resolve_history_path()` |
+| `chat` | `resolve_path()`, `resolve_history_path()`, `resolve_start_file()`, `start_file_body()`; new history filenames come from `Session.create_history_path()`; effective provider/model via `persona_host.resolve_effective_provider_and_model()`; host selection via `persona_host.validate_host_selection()`, `persona_host.host_url_override()` |
+| `_stream` | `resolve_path()`, `resolve_history_path()`; host selection via `persona_host.validate_host_selection()`, `persona_host.host_url_override()` |
 | `_save_session` | `Session.create_history_path()` or `resolve_history_path()`, history write/update helpers |
 | `_load_session` | `resolve_history_path()`, history read helpers |
 | `_close_session` | `resolve_history_path()`, ownership metadata update helpers |
@@ -658,6 +786,13 @@ from ..persona.config import Config, ConfigError
 from ..persona.service import Service
 from ..persona.session import Session
 from ..persona import discover
+
+from .persona_host import (
+    host_url_override,
+    provider_supports_hosting,
+    resolve_effective_provider_and_model,
+    validate_host_selection,
+)
 ```
 
 ---
