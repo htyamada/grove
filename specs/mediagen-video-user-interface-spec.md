@@ -124,6 +124,26 @@ request payloads only: the video sidecar stores the original selected URL/path
 for media inputs so gallery Reload can replay the selection without persisting
 any `data:` URL longer than 30 characters.
 
+### Segmind image-to-video integration
+
+LLemon presents the live-validated Segmind model `wan-2.2-i2v-fast` as
+`mode: image-to-video` with `allows_start_image: true`. Video Creator does not
+yet implement that presentation: its client visibility logic handles Venice
+and OpenRouter only, and its server adds `image_url` to generation arguments
+only for Venice. Consequently Segmind's start-image control is unavailable and
+an attempted generation reaches LLemon without the model's required image.
+
+The pending integration must use LLemon's normalized presentation to expose a
+start image and must forward it as `image_url`; Segmind does not support an end
+image. It must not merely reuse the existing private-media conversion described
+above. LLemon currently accepts only a well-formed public `https://` URL for
+this model and rejects `data:` URLs under its conservative source-validation
+policy. Grove's gallery, archive, and source-directory selections therefore
+need either a video `provider_upload` transport or live validation followed by
+LLemon support for direct `data:` input before those private sources can be
+offered safely. Until then, Grove must not advertise Segmind image-to-video as
+usable with its image picker.
+
 For Venice models, the creator consumes the normalized `presentation` record
 from LLemon's public video facade. LLemon centralizes catalog-schema precedence
 and any identifier-based compatibility fallback; Grove neither imports the

@@ -250,6 +250,15 @@ currently selected in the creator. The server does not apply the package's
 default provider to action requests. An image edit also includes an explicit
 model selected from the live `list_edit_models_with_metadata()` result.
 
+An edit request's images are an ordered `images: [{filename, role?}]` array,
+dispatched through LLemon's provider-neutral `edit_images()`/
+`normalize_edit_inputs()` facade rather than the single-image `edit()`. A
+lone top-level `filename` string is accepted as input-only compatibility for
+one release. See
+[`mediagen-image-user-interface-impl.md`](mediagen-image-user-interface-impl.md),
+"Multi-image editing" for request parsing, eligibility/warning-consent
+precedence, the multi-select role-assignment UI, and its DOM test coverage.
+
 Edit-model discovery has no static or default-model fallback. A provider
 that does not support editing at all renders normally with editing disabled;
 that is an ordinary supported state, not a discovery case. A provider that

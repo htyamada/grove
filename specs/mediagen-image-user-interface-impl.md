@@ -289,6 +289,144 @@ discovery either succeeds with at least one model or raises — see "Error
 responses" below for the resulting HTTP 502, which replaces the previous
 empty-list HTTP 400.
 
+### Multi-image editing
+
+The edit flow dispatches through LLemon's provider-neutral multi-image
+facade (`edit_images()`/`normalize_edit_inputs()`, `edit_inputs`/
+`operations.edit_images` in presentation — see the LLemon repo's
+`specs/mediagen-image-spec.md`, "Provider-neutral multi-image editing"),
+not the single-image `edit()`/`edit_input`. The two agree for every model
+at today's effective maximum of one image
+(`specs/mediagen-image-spec.md`, "Agreement with `edit_input` is scoped,
+not universal"), so a model reachable only through a named schema is
+selectable here exactly like an ordered one.
+
+**Request shape.** `_do_edit_image()` accepts an ordered
+`images: [{filename, role?}]` array. A lone top-level `filename` string
+is still accepted as input-only compatibility for one release and is
+treated as a single-element, role-free array. Parsing is split into two
+phases so a bad request is rejected before any file is touched:
+
+- `_parse_request_images()` extracts filenames/roles only, building a
+  placeholder canonical image list (`{'source': 'data:'}`, no filesystem
+  access) sufficient for `normalize_edit_inputs()` to classify each entry
+  and validate shape/count/role against the selected model's
+  `edit_inputs` schema. A non-string `role` is rejected explicitly (never
+  silently dropped, which would let a garbage role submit as unroled); an
+  empty-string `role` is passed through so `normalize_edit_inputs()`'s
+  own role checks reject it once, rather than duplicating that rule here.
+- `_resolve_request_image_sources()` runs only after
+  `normalize_edit_inputs()` has accepted the request, and only then reads
+  and base64-encodes each gallery file into a real `data:` URL, in
+  order. This ordering means an over-count or malformed request never
+  pays to load images it will reject anyway, and a later bad filename
+  never produces a misleading "file not found" ahead of a count/role
+  error that should fire first.
+
+**Source-kind usability and precedence.** `_source_kind_usability(scope,
+source_kind)` classifies one scope (the top-level `edit_inputs` for an
+ordered schema, or one role dict for a named schema) against a source
+kind, checking `required_backend_transports` *before*
+`accepted_source_kinds` — the same precedence
+`normalize_edit_inputs()`/`edit_images_availability()` use. Checking
+acceptance first would make a disjointly-declared
+transport fact (e.g. `accepted_source_kinds=['https_url']` alongside a
+required `data_url` upload transport, Segmind's array/named-role shape)
+unreachable and silently defeat every upload-backed model.
+
+`_operation_state(row, 'edit_images', source_kind=...)` — and its
+client-side mirror `editOptionState()` in `image.html` — uses this
+per-scope classifier directly for an ordered schema, but evaluates it
+**per role** for a named schema rather than against the top-level
+`accepted_source_kinds`/`required_backend_transports`, which are only
+the cross-role intersection
+(`specs/mediagen-image-spec.md`, "Capability schema") and can be empty
+even when every role independently accepts the source kind through its
+own transport. Eligibility follows the same required-vs-optional split
+`edit_images_availability()` uses: every required role must be usable,
+or — with no required roles — at least one optional role must be.
+
+**Warning-consent asymmetry.** Grove does not collect data-handling-
+warning consent (`_edit_result()` always passes
+`accept_data_handling_warnings=False`), so a warned transport is
+unreachable through Grove regardless of what "available" means
+elsewhere. For a schema with required roles, one warned *usable* role
+forces consent for the whole call (AND semantics: any warned usable
+candidate disables it). For an all-optional schema, a warned usable role
+does not disable the model as long as some other usable role needs no
+consent (OR semantics: only disabled when *every* usable candidate is
+warned). The single-scope (ordered/top-level) case applies the same
+warned-transport check without the AND/OR split, since there is only one
+scope to satisfy.
+
+**Preflight-pending sources.** `_edit_input_transport_pending()` mirrors
+`llemon-image`'s identical check: a canonical image whose source will be
+replaced by an uploaded-asset URL before the request is built must not
+have its current raw shape validated against the wire schema it will
+never actually carry. `_do_edit_image()` only calls the single-image
+`preflight_request()` path when there is exactly one image and it is not
+transport-pending; a multi-image request, or a pending single one, relies
+on `normalize_edit_inputs()` plus the backend's own `validate_request()`
+at dispatch instead.
+
+**Selection UI.** `#edit-images-section` (distinct from the single-image
+`#source-image-section` Upscale still uses) holds an ordered thumbnail
+list built by `renderEditImagesList()`. The shared `#image-picker` modal
+supports a toggle-multi-select mode (`window.__editImagesBridge`) for
+this section, capped by `currentEditImagesMaxCount()` rather than the
+schema's raw `effective_max_count` directly: for a named schema the
+usable-role count (per `roleDataUrlUnusableReason()`, which flags a role
+that can't accept `data_url` or needs warning consent Grove doesn't
+collect) can be lower than the declared count, and the cap follows the
+lower of the two so a caller can never add an image with no valid role
+left to assign it. Each thumbnail shows a role `<select>` (populated from
+`edit_inputs.roles`, unusable options disabled with their reason via
+`roleDataUrlUnusableReason()`) for a named schema, or a plain position
+tag (`.edit-thumb-position`, `#1`/`#2`/…) for an ordered one. Move-
+earlier/move-later controls (`moveEditImage()`, rendered via
+`makeThumbIconButton()` as real `<button type="button">` elements with
+`aria-label` and native `disabled` at each boundary — not click-only
+`<span>`s) reorder the selection in place. Switching to a model whose
+shape/count/roles differ from the current selection clears it, using
+`_editInputsSignatureFor()` — which folds in each role's
+`roleDataUrlUnusableReason()` outcome and `min_count`, not just shape/
+count/role names, so a provider or model switch that changes a role's
+usability without renaming anything still forces a reset.
+
+**Client-side submit validation.** `handleEditSubmit()` builds the
+`images: [{filename, role?}]` request body from `editImageFnames`/
+`editImageUrls`/`editImageRoles` and rejects locally, before any
+network request, when: no image is selected; fewer images are selected
+than `edit_inputs.min_count` (checked for both shapes — a named schema
+also gets this indirectly from required-role completeness, but an
+ordered schema has no roles to catch it any other way); a role is
+assigned to more than one image; or a required role has no image
+assigned.
+
+**Testing.** `tests/js/` is a small Node project (`package.json`/
+`package-lock.json` committed, `node_modules/` gitignored) whose
+`edit_images_dom_test.js` drives a `jsdom`-rendered copy of this page
+through named steps — picker multi-select, role assignment, reordering,
+both client-side validation rejections, a named schema with per-role
+transport/warning facts, an all-optional schema with one warning-free
+usable role, and a full submit/response cycle including the async
+`fetch`/`.json()` continuation and its `catch` path — since this
+repository's Python suite only runs `node --check` on extracted
+`<script>` blocks (syntax only) and cannot catch a cross-block or
+temporal-dead-zone `ReferenceError`, nor anything that only manifests
+once an event handler actually runs. `tests/test_llemon_image_edit_dom.py`
+renders a fixture page and runs the script as a subprocess, skipping
+(not failing) when Node or `jsdom` isn't installed, so a checkout that
+never ran `npm install` in `tests/js/` loses only this file's coverage.
+Any future change to the multi-image edit UI should extend this harness
+rather than relying on render-only Python assertions or `node --check`
+alone — both have repeatedly missed real runtime defects in this exact
+code (temporal-dead-zone and cross-`<script>`-block `ReferenceError`s,
+a stale-variable-name bug in error-path code, a `windowErrors` check
+that only ran once instead of after every step, and an unflushed
+microtask queue that let the harness exit before async submit handling
+ran at all).
+
 ### Backend Context Additions
 
 The `image_creator()` view adds to the template context:
