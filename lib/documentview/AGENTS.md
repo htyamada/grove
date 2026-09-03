@@ -16,8 +16,10 @@ archive-internal preview identifiers; `active.py` owns the active-reader
 manifest and locked symlink staging; `config.py` owns settings, defaults,
 and lazy filesystem validation; `views.py` / `urls.py` wire it all up.
 Templates live under `templates/documentview/`, static assets under
-`static/documentview/`, and tests under `tests/`. The design spec is
-`../../upgrades/books.md`.
+`static/documentview/`, and tests under `tests/`. This file is the
+permanent design and behavior record for the app; the original planning
+document that shaped it (`upgrades/books.md`) has been superseded by this
+file and the code, and was removed once the app was fully implemented.
 
 The active consumer is `../../llime` (mounted at `/documents/`, nav label
 "Library"). `../qat/knip` has no document collection and is not expected to
