@@ -1,0 +1,8 @@
+{
+  "name": "llemon-image-edit-dom-tests",
+  "private": true,
+  "description": "jsdom-driven runtime checks for llemon_image/image.html's multi-image edit UI (Task 13 Phase 2). Not part of the Django app; invoked as a subprocess by tests/test_llemon_image_edit_dom.py, which skips gracefully if `npm install` has not been run here.",
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}

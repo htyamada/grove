@@ -91,10 +91,14 @@
   .ref-thumb-item { display:flex; flex-direction:column; align-items:center; gap:0.1em; color:#333; font-size:0.78em; line-height:1.1; }
   .ref-thumb-item img { width:34px; height:34px; object-fit:cover; border:1px solid #bbb; border-radius:2px; background:#eee; display:block; }
   .ref-thumb-item select.edit-thumb-role { font-size:0.72em; max-width:6em; }
-  .ref-thumb-item .edit-thumb-remove { cursor:pointer; color:#c00; font-weight:bold; }
   .ref-thumb-item .edit-thumb-move-row { display:flex; gap:0.4em; }
-  .ref-thumb-item .edit-thumb-move { cursor:pointer; color:#0077cc; font-weight:bold; }
-  .ref-thumb-item .edit-thumb-move.disabled { color:#ccc; cursor:default; pointer-events:none; }
+  .ref-thumb-item .edit-thumb-move,
+  .ref-thumb-item .edit-thumb-remove {
+    border:none; background:none; padding:0; margin:0; font:inherit; line-height:1; cursor:pointer;
+  }
+  .ref-thumb-item .edit-thumb-remove { color:#c00; font-weight:bold; }
+  .ref-thumb-item .edit-thumb-move { color:#0077cc; font-weight:bold; }
+  .ref-thumb-item .edit-thumb-move:disabled { color:#ccc; cursor:default; }
   #image-picker-grid.at-cap .image-thumb-wrap:not(.selected),
   #sd-picker-grid.at-cap .image-thumb-wrap:not(.selected) { opacity:0.35; pointer-events:none; }
 
@@ -1461,8 +1465,36 @@ document.addEventListener('keydown', function(e) {
 
   function _editInputsSignatureFor(inputs) {
     if (!inputs) return '';
-    const roleNames = (inputs.roles || []).map(function (r) { return r.name; }).join(',');
-    return inputs.shape + ':' + inputs.effective_max_count + ':' + roleNames;
+    // Includes each role's usability/warning status (via
+    // roleDataUrlUnusableReason(), the same check the role <select> and
+    // currentEditImagesMaxCount() use), not just its name -- a model or
+    // provider switch that keeps identical shape/count/role names but
+    // changes a role's transport or warning facts must still be treated
+    // as incompatible, since a previously-usable selected role could
+    // silently become disabled, or the usable-role cap could silently
+    // shrink below the current selection.
+    const roleSignature = (inputs.roles || []).map(function (r) {
+      const reason = roleDataUrlUnusableReason(r, inputs.transport_warnings || {}) || '';
+      return r.name + '/' + (r.required ? '1' : '0') + '/' + reason;
+    }).join(',');
+    return inputs.shape + ':' + inputs.effective_max_count + ':' + inputs.min_count
+      + ':' + roleSignature;
+  }
+
+  function makeThumbIconButton(className, label, symbol, disabled, onClick) {
+    // A real <button> (not a click-only <span>) so the control is
+    // keyboard-focusable and operable (Enter/Space), announces via its
+    // aria-label, and carries a genuine disabled state rather than a CSS
+    // class a screen reader or keyboard user has no way to observe.
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = className;
+    btn.setAttribute('aria-label', label);
+    btn.title = label;
+    btn.textContent = symbol;
+    btn.disabled = disabled;
+    if (!disabled) btn.addEventListener('click', onClick);
+    return btn;
   }
 
   function renderEditImagesList() {
@@ -1485,21 +1517,15 @@ document.addEventListener('keydown', function(e) {
       const moveRow = document.createElement('span');
       moveRow.className = 'edit-thumb-move-row';
       const moveIndex = i;
-      const moveLeft = document.createElement('span');
-      moveLeft.className = 'edit-thumb-move' + (i === 0 ? ' disabled' : '');
-      moveLeft.title = 'Move earlier';
-      moveLeft.textContent = '‹';
-      if (i > 0) {
-        moveLeft.addEventListener('click', function () { moveEditImage(moveIndex, -1); });
-      }
+      const moveLeft = makeThumbIconButton(
+        'edit-thumb-move', 'Move image ' + (i + 1) + ' earlier', '‹',
+        i === 0, function () { moveEditImage(moveIndex, -1); },
+      );
       moveRow.appendChild(moveLeft);
-      const moveRight = document.createElement('span');
-      moveRight.className = 'edit-thumb-move' + (i === editImageUrls.length - 1 ? ' disabled' : '');
-      moveRight.title = 'Move later';
-      moveRight.textContent = '›';
-      if (i < editImageUrls.length - 1) {
-        moveRight.addEventListener('click', function () { moveEditImage(moveIndex, 1); });
-      }
+      const moveRight = makeThumbIconButton(
+        'edit-thumb-move', 'Move image ' + (i + 1) + ' later', '›',
+        i === editImageUrls.length - 1, function () { moveEditImage(moveIndex, 1); },
+      );
       moveRow.appendChild(moveRight);
       item.appendChild(moveRow);
       if (named) {
@@ -1527,20 +1553,20 @@ document.addEventListener('keydown', function(e) {
         item.appendChild(roleSel);
       } else {
         const tag = document.createElement('span');
+        tag.className = 'edit-thumb-position';
         tag.textContent = '#' + (i + 1);
         item.appendChild(tag);
       }
       const removeIndex = i;
-      const removeBtn = document.createElement('span');
-      removeBtn.className = 'edit-thumb-remove';
-      removeBtn.title = 'Remove';
-      removeBtn.textContent = '✕';
-      removeBtn.addEventListener('click', function () {
-        editImageFnames.splice(removeIndex, 1);
-        editImageUrls.splice(removeIndex, 1);
-        editImageRoles.splice(removeIndex, 1);
-        renderEditImagesList();
-      });
+      const removeBtn = makeThumbIconButton(
+        'edit-thumb-remove', 'Remove image ' + (i + 1) + ' (' + (editImageFnames[i] || '') + ')',
+        '✕', false, function () {
+          editImageFnames.splice(removeIndex, 1);
+          editImageUrls.splice(removeIndex, 1);
+          editImageRoles.splice(removeIndex, 1);
+          renderEditImagesList();
+        },
+      );
       item.appendChild(removeBtn);
       listEl.appendChild(item);
     }
@@ -1666,6 +1692,11 @@ document.addEventListener('keydown', function(e) {
     if (!editModel) { errMsg.textContent = 'No edit models are available.'; return; }
     const editInputs = currentEditInputs();
     const named = !!editInputs && editInputs.shape === 'named';
+    if (editInputs && editImageFnames.length < editInputs.min_count) {
+      errMsg.textContent = 'This model requires at least ' + editInputs.min_count
+        + ' image(s); ' + editImageFnames.length + ' selected.';
+      return;
+    }
     if (named) {
       if (editImageRoles.some(function (r) { return !r; })) {
         errMsg.textContent = 'Please assign a role to every selected image.';
