@@ -177,11 +177,20 @@ def _operation_state(
             reason = ('required transport unavailable'
                       if 'unavailable_transport' in states else 'data URL unsupported')
             return False, False, reason
-        warned = next(
-            (transport for state, transport in results
-             if state == 'usable' and transport
-             and transport in edit_input['transport_warnings']),
-            None,
+        # Same required-vs-optional split as the usability check above: with
+        # required roles (AND semantics), one warned usable role forces
+        # consent for the whole call, so *any* warned usable candidate
+        # disables it. With only optional roles (OR semantics), a warned
+        # usable role does not disable the model as long as some other
+        # usable role needs no consent at all -- only when *every* usable
+        # candidate requires a warned transport is there no warning-free
+        # request left to offer.
+        def _is_warned(transport: str | None) -> bool:
+            return bool(transport) and transport in edit_input['transport_warnings']
+        usable_transports = [t for state, t in results if state == 'usable']
+        warned = (
+            any(_is_warned(t) for t in usable_transports) if required_roles
+            else all(_is_warned(t) for t in usable_transports)
         )
         if warned:
             return False, False, 'requires accepting a data-handling warning'

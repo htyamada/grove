@@ -346,6 +346,101 @@ else:
                 (False, False, 'required transport unavailable'),
             )
 
+        def test_all_optional_named_schema_stays_enabled_if_one_role_is_warning_free(self) -> None:
+            # All-optional schema (OR semantics): one usable role needing a
+            # data-handling warning must not disable the model when another
+            # usable role accepts data_url directly with no warning at
+            # all -- a valid warning-free request still exists.
+            row = {'id': 'optional-mixed', 'presentation': _presentation(
+                'optional-mixed', generate=False, edit=True,
+            )}
+            row['presentation']['edit_inputs'].update({
+                'shape': 'named', 'min_count': 0, 'max_count': 2,
+                'effective_max_count': 2,
+                'accepted_source_kinds': [], 'required_backend_transports': {},
+                'available_backend_transports': [],
+                'roles': [
+                    {'name': 'warned', 'required': False, 'position': 0,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': [],
+                     'required_backend_transports': {'data_url': 'provider_upload'},
+                     'available_backend_transports': ['provider_upload']},
+                    {'name': 'clean', 'required': False, 'position': 1,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': ['data_url'],
+                     'required_backend_transports': {}, 'available_backend_transports': []},
+                ],
+            })
+            row['presentation']['edit_inputs']['transport_warnings'] = {
+                'provider_upload': 'uploads leave LLemon-managed storage',
+            }
+            self.assertEqual(
+                imagegen_view._operation_state(row, 'edit_images', source_kind='data_url'),
+                (True, True, None),
+            )
+
+        def test_all_optional_named_schema_disabled_if_every_usable_role_is_warned(self) -> None:
+            row = {'id': 'optional-all-warned', 'presentation': _presentation(
+                'optional-all-warned', generate=False, edit=True,
+            )}
+            row['presentation']['edit_inputs'].update({
+                'shape': 'named', 'min_count': 0, 'max_count': 2,
+                'effective_max_count': 2,
+                'accepted_source_kinds': [], 'required_backend_transports': {},
+                'available_backend_transports': [],
+                'roles': [
+                    {'name': 'warned_one', 'required': False, 'position': 0,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': [],
+                     'required_backend_transports': {'data_url': 'provider_upload'},
+                     'available_backend_transports': ['provider_upload']},
+                    {'name': 'warned_two', 'required': False, 'position': 1,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': [],
+                     'required_backend_transports': {'data_url': 'provider_upload'},
+                     'available_backend_transports': ['provider_upload']},
+                ],
+            })
+            row['presentation']['edit_inputs']['transport_warnings'] = {
+                'provider_upload': 'uploads leave LLemon-managed storage',
+            }
+            self.assertEqual(
+                imagegen_view._operation_state(row, 'edit_images', source_kind='data_url'),
+                (False, False, 'requires accepting a data-handling warning'),
+            )
+
+        def test_required_roles_disabled_if_any_usable_role_is_warned(self) -> None:
+            # Required-role schema (AND semantics): every required role must
+            # be dispatched together, so even one warned required role
+            # forces consent for the whole call.
+            row = {'id': 'required-one-warned', 'presentation': _presentation(
+                'required-one-warned', generate=False, edit=True,
+            )}
+            row['presentation']['edit_inputs'].update({
+                'shape': 'named', 'min_count': 2, 'max_count': 2,
+                'effective_max_count': 2,
+                'accepted_source_kinds': [], 'required_backend_transports': {},
+                'available_backend_transports': [],
+                'roles': [
+                    {'name': 'clean', 'required': True, 'position': 0,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': ['data_url'],
+                     'required_backend_transports': {}, 'available_backend_transports': []},
+                    {'name': 'warned', 'required': True, 'position': 1,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': [],
+                     'required_backend_transports': {'data_url': 'provider_upload'},
+                     'available_backend_transports': ['provider_upload']},
+                ],
+            })
+            row['presentation']['edit_inputs']['transport_warnings'] = {
+                'provider_upload': 'uploads leave LLemon-managed storage',
+            }
+            self.assertEqual(
+                imagegen_view._operation_state(row, 'edit_images', source_kind='data_url'),
+                (False, False, 'requires accepting a data-handling warning'),
+            )
+
         def test_model_options_are_independent_complete_copies(self) -> None:
             row = {'id': 'm1', 'name': 'One', 'extra': {'value': 1},
                    'presentation': _presentation('m1')}

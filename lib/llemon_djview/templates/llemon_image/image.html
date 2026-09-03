@@ -360,6 +360,20 @@ document.addEventListener('keydown', function(e) {
     return {state: 'unsupported', transport: null};
   }
 
+  function roleDataUrlUnusableReason(role, transportWarnings) {
+    // A role that can't actually take Grove's data_url source, or whose
+    // only path needs consent Grove doesn't yet collect, would produce a
+    // predictable backend rejection if selected -- surface that up front
+    // instead of letting the choice look selectable.
+    const result = sourceKindUsability(role, 'data_url');
+    if (result.state === 'unavailable_transport') return 'required transport unavailable';
+    if (result.state === 'unsupported') return 'data URL unsupported';
+    if (result.transport && transportWarnings[result.transport]) {
+      return 'requires accepting a data-handling warning';
+    }
+    return null;
+  }
+
   function editOptionState(option) {
     // Mirrors llemon_djview.imagegen._operation_state('edit_images', ...):
     // reads the multi-image edit_inputs/operations.edit_images facade (not
@@ -396,9 +410,21 @@ document.addEventListener('keydown', function(e) {
           ? 'required transport unavailable' : 'data URL unsupported';
         return {disabled: true, reason: reason};
       }
-      const warned = results.find(function (r) {
-        return r.state === 'usable' && r.transport && (input.transport_warnings || {})[r.transport];
-      });
+      // Same required-vs-optional split as the usability check above: with
+      // required roles (AND semantics), one warned usable role forces
+      // consent for the whole call, so *any* warned usable candidate
+      // disables it. With only optional roles (OR semantics), a warned
+      // usable role does not disable the model as long as some other
+      // usable role needs no consent at all.
+      const isWarned = function (transport) {
+        return !!transport && !!(input.transport_warnings || {})[transport];
+      };
+      const usableTransports = results
+        .filter(function (r) { return r.state === 'usable'; })
+        .map(function (r) { return r.transport; });
+      const warned = requiredRoles.length
+        ? usableTransports.some(isWarned)
+        : usableTransports.every(isWarned);
       if (warned) {
         return {disabled: true, reason: 'requires accepting a data-handling warning'};
       }
@@ -1469,7 +1495,13 @@ document.addEventListener('keydown', function(e) {
         for (const role of roles) {
           const opt = document.createElement('option');
           opt.value = role.name;
-          opt.textContent = role.name + (role.required ? ' *' : '');
+          let label = role.name + (role.required ? ' *' : '');
+          const unusableReason = roleDataUrlUnusableReason(role, inputs.transport_warnings || {});
+          if (unusableReason) {
+            opt.disabled = true;
+            label += ' (' + unusableReason + ')';
+          }
+          opt.textContent = label;
           if (editImageRoles[i] === role.name) opt.selected = true;
           roleSel.appendChild(opt);
         }
