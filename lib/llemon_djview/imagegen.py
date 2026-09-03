@@ -108,10 +108,14 @@ def _operation_state(
     every model at today's effective maximum of one image (see
     specs/mediagen-image-spec.md, "Agreement with edit_input is scoped, not
     universal"), so this is not a behavior change for any model Grove could
-    already select. A named schema is additionally excluded here: Grove's
-    edit UI has no per-image role control yet (Task 13 Phase 2), so a model
-    that only accepts edits through named roles is not yet selectable even
-    when edit_images() is itself already live-validated for it.
+    already select. A named schema is fully selectable here (Task 13 Phase
+    2 added the role-assignment UI); the coarse top-level
+    accepted_source_kinds/required_backend_transports check below is the
+    cross-role intersection for a named schema, per specs/mediagen-image-
+    spec.md's "Capability schema" -- a usable-but-role-scoped exception is
+    still caught precisely by normalize_edit_inputs() at dispatch, so this
+    function only needs to be a reasonable coarse eligibility gate for the
+    edit-model dropdown, not the final authority.
     """
     presentation = row['presentation']
     detail = presentation['detail']
@@ -120,8 +124,6 @@ def _operation_state(
         return True, False, 'model detail has not been resolved'
     if not operation_data['available']:
         return False, False, operation_data['unavailable_reason']
-    if operation == 'edit_images' and presentation['edit_inputs']['shape'] != 'ordered':
-        return False, False, 'requires selecting multiple images with roles'
     if source_kind is None:
         return True, True, None
     inputs_key = 'edit_inputs' if operation == 'edit_images' else 'edit_input'

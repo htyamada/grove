@@ -782,35 +782,52 @@ class ImageEditControlTests(_DjviewTestCase):
         self.assertEqual(filenames_arg, ['a.png'])
         self.assertEqual(images_arg, [{'source': 'data:image/png;base64,x'}])
 
-    def test_named_role_model_excluded_from_edit_selection(self) -> None:
-        # Grove's edit UI has no per-image role control yet (Task 13 Phase
-        # 2), so a named schema is excluded from selection even when
-        # edit_images() is already live-validated for it (operations.
-        # edit_images.available=True below).
+    _NAMED_ROLES = [
+        {'name': 'first', 'required': True, 'position': 0,
+         'description': None, 'aliases': [],
+         'accepted_source_kinds': ['data_url'],
+         'required_backend_transports': {}, 'available_backend_transports': []},
+        {'name': 'second', 'required': True, 'position': 1,
+         'description': None, 'aliases': [],
+         'accepted_source_kinds': ['data_url'],
+         'required_backend_transports': {}, 'available_backend_transports': []},
+    ]
+
+    def _named_role_edit_meta(self):
         edit_meta = dict(_OPENROUTER_EDIT_META)
         option = _edit_option('vendor/edit-model')
         option['presentation']['edit_inputs'].update({
             'shape': 'named', 'min_count': 2, 'max_count': 2,
-            'effective_max_count': 2,
-            'roles': [
-                {'name': 'first', 'required': True, 'position': 0,
-                 'description': None, 'aliases': [],
-                 'accepted_source_kinds': ['data_url'],
-                 'required_backend_transports': {}, 'available_backend_transports': []},
-                {'name': 'second', 'required': True, 'position': 1,
-                 'description': None, 'aliases': [],
-                 'accepted_source_kinds': ['data_url'],
-                 'required_backend_transports': {}, 'available_backend_transports': []},
-            ],
+            'effective_max_count': 2, 'roles': self._NAMED_ROLES,
         })
         edit_meta['edit_model_options'] = [option]
+        return edit_meta
+
+    def test_named_role_model_dispatches_with_supplied_roles(self) -> None:
+        # Task 13 Phase 2: the role-assignment UI makes a named schema
+        # selectable and dispatchable once every required role is supplied.
         resp, edit_result = self._run_edit(
-            {'filename': 'a.png', 'prompt': 'change it',
-             'model': 'vendor/edit-model', 'aspect_ratio': '1:1'},
-            edit_meta,
+            {'images': [{'filename': 'a.png', 'role': 'first'},
+                        {'filename': 'b.png', 'role': 'second'}],
+             'prompt': 'combine them', 'model': 'vendor/edit-model',
+             'aspect_ratio': '1:1'},
+            self._named_role_edit_meta(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        images_arg = edit_result.call_args.args[0]
+        self.assertEqual([i['role'] for i in images_arg], ['first', 'second'])
+
+    def test_named_role_model_rejects_missing_required_role(self) -> None:
+        # normalize_edit_inputs() remains the authority on role completeness
+        # even though the coarse Grove-level eligibility check now passes.
+        resp, edit_result = self._run_edit(
+            {'images': [{'filename': 'a.png', 'role': 'first'}],
+             'prompt': 'change it', 'model': 'vendor/edit-model',
+             'aspect_ratio': '1:1'},
+            self._named_role_edit_meta(),
         )
         self.assertEqual(resp.status_code, 400)
-        self.assertEqual(resp.data['error'], 'requires selecting multiple images with roles')
+        self.assertIn('missing required role', resp.data['error'])
         edit_result.assert_not_called()
 
     def test_over_count_request_rejected_before_dispatch(self) -> None:

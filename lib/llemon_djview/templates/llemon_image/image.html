@@ -90,6 +90,10 @@
   .ref-thumb-list { display:flex; align-items:flex-start; gap:0.3em; flex-wrap:wrap; font-style:normal; }
   .ref-thumb-item { display:flex; flex-direction:column; align-items:center; gap:0.1em; color:#333; font-size:0.78em; line-height:1.1; }
   .ref-thumb-item img { width:34px; height:34px; object-fit:cover; border:1px solid #bbb; border-radius:2px; background:#eee; display:block; }
+  .ref-thumb-item select.edit-thumb-role { font-size:0.72em; max-width:6em; }
+  .ref-thumb-item .edit-thumb-remove { cursor:pointer; color:#c00; font-weight:bold; }
+  #image-picker-grid.at-cap .image-thumb-wrap:not(.selected),
+  #sd-picker-grid.at-cap .image-thumb-wrap:not(.selected) { opacity:0.35; pointer-events:none; }
 
 </style>
 {% endblock %}
@@ -274,6 +278,16 @@
         </div>
       </div>
     </div>
+    <div id="edit-images-section" style="display:none; margin-top:0.8em; flex-shrink: 0;">
+      <label id="edit-images-label" style="display:block; font-weight:bold; margin-bottom:0.25em;">Source image</label>
+      <div class="image-select-row">
+        <div class="image-btn-row">
+          <button type="button" id="edit-images-btn">Add image…</button>
+          <span id="edit-images-list" class="image-btn-label"></span>
+          <button type="button" id="edit-images-clear-btn" class="image-btn-clear" style="display:none;" title="Clear all">&#x2715;</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -322,21 +336,34 @@ document.addEventListener('keydown', function(e) {
     return {eligible: true, enabled: true, reason: ''};
   }
   function editOptionState(option) {
+    // Mirrors llemon_djview.imagegen._operation_state('edit_images', ...):
+    // reads the multi-image edit_inputs/operations.edit_images facade (not
+    // the single-image edit_input/operations.edit, which agree with it
+    // only up to today's effective maximum of one image), and checks
+    // required_backend_transports before accepted_source_kinds -- a kind
+    // carrying a required transport is deliverable whenever that transport
+    // is available and need not also appear in accepted_source_kinds.
+    // Checking acceptance first would make the transport fact unreachable
+    // for a Segmind-style schema that declares the two disjointly.
     const presentation = option.presentation || {};
-    const operation = ((presentation.operations || {}).edit || {});
+    const operation = ((presentation.operations || {}).edit_images || {});
     if (presentation.detail === 'summary') {
       return {disabled: true, reason: 'model detail has not been resolved'};
     }
     if (operation.available !== true) {
       return {disabled: true, reason: operation.unavailable_reason || 'unavailable'};
     }
-    const input = presentation.edit_input || {};
-    if (!(input.accepted_source_kinds || []).includes('data_url')) {
-      return {disabled: true, reason: 'data URL unsupported'};
-    }
+    const input = presentation.edit_inputs || {};
     const required = (input.required_backend_transports || {}).data_url;
-    if (required && !(input.available_backend_transports || []).includes(required)) {
-      return {disabled: true, reason: 'required transport unavailable'};
+    if (required) {
+      if (!(input.available_backend_transports || []).includes(required)) {
+        return {disabled: true, reason: 'required transport unavailable'};
+      }
+      if ((input.transport_warnings || {})[required]) {
+        return {disabled: true, reason: 'requires accepting a data-handling warning'};
+      }
+    } else if (!(input.accepted_source_kinds || []).includes('data_url')) {
+      return {disabled: true, reason: 'data URL unsupported'};
     }
     return {disabled: false, reason: ''};
   }
@@ -360,6 +387,14 @@ document.addEventListener('keydown', function(e) {
     button.disabled = availability.enabled !== true;
     button.title = button.disabled ? (availability.reason || 'Action unavailable') : '';
   }
+  // Exposed globally: switchType(), in the separate "Type selector and
+  // image picker" <script> block below (a different closure), calls this
+  // on every type change and was silently throwing ReferenceError there
+  // before this fix (caught only by driving the rendered page in a real
+  // DOM -- node --check validates syntax only, not cross-block runtime
+  // references). Found and fixed as part of Task 13 Phase 2, since
+  // switchType('edit') is now load-bearing for the new multi-image UI.
+  window.updateActionAvailability = updateActionAvailability;
   function imageProviderData(presentation) {
     const operations = presentation.operations || {};
     const generate = operations.generate || {};
@@ -407,6 +442,14 @@ document.addEventListener('keydown', function(e) {
   }
   const INITIAL_PROVIDER = CREATOR_PRESENTATION.provider;
   const initialProviderData = imageProviderData(CREATOR_PRESENTATION);
+  // Task 13 Phase 2 ordered multi-image edit selection state; declared
+  // here (ahead of _applyEditMetadata(initialProviderData) below, which
+  // reaches ensureEditImagesCompatible() and reads these) rather than
+  // alongside that feature's functions further down the file.
+  let editImageFnames = [];
+  let editImageUrls = [];
+  let editImageRoles = [];
+  let _editInputsSignature = '';
   let currentProviderData = initialProviderData;
   let MODEL_DESCRIPTIONS = initialProviderData.model_descriptions;
   let MODEL_OPTIONS = initialProviderData.model_options;
@@ -548,10 +591,10 @@ document.addEventListener('keydown', function(e) {
         const state = editOptionState(m);
         const opt = document.createElement('option');
         opt.value = m.id;
-        opt.textContent = m.display + operationEvidence(m, 'edit')
+        opt.textContent = m.display + operationEvidence(m, 'edit_images')
           + (state.reason ? ' — ' + state.reason : '');
         const editOperation = (
-          (((m || {}).presentation || {}).operations || {}).edit || {}
+          (((m || {}).presentation || {}).operations || {}).edit_images || {}
         );
         opt.title = (editOperation.designation_reason || '')
           + (state.reason ? ((editOperation.designation_reason ? '; ' : '') + state.reason) : '');
@@ -602,6 +645,7 @@ document.addEventListener('keydown', function(e) {
         typeSel.dispatchEvent(new Event('change'));
       }
     }
+    ensureEditImagesCompatible();
   }
 
   _applyEditMetadata(initialProviderData);
@@ -1302,6 +1346,142 @@ document.addEventListener('keydown', function(e) {
     return (section && section.dataset.selectedFname) || '';
   }
 
+  // Ordered multi-image edit selection (Task 13 Phase 2). Rendering lives
+  // here, alongside CREATOR_PRESENTATION and the edit-model dropdown it
+  // depends on; the "Type selector and image picker" script block below
+  // reaches this through window.__editImagesBridge, since the picker grid
+  // it owns is defined in a separate top-level <script> (a separate
+  // closure -- see the same cross-block boundary
+  // updateActionAvailability() also has to cross). The editImage*/
+  // _editInputsSignature state itself is declared earlier, alongside
+  // initialProviderData, since _applyEditMetadata(initialProviderData) --
+  // called before this point in the script -- already reaches
+  // ensureEditImagesCompatible() below and would otherwise read these
+  // `let` bindings before their own declaration ran.
+
+  function currentEditInputs() {
+    const sel = document.getElementById('edit-model-sel');
+    const modelId = sel ? sel.value : '';
+    const edit = (CREATOR_PRESENTATION.operations || {}).edit || {};
+    const option = (edit.model_options || []).find(function (row) { return row.id === modelId; });
+    return (option && option.presentation && option.presentation.edit_inputs) || null;
+  }
+
+  function _editInputsSignatureFor(inputs) {
+    if (!inputs) return '';
+    const roleNames = (inputs.roles || []).map(function (r) { return r.name; }).join(',');
+    return inputs.shape + ':' + inputs.effective_max_count + ':' + roleNames;
+  }
+
+  function renderEditImagesList() {
+    const listEl = document.getElementById('edit-images-list');
+    if (!listEl) return;
+    const inputs = currentEditInputs();
+    const named = !!inputs && inputs.shape === 'named';
+    const roles = named ? (inputs.roles || []) : [];
+    const maxCount = inputs ? inputs.effective_max_count : 1;
+    listEl.textContent = '';
+    listEl.classList.toggle('ref-thumb-list', editImageUrls.length > 0);
+    for (let i = 0; i < editImageUrls.length; i += 1) {
+      const item = document.createElement('span');
+      item.className = 'ref-thumb-item';
+      item.title = editImageFnames[i] || '';
+      const img = document.createElement('img');
+      img.src = editImageUrls[i];
+      img.alt = editImageFnames[i] || '';
+      item.appendChild(img);
+      if (named) {
+        const roleSel = document.createElement('select');
+        roleSel.className = 'edit-thumb-role';
+        const blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = 'role…';
+        roleSel.appendChild(blank);
+        for (const role of roles) {
+          const opt = document.createElement('option');
+          opt.value = role.name;
+          opt.textContent = role.name + (role.required ? ' *' : '');
+          if (editImageRoles[i] === role.name) opt.selected = true;
+          roleSel.appendChild(opt);
+        }
+        const roleIndex = i;
+        roleSel.addEventListener('change', function () { editImageRoles[roleIndex] = this.value; });
+        item.appendChild(roleSel);
+      } else {
+        const tag = document.createElement('span');
+        tag.textContent = '#' + (i + 1);
+        item.appendChild(tag);
+      }
+      const removeIndex = i;
+      const removeBtn = document.createElement('span');
+      removeBtn.className = 'edit-thumb-remove';
+      removeBtn.title = 'Remove';
+      removeBtn.textContent = '✕';
+      removeBtn.addEventListener('click', function () {
+        editImageFnames.splice(removeIndex, 1);
+        editImageUrls.splice(removeIndex, 1);
+        editImageRoles.splice(removeIndex, 1);
+        renderEditImagesList();
+      });
+      item.appendChild(removeBtn);
+      listEl.appendChild(item);
+    }
+    const clearBtn = document.getElementById('edit-images-clear-btn');
+    if (clearBtn) clearBtn.style.display = editImageUrls.length ? '' : 'none';
+    const addBtn = document.getElementById('edit-images-btn');
+    if (addBtn) addBtn.disabled = editImageUrls.length >= maxCount;
+    const labelEl = document.getElementById('edit-images-label');
+    if (labelEl) labelEl.textContent = maxCount > 1 ? 'Source images' : 'Source image';
+  }
+
+  function clearEditImages() {
+    editImageFnames = [];
+    editImageUrls = [];
+    editImageRoles = [];
+    renderEditImagesList();
+  }
+
+  function ensureEditImagesCompatible() {
+    const inputs = currentEditInputs();
+    const sig = _editInputsSignatureFor(inputs);
+    if (sig !== _editInputsSignature) {
+      _editInputsSignature = sig;
+      editImageFnames = [];
+      editImageUrls = [];
+      editImageRoles = [];
+      renderEditImagesList();
+    }
+  }
+
+  function toggleEditImage(fname, url) {
+    const idx = editImageUrls.indexOf(url);
+    if (idx !== -1) {
+      editImageFnames.splice(idx, 1);
+      editImageUrls.splice(idx, 1);
+      editImageRoles.splice(idx, 1);
+      renderEditImagesList();
+      return false;
+    }
+    const inputs = currentEditInputs();
+    const maxCount = inputs ? inputs.effective_max_count : 1;
+    if (editImageUrls.length >= maxCount) return false;
+    editImageUrls.push(url);
+    editImageFnames.push(fname);
+    editImageRoles.push('');
+    renderEditImagesList();
+    return true;
+  }
+
+  window.__editImagesBridge = {
+    toggle: toggleEditImage,
+    selectedUrls: function () { return editImageUrls.slice(); },
+    maxCount: function () {
+      const inputs = currentEditInputs();
+      return inputs ? inputs.effective_max_count : 1;
+    },
+    clear: clearEditImages,
+  };
+
   // Upscale/Edit submission handlers
   async function handleUpscaleSubmit() {
     const upscaleUrl = '{{ upscale_url|default:""|escapejs }}';
@@ -1355,21 +1535,31 @@ document.addEventListener('keydown', function(e) {
 
   async function handleEditSubmit() {
     const editImageUrl = '{{ edit_image_url|default:""|escapejs }}';
-    const sourceImageFname = _getSourceImageFname();
     const prompt = document.getElementById('prompt').value.trim();
 
-    if (!sourceImageFname) { errMsg.textContent = 'Please select a source image.'; return; }
     if (!editImageUrl) { errMsg.textContent = 'Edit is not available.'; return; }
+    if (!editImageFnames.length) { errMsg.textContent = 'Please select at least one source image.'; return; }
     if (!prompt) { errMsg.textContent = 'Please enter edit instructions.'; return; }
     const editModel = document.getElementById('edit-model-sel').value;
     if (!editModel) { errMsg.textContent = 'No edit models are available.'; return; }
+    const editInputs = currentEditInputs();
+    const named = !!editInputs && editInputs.shape === 'named';
+    if (named && editImageRoles.some(function (r) { return !r; })) {
+      errMsg.textContent = 'Please assign a role to every selected image.';
+      return;
+    }
 
     btn.disabled = true;
     status.textContent = 'Editing…';
     errMsg.textContent = '';
 
+    const images = editImageFnames.map(function (fname, i) {
+      const entry = {filename: fname};
+      if (named) entry.role = editImageRoles[i];
+      return entry;
+    });
     const body = {
-      filename: sourceImageFname,
+      images: images,
       provider: currentProvider,
       prompt: prompt,
       model: editModel,
@@ -1595,7 +1785,7 @@ document.addEventListener('keydown', function(e) {
 <div id="image-picker" style="display:none;">
   <div id="image-picker-box">
     <div id="image-picker-header">
-      <strong>Select source image</strong>
+      <strong id="image-picker-title">Select source image</strong>
       {% if source_dirs_json_url %}<div id="image-picker-tabs"><button type="button" id="picker-tab-gallery" class="picker-tab active">Gallery</button><button type="button" id="picker-tab-source" class="picker-tab">Input files</button></div>{% endif %}
       <button type="button" id="image-picker-close">Close</button>
     </div>
@@ -1619,6 +1809,7 @@ document.addEventListener('keydown', function(e) {
   const imageTypeSel = document.getElementById('image-type');
   const modelRow = document.getElementById('model-row');
   const sourceImageSection = document.getElementById('source-image-section');
+  const editImagesSection = document.getElementById('edit-images-section');
   const upscaleOpts = document.getElementById('upscale-opts');
   const editOpts = document.getElementById('edit-opts');
   const systemSection = document.getElementById('system-section');
@@ -1638,7 +1829,8 @@ document.addEventListener('keydown', function(e) {
     const isEdit = type === 'edit';
 
     if (modelRow) modelRow.style.display = isNormal ? '' : 'none';
-    if (sourceImageSection) sourceImageSection.style.display = isNormal ? 'none' : '';
+    if (sourceImageSection) sourceImageSection.style.display = isUpscale ? '' : 'none';
+    if (editImagesSection) editImagesSection.style.display = isEdit ? '' : 'none';
     if (upscaleOpts) upscaleOpts.style.display = isUpscale ? '' : 'none';
     if (editOpts) editOpts.style.display = isEdit ? '' : 'none';
     if (temperatureRow) temperatureRow.style.display = isNormal ? '' : 'none';
@@ -1654,7 +1846,9 @@ document.addEventListener('keydown', function(e) {
 
     if (promptLabel) promptLabel.textContent = isEdit ? 'Instructions' : 'Prompt';
     if (generateBtn) generateBtn.textContent = isNormal ? 'Generate' : (isUpscale ? 'Upscale' : 'Edit');
-    updateActionAvailability();
+    // updateActionAvailability() is defined in the earlier <script> block
+    // (a separate closure) and reached only via window.updateActionAvailability.
+    if (window.updateActionAvailability) window.updateActionAvailability();
   }
 
   if (imageTypeSel) {
@@ -1667,9 +1861,50 @@ document.addEventListener('keydown', function(e) {
   const sourceImageBtn = document.getElementById('source-image-btn');
   const sourceImageClearBtn = document.getElementById('source-image-clear-btn');
   const sourceImageLabel = document.getElementById('source-image-label');
+  const editImagesBtn = document.getElementById('edit-images-btn');
+  const editImagesClearBtn = document.getElementById('edit-images-clear-btn');
   const imagePicker = document.getElementById('image-picker');
+  const imagePickerTitle = document.getElementById('image-picker-title');
   const imagePickerClose = document.getElementById('image-picker-close');
   const imagePickerGrid = document.getElementById('image-picker-grid');
+
+  // Task 13 Phase 2: the multi-image edit selection state and its render
+  // function live in the earlier <script> block alongside CREATOR_
+  // PRESENTATION and the edit-model dropdown they depend on, which is a
+  // separate top-level closure from this one (the same cross-block
+  // boundary updateActionAvailability() below already crosses via a plain
+  // global call) -- window.__editImagesBridge is the bridge back to it.
+  let pickerMultiMode = false;
+
+  function editImagesBridge() {
+    return window.__editImagesBridge || {
+      toggle: function () { return false; },
+      selectedUrls: function () { return []; },
+      maxCount: function () { return 1; },
+      clear: function () {},
+    };
+  }
+
+  function syncPickerSelectionClasses() {
+    const bridge = editImagesBridge();
+    const selected = new Set(bridge.selectedUrls());
+    const atCap = selected.size >= bridge.maxCount();
+    document.querySelectorAll('#image-picker-grid .image-thumb-wrap, #sd-picker-grid .image-thumb-wrap').forEach(function (el) {
+      el.classList.toggle('selected', selected.has(el.dataset.url));
+    });
+    [imagePickerGrid, document.getElementById('sd-picker-grid')].forEach(function (grid) {
+      if (grid) grid.classList.toggle('at-cap', atCap);
+    });
+  }
+
+  function handleThumbClick(fname, url) {
+    if (pickerMultiMode) {
+      editImagesBridge().toggle(fname, url);
+      syncPickerSelectionClasses();
+    } else {
+      selectPickerImage(fname, url);
+    }
+  }
 
   function appendImageThumb(label, imageUrl, imageName) {
     if (!imageUrl) return;
@@ -1693,12 +1928,20 @@ document.addEventListener('keydown', function(e) {
     if (sourceImageClearBtn) sourceImageClearBtn.style.display = url ? '' : 'none';
   }
 
-  function openImagePicker() {
-    if (!imagePicker || !sourceImageSection) return;
-    const fname = sourceImageSection.dataset.selectedFname || '';
-    document.querySelectorAll('#image-picker-grid .image-thumb-wrap').forEach(el => {
-      el.classList.toggle('selected', el.dataset.fname === fname);
-    });
+  function openImagePicker(multi) {
+    if (!imagePicker) return;
+    pickerMultiMode = !!multi;
+    if (imagePickerTitle) {
+      imagePickerTitle.textContent = pickerMultiMode ? 'Select images to edit' : 'Select source image';
+    }
+    if (pickerMultiMode) {
+      syncPickerSelectionClasses();
+    } else if (sourceImageSection) {
+      const fname = sourceImageSection.dataset.selectedFname || '';
+      document.querySelectorAll('#image-picker-grid .image-thumb-wrap').forEach(el => {
+        el.classList.toggle('selected', el.dataset.fname === fname);
+      });
+    }
     imagePicker.style.display = 'flex';
   }
 
@@ -1727,7 +1970,22 @@ document.addEventListener('keydown', function(e) {
   if (sourceImageBtn) {
     sourceImageBtn.addEventListener('click', function (e) {
       e.preventDefault();
-      openImagePicker();
+      openImagePicker(false);
+    });
+  }
+
+  if (editImagesBtn) {
+    editImagesBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      openImagePicker(true);
+    });
+  }
+
+  if (editImagesClearBtn) {
+    editImagesClearBtn.addEventListener('click', function (e) {
+      e.preventDefault();
+      editImagesBridge().clear();
+      if (pickerMultiMode) syncPickerSelectionClasses();
     });
   }
 
@@ -1745,7 +2003,7 @@ document.addEventListener('keydown', function(e) {
     imagePickerGrid.addEventListener('click', function (e) {
       const wrap = e.target.closest('.image-thumb-wrap');
       if (!wrap) return;
-      selectPickerImage(wrap.dataset.fname, wrap.dataset.url);
+      handleThumbClick(wrap.dataset.fname, wrap.dataset.url);
     });
   }
   // Source dirs picker
@@ -1799,8 +2057,9 @@ document.addEventListener('keydown', function(e) {
         html += '<div class="sd-pick-dir" data-nick="' + esc(d.nick) + '" data-subdir="' + esc(d.subdir) + '">📁 ' + esc(d.name) + '</div>';
       }
       const selUrl = (sourceImageSection && sourceImageSection.dataset.selectedUrl) || '';
+      const multiSelected = pickerMultiMode ? new Set(editImagesBridge().selectedUrls()) : null;
       for (const img of (data.images || [])) {
-        const sel = selUrl && img.url === selUrl;
+        const sel = multiSelected ? multiSelected.has(img.url) : (selUrl && img.url === selUrl);
         html += '<div class="image-thumb-wrap' + (sel ? ' selected' : '') + '" data-url="' + esc(img.url) + '" data-fname="' + esc(img.fname) + '" title="' + esc(img.fname) + '"><img class="image-thumb" src="' + esc(img.thumb_url) + '" alt="' + esc(img.fname) + '" loading="lazy"></div>';
       }
       if (!(data.dirs || []).length && !(data.images || []).length) {
@@ -1812,7 +2071,7 @@ document.addEventListener('keydown', function(e) {
       el.addEventListener('click', function() { sdPickerFetch(this.dataset.nick, this.dataset.subdir); });
     });
     sdPickerGrid.querySelectorAll('.image-thumb-wrap').forEach(function(el) {
-      el.addEventListener('click', function() { selectPickerImage(this.dataset.fname, this.dataset.url); });
+      el.addEventListener('click', function() { handleThumbClick(this.dataset.fname, this.dataset.url); });
     });
   }
   function showPickerTab(tab) {
@@ -1863,6 +2122,7 @@ document.addEventListener('keydown', function(e) {
         switchType('normal');
       }
       clearSourceImage();
+      editImagesBridge().clear();
     });
   }
 })();

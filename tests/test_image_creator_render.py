@@ -460,10 +460,53 @@ else:
                 html,
             )
             self.assertIn(
-                'filename: sourceImageFname,\n      provider: currentProvider,\n'
+                'images: images,\n      provider: currentProvider,\n'
                 '      prompt:',
                 html,
             )
+
+        def test_edit_images_multi_select_ui_is_wired(self) -> None:
+            # Task 13 Phase 2: static trip-wire for the ordered multi-image
+            # selection / role-assignment markup and its JS wiring. Full
+            # interactive behavior (picker toggling, cap enforcement, role
+            # assignment, list-clearing on an incompatible model switch) is
+            # verified by executing the rendered page in a real DOM
+            # (jsdom), not by this repo's Python suite -- node --check
+            # (via _assert_javascript_syntax) only validates syntax, not
+            # cross-block runtime references, which is how this phase's
+            # bugs were actually found.
+            response = self._render()
+            self.assertEqual(response.status_code, 200)
+            html = response.content.decode('utf-8')
+            self._assert_javascript_syntax(html)
+
+            self.assertIn('id="edit-images-section"', html)
+            self.assertIn('id="edit-images-btn"', html)
+            self.assertIn('id="edit-images-clear-btn"', html)
+            self.assertIn('id="edit-images-list"', html)
+            self.assertIn('id="image-picker-title"', html)
+
+            self.assertIn('function currentEditInputs()', html)
+            self.assertIn('function renderEditImagesList()', html)
+            self.assertIn('function ensureEditImagesCompatible()', html)
+            self.assertIn('window.__editImagesBridge', html)
+            self.assertIn('function openImagePicker(multi)', html)
+            self.assertIn('function handleThumbClick(fname, url)', html)
+
+            # editOptionState() reads the multi-image facade with the
+            # transport-precedence-first order (specs/mediagen-image-spec.md,
+            # "Caller source kinds and backend transports"), not the
+            # single-image edit_input/operations.edit.
+            self.assertIn("(presentation.operations || {}).edit_images", html)
+            self.assertIn('presentation.edit_inputs', html)
+            self.assertIn('requires accepting a data-handling warning', html)
+
+            # Cross-<script>-block bridge for the pre-existing
+            # updateActionAvailability() call inside switchType(), found
+            # and fixed alongside this phase (switchType('edit') is now
+            # load-bearing for the new UI).
+            self.assertIn('window.updateActionAvailability = updateActionAvailability', html)
+            self.assertIn('window.updateActionAvailability()', html)
 
         def test_image_creator_returns_502_when_edit_discovery_fails(self) -> None:
             # Edit-model discovery is live and has no fallback: a provider
