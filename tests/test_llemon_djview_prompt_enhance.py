@@ -518,15 +518,33 @@ def _edit_option(model_id):
         'image_sizes': [], 'default_image_size': None,
         'qualities': [], 'default_quality': None, 'extra_fields': [],
     }
+    edit_input = {'accepted_source_kinds': ['data_url'],
+                  'required_backend_transports': {},
+                  'available_backend_transports': [],
+                  'transport_warnings': {}}
     return {'id': model_id, 'name': model_id, 'display': model_id,
             'presentation': {
                 'id': model_id, 'name': model_id, 'description': None,
                 'detail': 'complete',
-                'operations': {'generate': operation(False), 'edit': operation(True)},
+                'operations': {
+                    'generate': operation(False), 'edit': operation(True),
+                    # Ordered schema, effective_max_count == 1: edit_images
+                    # mirrors edit exactly here, per specs/mediagen-image-
+                    # spec.md's "Agreement with edit_input is scoped, not
+                    # universal" (Task 13).
+                    'edit_images': operation(True),
+                },
                 'controls': {'generate': dict(controls), 'edit': dict(controls)},
-                'edit_input': {'accepted_source_kinds': ['data_url'],
-                               'required_backend_transports': {},
-                               'available_backend_transports': []}}}
+                'edit_input': edit_input,
+                'edit_inputs': {
+                    'shape': 'ordered', 'min_count': 1, 'max_count': None,
+                    'effective_max_count': 1,
+                    'accepted_source_kinds': edit_input['accepted_source_kinds'],
+                    'required_backend_transports': edit_input['required_backend_transports'],
+                    'available_backend_transports': edit_input['available_backend_transports'],
+                    'transport_warnings': edit_input['transport_warnings'],
+                    'roles': [],
+                }}}
 
 
 _OPENROUTER_EDIT_META = {
@@ -696,9 +714,9 @@ class ImageEditControlTests(_DjviewTestCase):
     def test_edit_rejects_data_url_incompatible_model_before_dispatch(self) -> None:
         edit_meta = dict(_OPENROUTER_EDIT_META)
         edit_meta['edit_model_options'] = [_edit_option('vendor/edit-model')]
-        edit_meta['edit_model_options'][0]['presentation']['edit_input'][
-            'accepted_source_kinds'
-        ] = ['https_url']
+        presentation = edit_meta['edit_model_options'][0]['presentation']
+        presentation['edit_input']['accepted_source_kinds'] = ['https_url']
+        presentation['edit_inputs']['accepted_source_kinds'] = ['https_url']
         resp, edit_result = self._run_edit(
             {'filename': 'a.png', 'prompt': 'change it',
              'model': 'vendor/edit-model', 'aspect_ratio': '1:1'},
@@ -730,6 +748,161 @@ class ImageEditControlTests(_DjviewTestCase):
         self.assertIn('source image', resp.data['error'])
         edit_result.assert_not_called()
 
+    def test_multi_image_array_reaches_edit_images_in_order(self) -> None:
+        # Task 13: the provider-neutral images:[{filename, role?}] shape
+        # dispatches through edit_images(), carrying every source through
+        # in caller order, once a model's effective_max_count allows it.
+        edit_meta = dict(_OPENROUTER_EDIT_META)
+        option = _edit_option('vendor/edit-model')
+        option['presentation']['edit_inputs']['effective_max_count'] = 2
+        edit_meta['edit_model_options'] = [option]
+        resp, edit_result = self._run_edit(
+            {'images': [{'filename': 'a.png'}, {'filename': 'b.png'}],
+             'prompt': 'combine them',
+             'model': 'vendor/edit-model', 'aspect_ratio': '1:1'},
+            edit_meta,
+        )
+        self.assertEqual(resp.status_code, 200)
+        images_arg, filenames_arg = edit_result.call_args.args[0], edit_result.call_args.args[1]
+        self.assertEqual(filenames_arg, ['a.png', 'b.png'])
+        self.assertEqual(len(images_arg), 2)
+        self.assertNotIn('role', images_arg[0])
+
+    def test_singular_filename_is_input_compatible_with_images_array(self) -> None:
+        # The old scalar `filename` field remains accepted as one-release
+        # input-only compatibility (specs/mediagen-image-spec.md, "Grove
+        # adoption"), equivalent to a single-element `images` array.
+        resp, edit_result = self._run_edit(
+            {'filename': 'a.png', 'prompt': 'change it',
+             'model': 'vendor/edit-model', 'aspect_ratio': '1:1'},
+            _OPENROUTER_EDIT_META,
+        )
+        self.assertEqual(resp.status_code, 200)
+        images_arg, filenames_arg = edit_result.call_args.args[0], edit_result.call_args.args[1]
+        self.assertEqual(filenames_arg, ['a.png'])
+        self.assertEqual(images_arg, [{'source': 'data:image/png;base64,x'}])
+
+    def test_named_role_model_excluded_from_edit_selection(self) -> None:
+        # Grove's edit UI has no per-image role control yet (Task 13 Phase
+        # 2), so a named schema is excluded from selection even when
+        # edit_images() is already live-validated for it (operations.
+        # edit_images.available=True below).
+        edit_meta = dict(_OPENROUTER_EDIT_META)
+        option = _edit_option('vendor/edit-model')
+        option['presentation']['edit_inputs'].update({
+            'shape': 'named', 'min_count': 2, 'max_count': 2,
+            'effective_max_count': 2,
+            'roles': [
+                {'name': 'first', 'required': True, 'position': 0,
+                 'description': None, 'aliases': [],
+                 'accepted_source_kinds': ['data_url'],
+                 'required_backend_transports': {}, 'available_backend_transports': []},
+                {'name': 'second', 'required': True, 'position': 1,
+                 'description': None, 'aliases': [],
+                 'accepted_source_kinds': ['data_url'],
+                 'required_backend_transports': {}, 'available_backend_transports': []},
+            ],
+        })
+        edit_meta['edit_model_options'] = [option]
+        resp, edit_result = self._run_edit(
+            {'filename': 'a.png', 'prompt': 'change it',
+             'model': 'vendor/edit-model', 'aspect_ratio': '1:1'},
+            edit_meta,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data['error'], 'requires selecting multiple images with roles')
+        edit_result.assert_not_called()
+
+    def test_over_count_request_rejected_before_dispatch(self) -> None:
+        # normalize_edit_inputs() enforces effective_max_count before any
+        # backend dispatch (specs/mediagen-image-spec.md, "Preflight
+        # precedence when checks overlap").
+        edit_meta = dict(_OPENROUTER_EDIT_META)
+        option = _edit_option('vendor/edit-model')
+        option['presentation']['edit_inputs']['effective_max_count'] = 1
+        edit_meta['edit_model_options'] = [option]
+        resp, edit_result = self._run_edit(
+            {'images': [{'filename': 'a.png'}, {'filename': 'b.png'}],
+             'prompt': 'combine them',
+             'model': 'vendor/edit-model', 'aspect_ratio': '1:1'},
+            edit_meta,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('at most 1', resp.data['error'])
+        edit_result.assert_not_called()
+
+    def test_over_count_request_never_reads_any_gallery_file(self) -> None:
+        # P1 regression: request shape/count is validated against the
+        # selected model (normalize_edit_inputs()) before any gallery file
+        # is read, so an over-count request never pays to load or
+        # base64-encode images it will reject anyway, and a later-listed
+        # unreadable file can't produce "file not found" ahead of the
+        # count error that should fire first.
+        with mock.patch.dict(sys.modules, _fake_django_modules()):
+            from llemon_djview.imagegen import LLemonImageGenViewSet
+
+        view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
+        edit_meta = __import__('copy').deepcopy(_OPENROUTER_EDIT_META)
+        option = edit_meta['edit_model_options'][0]
+        option['presentation']['edit_inputs']['effective_max_count'] = 1
+        row_controls = option['presentation']['controls']['edit']
+        row_controls.update({
+            'aspect_ratios': edit_meta['edit_aspect_ratios'],
+            'image_sizes': edit_meta['edit_image_sizes'],
+        })
+        request = types.SimpleNamespace(body=json.dumps({
+            'provider': 'openrouter',
+            'images': [{'filename': 'valid.png'}, {'filename': 'missing.png'}],
+            'prompt': 'combine them', 'model': 'vendor/edit-model',
+            'aspect_ratio': '1:1',
+        }))
+        edit_result = mock.Mock(return_value=({'files': ['out.png']}, 200))
+        read_image = mock.Mock(return_value=('data:image/png;base64,x', None))
+        patches = {
+            'normalize_provider_api': lambda *a, **k: ('openrouter', 'openrouter'),
+            'supports_edit': lambda *a, **k: True,
+            '_edit_metadata': lambda *a, **k: dict(edit_meta),
+            'preflight_request': lambda *a, **k: None,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(view, '_read_image_as_data_url', read_image), \
+                    mock.patch.object(view, '_edit_result', edit_result), \
+                    mock.patch.dict(view._do_edit_image.__globals__, patches):
+                resp = view._do_edit_image(request, tmp)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('at most 1', resp.data['error'])
+        read_image.assert_not_called()
+        edit_result.assert_not_called()
+
+    def test_non_string_role_is_rejected_before_normalization(self) -> None:
+        # P2 regression: a non-string (or unhashable) role must not be
+        # silently dropped into an unroled image, and must not reach
+        # normalize_edit_inputs()'s dict-keyed role lookup unexamined.
+        resp, edit_result = self._run_edit(
+            {'images': [{'filename': 'a.png', 'role': 7}],
+             'prompt': 'change it', 'model': 'vendor/edit-model',
+             'aspect_ratio': '1:1'},
+            _OPENROUTER_EDIT_META,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('role must be a string', resp.data['error'])
+        edit_result.assert_not_called()
+
+    def test_empty_role_on_ordered_schema_is_rejected_not_dropped(self) -> None:
+        # P2 regression: an explicitly-supplied empty role must not be
+        # dropped into a valid unroled image for an ordered schema, which
+        # forbids any role at all -- normalize_edit_inputs() must see and
+        # reject the key.
+        resp, edit_result = self._run_edit(
+            {'images': [{'filename': 'a.png', 'role': ''}],
+             'prompt': 'change it', 'model': 'vendor/edit-model',
+             'aspect_ratio': '1:1'},
+            _OPENROUTER_EDIT_META,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('does not use named roles', resp.data['error'])
+        edit_result.assert_not_called()
+
 
 class EditResultBackendForwardingTests(_DjviewTestCase):
     def _run_edit_result(self, image_size):
@@ -742,7 +915,7 @@ class EditResultBackendForwardingTests(_DjviewTestCase):
             def __init__(self, model=None, log_dir=None):
                 pass
 
-            def edit(self, image, prompt, **kwargs):
+            def edit_images(self, images, prompt, **kwargs):
                 recorded.update(kwargs)
                 return {'images': ['fake'], 'usage': None}
 
@@ -757,7 +930,7 @@ class EditResultBackendForwardingTests(_DjviewTestCase):
                     mock.patch.object(view, '_save_operation_result', save_result), \
                     mock.patch.dict(view._edit_result.__globals__, patches):
                 payload, status = view._edit_result(
-                    'data:image/png;base64,x', 'a.png', tmp, 'change it',
+                    [{'source': 'data:image/png;base64,x'}], ['a.png'], tmp, 'change it',
                     'vendor/edit-model', '1:1', image_size, None,
                     'openrouter', 'images',
                 )

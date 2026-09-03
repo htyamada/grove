@@ -43,6 +43,7 @@ from hty7.llemon.mediagen.imagegen import (
     model_display,
     model_presentation,
     model_scoped_parameters,
+    normalize_edit_inputs,
     normalize_provider_api,
     preflight_request,
     provider_config as _provider_config,
@@ -53,6 +54,7 @@ from hty7.llemon.mediagen.imagegen import (
     PROVIDERS,
     write_image_generation_exif_with_sidecar_fallback,
     write_image_metadata,
+    LLemonImageEditInputError,
     LLemonImageParamError,
 )
 from .storage import (
@@ -98,7 +100,19 @@ def _notice_dict(notice: Any) -> dict[str, Any]:
 def _operation_state(
     row: dict[str, Any], operation: str, *, source_kind: str | None = None,
 ) -> tuple[bool, bool, str | None]:
-    """Return (eligible, enabled, brief reason) from normalized presentation."""
+    """Return (eligible, enabled, brief reason) from normalized presentation.
+
+    ``operation='edit_images'`` reads the provider-neutral multi-image
+    facade (``edit_inputs``/``operations.edit_images``) rather than the
+    single-image ``edit_input``/``operations.edit`` — the two agree for
+    every model at today's effective maximum of one image (see
+    specs/mediagen-image-spec.md, "Agreement with edit_input is scoped, not
+    universal"), so this is not a behavior change for any model Grove could
+    already select. A named schema is additionally excluded here: Grove's
+    edit UI has no per-image role control yet (Task 13 Phase 2), so a model
+    that only accepts edits through named roles is not yet selectable even
+    when edit_images() is itself already live-validated for it.
+    """
     presentation = row['presentation']
     detail = presentation['detail']
     operation_data = presentation['operations'][operation]
@@ -106,15 +120,61 @@ def _operation_state(
         return True, False, 'model detail has not been resolved'
     if not operation_data['available']:
         return False, False, operation_data['unavailable_reason']
+    if operation == 'edit_images' and presentation['edit_inputs']['shape'] != 'ordered':
+        return False, False, 'requires selecting multiple images with roles'
     if source_kind is None:
         return True, True, None
-    edit_input = presentation['edit_input']
-    if source_kind not in edit_input['accepted_source_kinds']:
-        return False, False, 'data URL unsupported'
+    inputs_key = 'edit_inputs' if operation == 'edit_images' else 'edit_input'
+    edit_input = presentation[inputs_key]
+    # required_backend_transports takes precedence over accepted_source_kinds
+    # (specs/mediagen-image-spec.md, "Caller source kinds and backend
+    # transports", and normalize_edit_inputs()'s identical precedence): a
+    # kind carrying a required transport is deliverable whenever that
+    # transport is available, and need not also appear in
+    # accepted_source_kinds -- which lists kinds submittable directly,
+    # unchanged, with no transform. Segmind's array/named-role shapes
+    # declare the two facts disjointly (e.g. accepted_source_kinds=
+    # ['https_url'] alongside required_backend_transports=
+    # {'data_url': 'provider_upload'}), so checking acceptance first would
+    # make the transport fact unreachable and silently defeat every
+    # upload-backed model -- the same precedence bug Task 8 Phase 5 fixed
+    # in normalize_edit_inputs() itself.
     required = edit_input['required_backend_transports'].get(source_kind)
-    if required and required not in edit_input['available_backend_transports']:
-        return False, False, 'required transport unavailable'
+    if required is not None:
+        if required not in edit_input['available_backend_transports']:
+            return False, False, 'required transport unavailable'
+        # Grove does not yet collect data-handling-warning consent (Task 13
+        # Phase 2): accept_data_handling_warnings is always False in
+        # _edit_result(), so a warned transport can never actually be
+        # dispatched through Grove today even though it is "available".
+        # Report that accurately here instead of claiming the model is
+        # enabled and only failing at dispatch with warning_not_accepted.
+        if required in edit_input['transport_warnings']:
+            return False, False, 'requires accepting a data-handling warning'
+    elif source_kind not in edit_input['accepted_source_kinds']:
+        return False, False, 'data URL unsupported'
     return True, True, None
+
+
+def _edit_input_transport_pending(
+    edit_inputs: dict[str, Any], image: dict[str, Any],
+) -> bool:
+    """True when this canonical edit image's source will be replaced by an
+    uploaded asset URL before the request is built (e.g. Segmind's
+    provider-upload path), so provider-schema preflight must not validate
+    its current raw shape against the wire request it will never actually
+    carry. Mirrors llemon-image's identical check and the preflight-
+    precedence fix from Task 8 Phase 5 (upgrade.md).
+    """
+    role_name = image.get('role')
+    scope = edit_inputs
+    if role_name:
+        scope = next(
+            (r for r in edit_inputs['roles'] if r['name'] == role_name),
+            edit_inputs,
+        )
+    kind = 'data_url' if image['source'].startswith('data:') else 'https_url'
+    return kind in scope['required_backend_transports']
 
 
 def _model_options(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -204,7 +264,7 @@ def _edit_metadata(
         provider, api, operation='edit',
     )
     selected_model = _select_model(
-        rows, 'edit', requested_model, default_model, source_kind='data_url',
+        rows, 'edit_images', requested_model, default_model, source_kind='data_url',
     )
     selected_row = next(
         (row for row in rows if row['id'] == selected_model), None,
@@ -248,7 +308,7 @@ def _edit_row_controls(
         fallback_size = default_image_size(provider, api)
         size = (fallback_size if fallback_size in sizes else
                 sizes[0] if sizes else None)
-    _, enabled, reason = _operation_state(row, 'edit', source_kind='data_url')
+    _, enabled, reason = _operation_state(row, 'edit_images', source_kind='data_url')
     return {
         'availability': {'enabled': enabled, 'reason': reason},
         'aspect_ratios': ratios,
@@ -573,7 +633,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         )
         if selected_edit_row:
             _, edit_enabled, edit_reason = _operation_state(
-                selected_edit_row, 'edit', source_kind='data_url',
+                selected_edit_row, 'edit_images', source_kind='data_url',
             )
         data['presentation'] = build_creator_presentation(provider, api, {
             'generate': build_operation_presentation(
@@ -1415,6 +1475,93 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         except OSError as e:
             return '', str(e)
 
+    def _parse_request_images(
+        self, data: dict[str, Any],
+    ) -> 'tuple[list[str], list[dict[str, Any]], JsonResponse | None]':
+        """Parse one edit request's ordered image list into gallery
+        filenames and placeholder ``LLemonImageEditInput`` entries, with no
+        filesystem access.
+
+        Each placeholder's ``source`` is the literal string ``'data:'`` —
+        enough for ``normalize_edit_inputs()`` to classify it as
+        ``data_url`` (every filename this endpoint later resolves becomes a
+        real ``data:`` URL too) without reading or base64-encoding the
+        actual file yet. This lets request shape/count/role be validated
+        against the selected model's ``edit_inputs`` schema *before* any
+        image is loaded, so an over-count or malformed request is rejected
+        without paying to load images it will reject anyway, and a bad
+        image later in the list can't produce a misleading "file not
+        found" ahead of a count/role error that would have fired first.
+        Call ``_resolve_request_image_sources()`` after
+        ``normalize_edit_inputs()`` succeeds to substitute real data URLs.
+
+        Accepts the provider-neutral ``images: [{filename, role?}]`` array
+        (Task 13). A lone top-level ``filename`` string is accepted as
+        input-only compatibility for one release, per
+        specs/mediagen-image-spec.md's "Grove adoption" section, and is
+        treated as a single-element array with no role.
+        """
+        raw_images = data.get('images')
+        if raw_images is None:
+            filename = str(data.get('filename') or '')
+            raw_images = [{'filename': filename}] if filename else []
+        if not isinstance(raw_images, list) or not raw_images:
+            return [], [], JsonResponse({'error': 'images is required'}, status=400)
+        filenames: list[str] = []
+        placeholders: list[dict[str, Any]] = []
+        for index, entry in enumerate(raw_images):
+            if not isinstance(entry, dict):
+                return [], [], JsonResponse(
+                    {'error': f'images[{index}] must be an object'}, status=400,
+                )
+            filename = str(entry.get('filename') or '')
+            if not filename:
+                return [], [], JsonResponse(
+                    {'error': f'images[{index}].filename is required'}, status=400,
+                )
+            filenames.append(filename)
+            image: dict[str, Any] = {'source': 'data:'}
+            if 'role' in entry:
+                role_value = entry['role']
+                # A non-string role (or one unhashable, e.g. a list) must
+                # not reach normalize_edit_inputs()'s dict-keyed role
+                # lookup unexamined; reject it here instead of silently
+                # dropping it, which would let a garbage role submit as an
+                # unroled image. An empty string is kept, not rejected
+                # here: normalize_edit_inputs() itself already treats a
+                # present-but-empty role as invalid for a named schema and
+                # any role at all as invalid for an ordered one, so passing
+                # it through lets that single rule enforce both cases
+                # instead of duplicating it.
+                if not isinstance(role_value, str):
+                    return [], [], JsonResponse(
+                        {'error': f'images[{index}].role must be a string'}, status=400,
+                    )
+                image['role'] = role_value
+            placeholders.append(image)
+        return filenames, placeholders, None
+
+    def _resolve_request_image_sources(
+        self, filenames: list[str], canonical_images: list[dict[str, Any]],
+        source_dir: str,
+    ) -> 'JsonResponse | None':
+        """Replace each canonical image's placeholder source with its real
+        gallery data URL, in the same order, after
+        ``normalize_edit_inputs()`` has already validated request
+        shape/count/role against the selected model. Returns an error
+        response on the first unreadable file; the caller must not
+        dispatch when this returns non-``None``.
+        """
+        for index, filename in enumerate(filenames):
+            data_url, err = self._read_image_as_data_url(filename, source_dir=source_dir)
+            if err:
+                return JsonResponse(
+                    {'error': err},
+                    status=400 if err != 'media_dir not configured' else 500,
+                )
+            canonical_images[index]['source'] = data_url
+        return None
+
     def _save_operation_result(
         self,
         result: dict[str, Any],
@@ -1566,8 +1713,8 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
     def _edit_result(
         self,
-        data_url: str,
-        source_filename: str,
+        images: list[dict[str, Any]],
+        source_filenames: list[str],
         media_dir: str,
         prompt: str,
         edit_model: str,
@@ -1583,38 +1730,46 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             'model':        edit_model,
             'aspect_ratio': aspect_ratio,
             'safe_mode':    safe_mode,
+            # Grove does not yet collect data-handling-warning consent
+            # (Task 13 Phase 2); this matches today's behavior, where a
+            # warned transport (e.g. Segmind's qwen-image-edit upload path)
+            # is unreachable through Grove either way.
+            'accept_data_handling_warnings': False,
         }
         if image_size is not None:
             edit_kwargs['image_size'] = image_size
         try:
-            result = backend.edit(data_url, prompt, **edit_kwargs)
+            result = backend.edit_images(images, prompt, **edit_kwargs)
         finally:
             backend.shutdown()
         if result.get('error'):
             err = result['error']
             return {'error': err['message']}, 502
-        stem = os.path.splitext(source_filename)[0] + '_edit'
+        stem = os.path.splitext(source_filenames[0])[0] + '_edit'
         sidecar: dict[str, Any] = {
             'operation':    'edit',
-            'source':       source_filename,
             'prompt':       prompt,
             'model':        edit_model,
         }
+        if len(source_filenames) == 1:
+            sidecar['source'] = source_filenames[0]
+        else:
+            sidecar['sources'] = list(source_filenames)
         if aspect_ratio:
             sidecar['aspect_ratio'] = aspect_ratio
         if image_size:
             sidecar['image_size'] = image_size
         return self._save_operation_result(result, media_dir, stem, sidecar, backend_cls)
 
-    def _edit_stream(self, data_url: str, source_filename: str, media_dir: str,
-                     prompt: str, edit_model: str, aspect_ratio: 'str | None',
-                     image_size: 'str | None', safe_mode: 'bool | None',
-                     provider: str, api: str):
+    def _edit_stream(self, images: list[dict[str, Any]], source_filenames: list[str],
+                     media_dir: str, prompt: str, edit_model: str,
+                     aspect_ratio: 'str | None', image_size: 'str | None',
+                     safe_mode: 'bool | None', provider: str, api: str):
         q: queue.Queue[dict[str, Any]] = queue.Queue()
 
         def _worker() -> None:
             try:
-                payload, status = self._edit_result(data_url, source_filename, media_dir,
+                payload, status = self._edit_result(images, source_filenames, media_dir,
                                                     prompt, edit_model, aspect_ratio,
                                                     image_size, safe_mode, provider, api)
                 q.put({'event': 'done', 'status': status, **payload})
@@ -1649,10 +1804,9 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             return JsonResponse({'error': f'edit not supported by provider {provider!r}'},
                                 status=400)
 
-        filename = str(data.get('filename') or '')
-        data_url, err = self._read_image_as_data_url(filename, source_dir=source_dir)
-        if err:
-            return JsonResponse({'error': err}, status=400 if err != 'media_dir not configured' else 500)
+        filenames, raw_images, images_err = self._parse_request_images(data)
+        if images_err is not None:
+            return images_err
 
         prompt = (data.get('prompt') or '').strip()
         if not prompt:
@@ -1682,12 +1836,25 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 status=400,
             )
         _, enabled, reason = _operation_state(
-            selected_row, 'edit', source_kind='data_url',
+            selected_row, 'edit_images', source_kind='data_url',
         )
         if not enabled:
             return JsonResponse(
                 {'error': reason or 'edit model is unavailable'}, status=400,
             )
+        edit_inputs_schema = selected_row['presentation']['edit_inputs']
+        try:
+            canonical_images = normalize_edit_inputs(raw_images, edit_inputs_schema)
+        except LLemonImageEditInputError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+        # Only now -- after request shape/count/role has been validated
+        # against the selected model without touching the filesystem -- are
+        # the actual gallery files read and base64-encoded.
+        resolve_err = self._resolve_request_image_sources(
+            filenames, canonical_images, source_dir,
+        )
+        if resolve_err is not None:
+            return resolve_err
         row_controls = _edit_row_controls(provider, api, selected_row)
         valid_ratios = row_controls['aspect_ratios']
         aspect_ratio = (data.get('aspect_ratio') or '').strip() or None
@@ -1733,10 +1900,20 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         params: dict[str, Any] = {
             'prompt': prompt,
-            'image_input': data_url,
             'aspect_ratio': aspect_ratio,
             'image_size': image_size,
         }
+        # Provider-schema preflight only knows one image; a multi-image
+        # request (or one whose single image is pending an upload
+        # transform) skips it here and relies on normalize_edit_inputs()
+        # above plus the backend's own validate_request() at dispatch
+        # instead. See _edit_input_transport_pending() and Task 8 Phase 5's
+        # preflight-precedence fix (upgrade.md), which this mirrors.
+        if (
+            len(canonical_images) == 1
+            and not _edit_input_transport_pending(edit_inputs_schema, canonical_images[0])
+        ):
+            params['image_input'] = canonical_images[0]['source']
         if safe_mode_raw is not None:
             params['safe_mode'] = safe_mode
         try:
@@ -1757,7 +1934,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         if data.get('stream'):
             resp = StreamingHttpResponse(
-                self._edit_stream(data_url, filename, result_dir, prompt,
+                self._edit_stream(canonical_images, filenames, result_dir, prompt,
                                   edit_model, aspect_ratio, image_size, safe_mode,
                                   provider, api),
                 content_type='application/x-ndjson',
@@ -1766,7 +1943,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             resp['X-Accel-Buffering'] = 'no'
             return resp
 
-        payload, status = self._edit_result(data_url, filename, result_dir,
+        payload, status = self._edit_result(canonical_images, filenames, result_dir,
                                             prompt, edit_model, aspect_ratio, image_size,
                                             safe_mode, provider, api)
         return JsonResponse(payload, status=status)

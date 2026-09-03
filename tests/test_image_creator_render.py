@@ -132,15 +132,36 @@ else:
             'image_sizes': ['1K'], 'default_image_size': '1K',
             'qualities': [], 'default_quality': None, 'extra_fields': [],
         }
+        edit_input = {
+            'accepted_source_kinds': ['data_url'] if edit else [],
+            'required_backend_transports': {},
+            'available_backend_transports': [],
+            'transport_warnings': {},
+        }
         return {
             'id': model_id, 'name': model_id, 'description': None,
             'detail': 'complete',
-            'operations': {'generate': operation(generate), 'edit': operation(edit)},
+            'operations': {
+                'generate': operation(generate),
+                'edit': operation(edit),
+                # Ordered schema, effective_max_count == 1: edit_images
+                # mirrors edit exactly for this fixture, per
+                # specs/mediagen-image-spec.md's "Agreement with
+                # edit_input is scoped, not universal" (Task 13).
+                'edit_images': operation(edit),
+            },
             'controls': {'generate': controls(), 'edit': controls()},
-            'edit_input': {
-                'accepted_source_kinds': ['data_url'] if edit else [],
-                'required_backend_transports': {},
-                'available_backend_transports': [],
+            'edit_input': edit_input,
+            'edit_inputs': {
+                'shape': 'ordered',
+                'min_count': 1 if edit else 0,
+                'max_count': None if edit else 0,
+                'effective_max_count': 1 if edit else 0,
+                'accepted_source_kinds': edit_input['accepted_source_kinds'],
+                'required_backend_transports': edit_input['required_backend_transports'],
+                'available_backend_transports': edit_input['available_backend_transports'],
+                'transport_warnings': edit_input['transport_warnings'],
+                'roles': [],
             },
         }
 
@@ -218,6 +239,47 @@ else:
                     transport, 'edit', source_kind='data_url',
                 ),
                 (False, False, 'required transport unavailable'),
+            )
+
+        def test_required_transport_takes_precedence_over_accepted_source_kinds(self) -> None:
+            # A required transport is deliverable whenever it is available,
+            # independent of accepted_source_kinds -- Segmind's array/
+            # named-role shapes declare the two facts disjointly (e.g.
+            # accepted_source_kinds=['https_url'] alongside a required
+            # 'data_url' transport). Checking acceptance first would make
+            # the transport fact unreachable and silently defeat every
+            # upload-backed model.
+            row = {'id': 'upload-ready', 'presentation': _presentation(
+                'upload-ready', generate=False, edit=True,
+            )}
+            row['presentation']['edit_input'].update({
+                'accepted_source_kinds': ['https_url'],
+                'required_backend_transports': {'data_url': 'provider_upload'},
+                'available_backend_transports': ['provider_upload'],
+            })
+            self.assertEqual(
+                imagegen_view._operation_state(row, 'edit', source_kind='data_url'),
+                (True, True, None),
+            )
+
+        def test_warned_transport_is_not_enabled_without_consent_ui(self) -> None:
+            # Grove does not yet collect data-handling-warning consent
+            # (Task 13 Phase 2): a transport that carries one can never
+            # actually be dispatched through Grove today even though it is
+            # "available", so it must be reported disabled with an
+            # accurate reason rather than left to fail at dispatch.
+            row = {'id': 'warned', 'presentation': _presentation(
+                'warned', generate=False, edit=True,
+            )}
+            row['presentation']['edit_input'].update({
+                'accepted_source_kinds': [],
+                'required_backend_transports': {'data_url': 'provider_upload'},
+                'available_backend_transports': ['provider_upload'],
+                'transport_warnings': {'provider_upload': 'uploads leave LLemon-managed storage'},
+            })
+            self.assertEqual(
+                imagegen_view._operation_state(row, 'edit', source_kind='data_url'),
+                (False, False, 'requires accepting a data-handling warning'),
             )
 
         def test_model_options_are_independent_complete_copies(self) -> None:
