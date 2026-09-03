@@ -97,6 +97,38 @@ def _notice_dict(notice: Any) -> dict[str, Any]:
     return result
 
 
+def _source_kind_usability(
+    scope: dict[str, Any], source_kind: str,
+) -> 'tuple[str, str | None]':
+    """Classify one source kind against one scope's local facts.
+
+    ``scope`` is either an ``edit_inputs``/``edit_input`` record (top-level,
+    for an ordered schema) or one role dict from ``edit_inputs['roles']``
+    (for a named schema) -- both carry the same three fields at their own
+    scope. Returns ``('usable' | 'unavailable_transport' | 'unsupported',
+    transport_or_None)``. Mirrors normalize_edit_inputs()'s and
+    edit_images_availability()'s identical precedence
+    (specs/mediagen-image-spec.md, "Caller source kinds and backend
+    transports"): a kind carrying a required transport is deliverable
+    whenever that transport is available, and need not also appear in
+    accepted_source_kinds -- which lists kinds submittable directly,
+    unchanged, with no transform. Segmind's array/named-role shapes declare
+    the two facts disjointly (e.g. accepted_source_kinds=['https_url']
+    alongside required_backend_transports={'data_url': 'provider_upload'}),
+    so checking acceptance first would make the transport fact unreachable
+    and silently defeat every upload-backed model -- the same precedence
+    bug Task 8 Phase 5 fixed in normalize_edit_inputs() itself.
+    """
+    required = scope['required_backend_transports'].get(source_kind)
+    if required is not None:
+        if required in scope['available_backend_transports']:
+            return 'usable', required
+        return 'unavailable_transport', required
+    if source_kind in scope['accepted_source_kinds']:
+        return 'usable', None
+    return 'unsupported', None
+
+
 def _operation_state(
     row: dict[str, Any], operation: str, *, source_kind: str | None = None,
 ) -> tuple[bool, bool, str | None]:
@@ -109,13 +141,14 @@ def _operation_state(
     specs/mediagen-image-spec.md, "Agreement with edit_input is scoped, not
     universal"), so this is not a behavior change for any model Grove could
     already select. A named schema is fully selectable here (Task 13 Phase
-    2 added the role-assignment UI); the coarse top-level
-    accepted_source_kinds/required_backend_transports check below is the
-    cross-role intersection for a named schema, per specs/mediagen-image-
-    spec.md's "Capability schema" -- a usable-but-role-scoped exception is
-    still caught precisely by normalize_edit_inputs() at dispatch, so this
-    function only needs to be a reasonable coarse eligibility gate for the
-    edit-model dropdown, not the final authority.
+    2 added the role-assignment UI): its source-kind check is evaluated
+    per role rather than against the top-level accepted_source_kinds/
+    required_backend_transports, which are only the cross-role
+    intersection (specs/mediagen-image-spec.md, "Capability schema") and
+    can be empty even when every individual role independently accepts
+    ``source_kind`` through its own (possibly different) transport --
+    using the flattened intersection here would wrongly disable a model
+    ``operations.edit_images.available`` already reports as usable.
     """
     presentation = row['presentation']
     detail = presentation['detail']
@@ -128,33 +161,44 @@ def _operation_state(
         return True, True, None
     inputs_key = 'edit_inputs' if operation == 'edit_images' else 'edit_input'
     edit_input = presentation[inputs_key]
-    # required_backend_transports takes precedence over accepted_source_kinds
-    # (specs/mediagen-image-spec.md, "Caller source kinds and backend
-    # transports", and normalize_edit_inputs()'s identical precedence): a
-    # kind carrying a required transport is deliverable whenever that
-    # transport is available, and need not also appear in
-    # accepted_source_kinds -- which lists kinds submittable directly,
-    # unchanged, with no transform. Segmind's array/named-role shapes
-    # declare the two facts disjointly (e.g. accepted_source_kinds=
-    # ['https_url'] alongside required_backend_transports=
-    # {'data_url': 'provider_upload'}), so checking acceptance first would
-    # make the transport fact unreachable and silently defeat every
-    # upload-backed model -- the same precedence bug Task 8 Phase 5 fixed
-    # in normalize_edit_inputs() itself.
-    required = edit_input['required_backend_transports'].get(source_kind)
-    if required is not None:
-        if required not in edit_input['available_backend_transports']:
-            return False, False, 'required transport unavailable'
-        # Grove does not yet collect data-handling-warning consent (Task 13
-        # Phase 2): accept_data_handling_warnings is always False in
-        # _edit_result(), so a warned transport can never actually be
-        # dispatched through Grove today even though it is "available".
-        # Report that accurately here instead of claiming the model is
-        # enabled and only failing at dispatch with warning_not_accepted.
-        if required in edit_input['transport_warnings']:
+    roles = edit_input.get('roles') if operation == 'edit_images' else None
+    if roles:
+        # Mirrors edit_images_availability()'s candidate selection: every
+        # required role must be usable, or -- when none are required --
+        # at least one optional role must be, since an empty input list is
+        # never itself a valid request.
+        required_roles = [role for role in roles if role['required']]
+        candidates = required_roles or roles
+        results = [_source_kind_usability(role, source_kind) for role in candidates]
+        states = [state for state, _ in results]
+        usable = all(s == 'usable' for s in states) if required_roles \
+            else any(s == 'usable' for s in states)
+        if not usable:
+            reason = ('required transport unavailable'
+                      if 'unavailable_transport' in states else 'data URL unsupported')
+            return False, False, reason
+        warned = next(
+            (transport for state, transport in results
+             if state == 'usable' and transport
+             and transport in edit_input['transport_warnings']),
+            None,
+        )
+        if warned:
             return False, False, 'requires accepting a data-handling warning'
-    elif source_kind not in edit_input['accepted_source_kinds']:
+        return True, True, None
+    state, transport = _source_kind_usability(edit_input, source_kind)
+    if state == 'unavailable_transport':
+        return False, False, 'required transport unavailable'
+    if state == 'unsupported':
         return False, False, 'data URL unsupported'
+    # Grove does not yet collect data-handling-warning consent (Task 13
+    # Phase 2): accept_data_handling_warnings is always False in
+    # _edit_result(), so a warned transport can never actually be
+    # dispatched through Grove today even though it is "available". Report
+    # that accurately here instead of claiming the model is enabled and
+    # only failing at dispatch with warning_not_accepted.
+    if transport and transport in edit_input['transport_warnings']:
+        return False, False, 'requires accepting a data-handling warning'
     return True, True, None
 
 

@@ -92,6 +92,9 @@
   .ref-thumb-item img { width:34px; height:34px; object-fit:cover; border:1px solid #bbb; border-radius:2px; background:#eee; display:block; }
   .ref-thumb-item select.edit-thumb-role { font-size:0.72em; max-width:6em; }
   .ref-thumb-item .edit-thumb-remove { cursor:pointer; color:#c00; font-weight:bold; }
+  .ref-thumb-item .edit-thumb-move-row { display:flex; gap:0.4em; }
+  .ref-thumb-item .edit-thumb-move { cursor:pointer; color:#0077cc; font-weight:bold; }
+  .ref-thumb-item .edit-thumb-move.disabled { color:#ccc; cursor:default; pointer-events:none; }
   #image-picker-grid.at-cap .image-thumb-wrap:not(.selected),
   #sd-picker-grid.at-cap .image-thumb-wrap:not(.selected) { opacity:0.35; pointer-events:none; }
 
@@ -335,16 +338,33 @@ document.addEventListener('keydown', function(e) {
     }
     return {eligible: true, enabled: true, reason: ''};
   }
-  function editOptionState(option) {
-    // Mirrors llemon_djview.imagegen._operation_state('edit_images', ...):
-    // reads the multi-image edit_inputs/operations.edit_images facade (not
-    // the single-image edit_input/operations.edit, which agree with it
-    // only up to today's effective maximum of one image), and checks
-    // required_backend_transports before accepted_source_kinds -- a kind
+  function sourceKindUsability(scope, sourceKind) {
+    // Mirrors llemon_djview.imagegen._source_kind_usability(): classify one
+    // source kind against one scope's local facts (either a top-level
+    // edit_inputs/edit_input record, for an ordered schema, or one role
+    // dict, for a named schema). Returns {state, transport}, state one of
+    // 'usable' | 'unavailable_transport' | 'unsupported'. required_backend_
+    // transports takes precedence over accepted_source_kinds -- a kind
     // carrying a required transport is deliverable whenever that transport
     // is available and need not also appear in accepted_source_kinds.
     // Checking acceptance first would make the transport fact unreachable
     // for a Segmind-style schema that declares the two disjointly.
+    const required = (scope.required_backend_transports || {})[sourceKind];
+    if (required) {
+      const available = (scope.available_backend_transports || []).includes(required);
+      return {state: available ? 'usable' : 'unavailable_transport', transport: required};
+    }
+    if ((scope.accepted_source_kinds || []).includes(sourceKind)) {
+      return {state: 'usable', transport: null};
+    }
+    return {state: 'unsupported', transport: null};
+  }
+
+  function editOptionState(option) {
+    // Mirrors llemon_djview.imagegen._operation_state('edit_images', ...):
+    // reads the multi-image edit_inputs/operations.edit_images facade (not
+    // the single-image edit_input/operations.edit, which agree with it
+    // only up to today's effective maximum of one image).
     const presentation = option.presentation || {};
     const operation = ((presentation.operations || {}).edit_images || {});
     if (presentation.detail === 'summary') {
@@ -354,16 +374,45 @@ document.addEventListener('keydown', function(e) {
       return {disabled: true, reason: operation.unavailable_reason || 'unavailable'};
     }
     const input = presentation.edit_inputs || {};
-    const required = (input.required_backend_transports || {}).data_url;
-    if (required) {
-      if (!(input.available_backend_transports || []).includes(required)) {
-        return {disabled: true, reason: 'required transport unavailable'};
+    const roles = input.roles || [];
+    if (roles.length) {
+      // A named schema's top-level accepted_source_kinds/required_backend_
+      // transports are only the cross-role intersection and can be empty
+      // even when every role independently accepts 'data_url' through its
+      // own (possibly different) transport -- using the flattened
+      // intersection here would wrongly disable a model operations.
+      // edit_images.available already reports as usable. Mirrors
+      // edit_images_availability()'s candidate selection: every required
+      // role must be usable, or -- when none are required -- at least one
+      // optional role must be.
+      const requiredRoles = roles.filter(function (r) { return r.required; });
+      const candidates = requiredRoles.length ? requiredRoles : roles;
+      const results = candidates.map(function (r) { return sourceKindUsability(r, 'data_url'); });
+      const usable = requiredRoles.length
+        ? results.every(function (r) { return r.state === 'usable'; })
+        : results.some(function (r) { return r.state === 'usable'; });
+      if (!usable) {
+        const reason = results.some(function (r) { return r.state === 'unavailable_transport'; })
+          ? 'required transport unavailable' : 'data URL unsupported';
+        return {disabled: true, reason: reason};
       }
-      if ((input.transport_warnings || {})[required]) {
+      const warned = results.find(function (r) {
+        return r.state === 'usable' && r.transport && (input.transport_warnings || {})[r.transport];
+      });
+      if (warned) {
         return {disabled: true, reason: 'requires accepting a data-handling warning'};
       }
-    } else if (!(input.accepted_source_kinds || []).includes('data_url')) {
+      return {disabled: false, reason: ''};
+    }
+    const result = sourceKindUsability(input, 'data_url');
+    if (result.state === 'unavailable_transport') {
+      return {disabled: true, reason: 'required transport unavailable'};
+    }
+    if (result.state === 'unsupported') {
       return {disabled: true, reason: 'data URL unsupported'};
+    }
+    if (result.transport && (input.transport_warnings || {})[result.transport]) {
+      return {disabled: true, reason: 'requires accepting a data-handling warning'};
     }
     return {disabled: false, reason: ''};
   }
@@ -1390,6 +1439,26 @@ document.addEventListener('keydown', function(e) {
       img.src = editImageUrls[i];
       img.alt = editImageFnames[i] || '';
       item.appendChild(img);
+      const moveRow = document.createElement('span');
+      moveRow.className = 'edit-thumb-move-row';
+      const moveIndex = i;
+      const moveLeft = document.createElement('span');
+      moveLeft.className = 'edit-thumb-move' + (i === 0 ? ' disabled' : '');
+      moveLeft.title = 'Move earlier';
+      moveLeft.textContent = '‹';
+      if (i > 0) {
+        moveLeft.addEventListener('click', function () { moveEditImage(moveIndex, -1); });
+      }
+      moveRow.appendChild(moveLeft);
+      const moveRight = document.createElement('span');
+      moveRight.className = 'edit-thumb-move' + (i === editImageUrls.length - 1 ? ' disabled' : '');
+      moveRight.title = 'Move later';
+      moveRight.textContent = '›';
+      if (i < editImageUrls.length - 1) {
+        moveRight.addEventListener('click', function () { moveEditImage(moveIndex, 1); });
+      }
+      moveRow.appendChild(moveRight);
+      item.appendChild(moveRow);
       if (named) {
         const roleSel = document.createElement('select');
         roleSel.className = 'edit-thumb-role';
@@ -1432,6 +1501,15 @@ document.addEventListener('keydown', function(e) {
     if (addBtn) addBtn.disabled = editImageUrls.length >= maxCount;
     const labelEl = document.getElementById('edit-images-label');
     if (labelEl) labelEl.textContent = maxCount > 1 ? 'Source images' : 'Source image';
+  }
+
+  function moveEditImage(index, delta) {
+    const target = index + delta;
+    if (target < 0 || target >= editImageUrls.length) return;
+    [editImageFnames[index], editImageFnames[target]] = [editImageFnames[target], editImageFnames[index]];
+    [editImageUrls[index], editImageUrls[target]] = [editImageUrls[target], editImageUrls[index]];
+    [editImageRoles[index], editImageRoles[target]] = [editImageRoles[target], editImageRoles[index]];
+    renderEditImagesList();
   }
 
   function clearEditImages() {
@@ -1544,9 +1622,29 @@ document.addEventListener('keydown', function(e) {
     if (!editModel) { errMsg.textContent = 'No edit models are available.'; return; }
     const editInputs = currentEditInputs();
     const named = !!editInputs && editInputs.shape === 'named';
-    if (named && editImageRoles.some(function (r) { return !r; })) {
-      errMsg.textContent = 'Please assign a role to every selected image.';
-      return;
+    if (named) {
+      if (editImageRoles.some(function (r) { return !r; })) {
+        errMsg.textContent = 'Please assign a role to every selected image.';
+        return;
+      }
+      const seen = new Set();
+      const duplicate = editImageRoles.find(function (r) {
+        if (seen.has(r)) return true;
+        seen.add(r);
+        return false;
+      });
+      if (duplicate) {
+        errMsg.textContent = 'Role "' + duplicate + '" is assigned to more than one image.';
+        return;
+      }
+      const missing = (editInputs.roles || []).filter(function (role) {
+        return role.required && !seen.has(role.name);
+      });
+      if (missing.length) {
+        errMsg.textContent = 'Missing required role(s): '
+          + missing.map(function (role) { return role.name; }).join(', ') + '.';
+        return;
+      }
     }
 
     btn.disabled = true;

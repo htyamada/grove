@@ -282,6 +282,70 @@ else:
                 (False, False, 'requires accepting a data-handling warning'),
             )
 
+        def test_named_schema_eligibility_is_role_scoped_not_top_level(self) -> None:
+            # A named schema's top-level accepted_source_kinds/
+            # required_backend_transports are only the cross-role
+            # intersection (specs/mediagen-image-spec.md, "Capability
+            # schema") and can be empty even when every role independently
+            # accepts data_url through its own (disjoint) path. Using the
+            # flattened intersection would wrongly disable a model
+            # operations.edit_images.available already reports as usable.
+            row = {'id': 'disjoint-roles', 'presentation': _presentation(
+                'disjoint-roles', generate=False, edit=True,
+            )}
+            row['presentation']['edit_inputs'].update({
+                'shape': 'named', 'min_count': 2, 'max_count': 2,
+                'effective_max_count': 2,
+                # Neither field is common to both roles, so the top-level
+                # intersection is empty on both counts.
+                'accepted_source_kinds': [],
+                'required_backend_transports': {},
+                'available_backend_transports': [],
+                'roles': [
+                    {'name': 'first', 'required': True, 'position': 0,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': ['data_url'],
+                     'required_backend_transports': {},
+                     'available_backend_transports': []},
+                    {'name': 'second', 'required': True, 'position': 1,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': [],
+                     'required_backend_transports': {'data_url': 'provider_upload'},
+                     'available_backend_transports': ['provider_upload']},
+                ],
+            })
+            self.assertEqual(
+                imagegen_view._operation_state(row, 'edit_images', source_kind='data_url'),
+                (True, True, None),
+            )
+
+        def test_named_schema_required_role_transport_unavailable(self) -> None:
+            row = {'id': 'disjoint-roles-blocked', 'presentation': _presentation(
+                'disjoint-roles-blocked', generate=False, edit=True,
+            )}
+            row['presentation']['edit_inputs'].update({
+                'shape': 'named', 'min_count': 2, 'max_count': 2,
+                'effective_max_count': 2,
+                'accepted_source_kinds': [], 'required_backend_transports': {},
+                'available_backend_transports': [],
+                'roles': [
+                    {'name': 'first', 'required': True, 'position': 0,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': ['data_url'],
+                     'required_backend_transports': {},
+                     'available_backend_transports': []},
+                    {'name': 'second', 'required': True, 'position': 1,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': [],
+                     'required_backend_transports': {'data_url': 'provider_upload'},
+                     'available_backend_transports': []},
+                ],
+            })
+            self.assertEqual(
+                imagegen_view._operation_state(row, 'edit_images', source_kind='data_url'),
+                (False, False, 'required transport unavailable'),
+            )
+
         def test_model_options_are_independent_complete_copies(self) -> None:
             row = {'id': 'm1', 'name': 'One', 'extra': {'value': 1},
                    'presentation': _presentation('m1')}
