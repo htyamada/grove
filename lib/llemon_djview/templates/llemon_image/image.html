@@ -1442,6 +1442,23 @@ document.addEventListener('keydown', function(e) {
     return (option && option.presentation && option.presentation.edit_inputs) || null;
   }
 
+  function currentEditImagesMaxCount() {
+    // A named schema's effective_max_count is a declared/live-validated
+    // count bound, independent of how many of its roles Grove can actually
+    // assign (some may be unusable -- see roleDataUrlUnusableReason()).
+    // Letting the picker fill past the number of usable roles produces an
+    // image with no valid role left to pick, impossible to complete or
+    // submit without removing it -- so Grove's own selection cap is
+    // additionally bounded by the usable role count for a named schema.
+    const inputs = currentEditInputs();
+    const declared = inputs ? inputs.effective_max_count : 1;
+    if (!inputs || inputs.shape !== 'named') return declared;
+    const usableRoles = (inputs.roles || []).filter(function (role) {
+      return !roleDataUrlUnusableReason(role, inputs.transport_warnings || {});
+    }).length;
+    return Math.min(declared, usableRoles);
+  }
+
   function _editInputsSignatureFor(inputs) {
     if (!inputs) return '';
     const roleNames = (inputs.roles || []).map(function (r) { return r.name; }).join(',');
@@ -1454,7 +1471,7 @@ document.addEventListener('keydown', function(e) {
     const inputs = currentEditInputs();
     const named = !!inputs && inputs.shape === 'named';
     const roles = named ? (inputs.roles || []) : [];
-    const maxCount = inputs ? inputs.effective_max_count : 1;
+    const maxCount = currentEditImagesMaxCount();
     listEl.textContent = '';
     listEl.classList.toggle('ref-thumb-list', editImageUrls.length > 0);
     for (let i = 0; i < editImageUrls.length; i += 1) {
@@ -1572,9 +1589,7 @@ document.addEventListener('keydown', function(e) {
       renderEditImagesList();
       return false;
     }
-    const inputs = currentEditInputs();
-    const maxCount = inputs ? inputs.effective_max_count : 1;
-    if (editImageUrls.length >= maxCount) return false;
+    if (editImageUrls.length >= currentEditImagesMaxCount()) return false;
     editImageUrls.push(url);
     editImageFnames.push(fname);
     editImageRoles.push('');
@@ -1585,10 +1600,7 @@ document.addEventListener('keydown', function(e) {
   window.__editImagesBridge = {
     toggle: toggleEditImage,
     selectedUrls: function () { return editImageUrls.slice(); },
-    maxCount: function () {
-      const inputs = currentEditInputs();
-      return inputs ? inputs.effective_max_count : 1;
-    },
+    maxCount: currentEditImagesMaxCount,
     clear: clearEditImages,
   };
 

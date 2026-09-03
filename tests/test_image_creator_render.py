@@ -646,9 +646,13 @@ else:
             self.assertIn('id="image-picker-title"', html)
 
             self.assertIn('function currentEditInputs()', html)
+            self.assertIn('function currentEditImagesMaxCount()', html)
             self.assertIn('function renderEditImagesList()', html)
             self.assertIn('function ensureEditImagesCompatible()', html)
+            self.assertIn('function moveEditImage(index, delta)', html)
+            self.assertIn('function roleDataUrlUnusableReason(role, transportWarnings)', html)
             self.assertIn('window.__editImagesBridge', html)
+            self.assertIn('maxCount: currentEditImagesMaxCount', html)
             self.assertIn('function openImagePicker(multi)', html)
             self.assertIn('function handleThumbClick(fname, url)', html)
 
