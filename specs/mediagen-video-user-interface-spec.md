@@ -127,22 +127,30 @@ any `data:` URL longer than 30 characters.
 ### Segmind image-to-video integration
 
 LLemon presents the live-validated Segmind model `wan-2.2-i2v-fast` as
-`mode: image-to-video` with `allows_start_image: true`. Video Creator does not
-yet implement that presentation: its client visibility logic handles Venice
-and OpenRouter only, and its server adds `image_url` to generation arguments
-only for Venice. Consequently Segmind's start-image control is unavailable and
-an attempted generation reaches LLemon without the model's required image.
+`mode: image-to-video` with `allows_start_image: true`. Video Creator uses
+LLemon's normalized presentation to expose a start-image control for this
+model and forwards it as `image_url`; Segmind does not support an end image,
+so no end-image control is offered.
 
-The pending integration must use LLemon's normalized presentation to expose a
-start image and must forward it as `image_url`; Segmind does not support an end
-image. It must not merely reuse the existing private-media conversion described
-above. LLemon currently accepts only a well-formed public `https://` URL for
-this model and rejects `data:` URLs under its conservative source-validation
-policy. Grove's gallery, archive, and source-directory selections therefore
-need either a video `provider_upload` transport or live validation followed by
-LLemon support for direct `data:` input before those private sources can be
-offered safely. Until then, Grove must not advertise Segmind image-to-video as
-usable with its image picker.
+LLemon accepts only a well-formed public `https://` URL for this model and
+rejects `data:` URLs under its conservative source-validation policy. Because
+of that, the start-image control is a plain URL text field
+(`segmind_start_image_url` in `video.html`, gated on `currentProvider ===
+'segmind'` and the model's `allows_start_image`), not the Gallery/Source-Dirs
+image picker used for Venice and OpenRouter — the picker converts a selected
+file to a `data:` URL server-side (see above), which this model would reject.
+The submitted value is still routed through the same private-media
+conversion helper as every other provider (`_data_reference_for_api`) before
+reaching the backend: a stray private Grove media URL pasted into the field
+converts to a `data:` URL and is rejected by LLemon with a clear error,
+rather than being sent to Segmind unconverted. A public URL passes through
+unchanged either way.
+
+Grove's gallery, archive, and source-directory selections still cannot be
+offered for this model's start image: that needs either a video
+`provider_upload` transport or live validation followed by LLemon support for
+direct `data:` input. Until one of those lands, the start-image control
+remains a manual public-URL field rather than a picker.
 
 For Venice models, the creator consumes the normalized `presentation` record
 from LLemon's public video facade. LLemon centralizes catalog-schema precedence

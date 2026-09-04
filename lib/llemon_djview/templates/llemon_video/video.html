@@ -270,6 +270,10 @@
         <label for="video_url">Reference video URL</label>
         <input id="video_url" style="width:100%; box-sizing:border-box; font-size:1em;">
       </div>
+      <div id="segmind-start-image-row" style="display:none; margin-bottom:0.5em;">
+        <label for="segmind_start_image_url">Start image URL (public https://)</label>
+        <input id="segmind_start_image_url" type="url" placeholder="https://..." style="width:100%; box-sizing:border-box; font-size:1em;">
+      </div>
       <div id="venice-reference-url-row" style="display:none; margin-bottom:0.5em;">
         <label for="reference_video_urls">Reference video URLs</label>
         <textarea id="reference_video_urls" rows="3" placeholder="One URL per line" style="width:100%; box-sizing:border-box; font-size:0.95em; margin-bottom:0.35em;"></textarea>
@@ -823,6 +827,7 @@
     const referenceUrlRow = document.getElementById('media-url-row');
     const veniceReferenceUrlRow = document.getElementById('venice-reference-url-row');
     const consentsRow = document.getElementById('consents-row');
+    const segmindStartImageRow = document.getElementById('segmind-start-image-row');
     const veniceParams = veniceSupportedParameters();
     const veniceCaps = selectedModelCapabilities();
     const veniceHasResolutionChoices = Array.isArray(veniceCaps.resolutions) && veniceCaps.resolutions.length > 0;
@@ -858,6 +863,9 @@
     );
     const showVeniceReferenceUrls = currentProvider === 'venice' && veniceAllowsReferenceAudioVideo();
     const showConsents = currentProvider === 'venice' && veniceAllowsConsents();
+    const showSegmindStartImage = (
+      currentProvider === 'segmind' && modelPresentation(modelSel.value).allows_start_image === true
+    );
 
     if (resolutionGroup) resolutionGroup.style.display = showResolution ? '' : 'none';
     if (aspectRatioGroup) aspectRatioGroup.style.display = showAspectRatio ? '' : 'none';
@@ -871,6 +879,7 @@
     if (referenceUrlRow) referenceUrlRow.style.display = showReferenceUrls ? '' : 'none';
     if (veniceReferenceUrlRow) veniceReferenceUrlRow.style.display = showVeniceReferenceUrls ? '' : 'none';
     if (consentsRow) consentsRow.style.display = showConsents ? '' : 'none';
+    if (segmindStartImageRow) segmindStartImageRow.style.display = showSegmindStartImage ? '' : 'none';
 
     if (!showResolution) document.getElementById('resolution').value = '';
     if (!showAspectRatio) document.getElementById('aspect_ratio').value = '';
@@ -881,6 +890,7 @@
     if (!showSeed) document.getElementById('seed').value = '';
     if (!showCallbackUrl) document.getElementById('callback_url').value = '';
     if (!showProviderJson) document.getElementById('provider_json').value = '';
+    if (!showSegmindStartImage) document.getElementById('segmind_start_image_url').value = '';
     if (!showReferenceUrls) {
       document.getElementById('audio_url').value = '';
       document.getElementById('video_url').value = '';
@@ -959,10 +969,14 @@
     }
     const imageUrlParam = urlParams.get('image_url');
     if (imageUrlParam) {
-      for (const wrap of document.querySelectorAll('#image-picker-grid .image-thumb-wrap')) {
-        if (wrap.dataset.url === imageUrlParam) {
-          startImageUrl = imageUrlParam; startImageFname = wrap.dataset.fname;
-          updateStartImageDisplay(); break;
+      if (currentProvider === 'segmind') {
+        document.getElementById('segmind_start_image_url').value = imageUrlParam;
+      } else {
+        for (const wrap of document.querySelectorAll('#image-picker-grid .image-thumb-wrap')) {
+          if (wrap.dataset.url === imageUrlParam) {
+            startImageUrl = imageUrlParam; startImageFname = wrap.dataset.fname;
+            updateStartImageDisplay(); break;
+          }
         }
       }
     }
@@ -1043,6 +1057,7 @@
     document.getElementById('consents_json').value = '';
     document.getElementById('upscale_factor').value = '';
     document.getElementById('audio').value = '';
+    document.getElementById('segmind_start_image_url').value = '';
     clearStartImage();
     clearEndImage();
     clearGenericImages();
@@ -1463,6 +1478,11 @@
         const videoUrl = document.getElementById('video_url').value.trim();
         if (videoUrl) inputReferences.push({type: 'video_url', video_url: {url: videoUrl}});
         if (inputReferences.length) body.input_references = inputReferences;
+      }
+    } else if (currentProvider === 'segmind') {
+      if (modelPresentation(modelSel.value).allows_start_image === true) {
+        const startImageUrlValue = document.getElementById('segmind_start_image_url').value.trim();
+        if (startImageUrlValue) body.image_url = startImageUrlValue;
       }
     }
     document.getElementById('result-thumb-wrap').style.display = 'none';

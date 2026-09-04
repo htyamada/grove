@@ -7,23 +7,14 @@ source-transport constraint are recorded in
 "Segmind image-to-video integration" — that section is authoritative; this
 file only tracks the work as pending.
 
+**Status:** §1.1 and §1.2 are implemented — Video Creator shows a start-image
+control for Segmind's `wan-2.2-i2v-fast` and forwards it as `image_url`. §1.3
+(offering Grove's gallery/archive/source-dir picker for this field) remains
+open pending a source transport LLemon will accept.
+
 ---
 
 ## Part 1 — Requirements
-
-### 1.1 Expose the start-image control
-
-Extend Video Creator's client visibility logic (currently Venice/OpenRouter
-only) to also show a start-image control when LLemon's normalized
-presentation reports `mode: image-to-video` with `allows_start_image: true`
-for the selected model, including Segmind's `wan-2.2-i2v-fast`.
-
-### 1.2 Forward the start image as `image_url`
-
-Extend the server side (currently adds `image_url` to generation arguments
-only for Venice) to forward the start image as `image_url` for Segmind too.
-Segmind does not support an end image — do not add end-image handling for
-this provider.
 
 ### 1.3 Private-source transport
 

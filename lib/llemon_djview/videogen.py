@@ -688,6 +688,14 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                 generate_kwargs['consents'] = consents
                 metadata_options['consents'] = consents
 
+        if provider == 'segmind':
+            if presentation['allows_start_image']:
+                value = data.get('image_url')
+                if isinstance(value, str) and value.strip():
+                    clean_value = value.strip()
+                    generate_kwargs['image_url'] = self._data_reference_for_api(request, clean_value)
+                    metadata_options['image_url'] = clean_value
+
         if provider == 'openrouter':
             for key in ('resolution', 'aspect_ratio', 'size', 'callback_url'):
                 value = data.get(key)
