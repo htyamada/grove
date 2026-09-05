@@ -270,10 +270,6 @@
         <label for="video_url">Reference video URL</label>
         <input id="video_url" style="width:100%; box-sizing:border-box; font-size:1em;">
       </div>
-      <div id="segmind-start-image-row" style="display:none; margin-bottom:0.5em;">
-        <label for="segmind_start_image_url">Start image URL (public https://)</label>
-        <input id="segmind_start_image_url" type="url" placeholder="https://..." style="width:100%; box-sizing:border-box; font-size:1em;">
-      </div>
       <div id="venice-reference-url-row" style="display:none; margin-bottom:0.5em;">
         <label for="reference_video_urls">Reference video URLs</label>
         <textarea id="reference_video_urls" rows="3" placeholder="One URL per line" style="width:100%; box-sizing:border-box; font-size:0.95em; margin-bottom:0.35em;"></textarea>
@@ -299,6 +295,14 @@
             <button type="button" id="start-image-btn">Choose...</button>
             <span id="start-image-label" class="image-btn-label"></span>
             <button type="button" id="start-image-clear-btn" class="image-btn-clear" style="display:none;" title="Clear">&#x2715;</button>
+          </div>
+        </div>
+        <div id="start-image-disabled-note" class="image-btn-label" style="display:none; margin:0.1em 0 0.4em 6em; color:#a60;"></div>
+        <div class="image-select-row" id="segmind-consent-row" style="display:none; align-items:flex-start;">
+          <span class="image-select-label"></span>
+          <div style="flex:1; min-width:0;">
+            <div id="segmind-consent-message" style="white-space:pre-line; color:#a60; margin-bottom:0.3em;"></div>
+            <label style="font-weight:normal; width:auto;"><input type="checkbox" id="segmind-consent-checkbox"> I accept sending this data as described above</label>
           </div>
         </div>
         <div class="image-select-row start-end-image-row" id="end-image-row">
@@ -428,6 +432,7 @@
   function updateStartImageDisplay() {
     renderImageThumb(document.getElementById('start-image-label'), startImageUrl, startImageFname, 'Start');
     document.getElementById('start-image-clear-btn').style.display = startImageFname ? '' : 'none';
+    refreshSegmindConsent();
   }
   function updateEndImageDisplay() {
     renderImageThumb(document.getElementById('end-image-label'), endImageUrl, endImageFname, 'End');
@@ -555,6 +560,61 @@
   }
   function modelAllowsReferenceImages(modelId) {
     return modelPresentation(modelId).allows_reference_images === true;
+  }
+  function segmindStartImagePickerState(modelId) {
+    const presentation = modelPresentation(modelId);
+    if (presentation.allows_start_image !== true) {
+      return {visible: false, disabled: true, reason: ''};
+    }
+    const required = (presentation.required_backend_transports || {}).data_url;
+    const available = required && (presentation.available_backend_transports || []).includes(required);
+    if (available) return {visible: true, disabled: false, reason: ''};
+    return {
+      visible: true, disabled: true,
+      reason: "Start-image upload isn't available for this model yet.",
+    };
+  }
+  function segmindStartImageWarning() {
+    if (currentProvider !== 'segmind' || !startImageUrl) return null;
+    const presentation = modelPresentation(modelSel.value);
+    const required = (presentation.required_backend_transports || {}).data_url;
+    if (!required || !(presentation.available_backend_transports || []).includes(required)) return null;
+    return (presentation.transport_warnings || {})[required] || null;
+  }
+  let segmindConsentKey = null;
+  function refreshSegmindConsent() {
+    // Called from updateStartImageDisplay() (covers pick/clear/URL-prefill,
+    // the only places startImageUrl changes) and from
+    // updateImageChoiceVisibility() (covers provider/model switches) plus
+    // the checkbox's own change listener -- always reads current global
+    // state rather than being passed one, matching
+    // refreshEditWarningState()'s reasoning in image.html.
+    const row = document.getElementById('segmind-consent-row');
+    const msg = document.getElementById('segmind-consent-message');
+    const cb = document.getElementById('segmind-consent-checkbox');
+    if (!row || !msg || !cb) return;
+    const warning = currentProvider === 'segmind' ? segmindStartImageWarning() : null;
+    // Model ids are only unique within a provider/API, so the reset key
+    // includes both, same shape as #edit-consent-checkbox's key.
+    const key = currentProvider === 'segmind'
+      ? (currentProvider + '/' + CREATOR_PRESENTATION.api + '/' + modelSel.value + '|' + (warning || ''))
+      : null;
+    if (key !== segmindConsentKey) {
+      cb.checked = false;
+      segmindConsentKey = key;
+    }
+    row.style.display = warning ? '' : 'none';
+    msg.textContent = warning || '';
+    updateGenerateButtonAvailability();
+  }
+  function segmindConsentBlocksSubmit() {
+    if (currentProvider !== 'segmind') return false;
+    const row = document.getElementById('segmind-consent-row');
+    const cb = document.getElementById('segmind-consent-checkbox');
+    return !!(row && row.style.display !== 'none' && cb && !cb.checked);
+  }
+  function updateGenerateButtonAvailability() {
+    document.getElementById('generate-btn').disabled = segmindConsentBlocksSubmit();
   }
   function modelIsKlingReferenceVideo(modelId) {
     return modelPresentation(modelId).reference_image_request_family === 'kling';
@@ -827,7 +887,6 @@
     const referenceUrlRow = document.getElementById('media-url-row');
     const veniceReferenceUrlRow = document.getElementById('venice-reference-url-row');
     const consentsRow = document.getElementById('consents-row');
-    const segmindStartImageRow = document.getElementById('segmind-start-image-row');
     const veniceParams = veniceSupportedParameters();
     const veniceCaps = selectedModelCapabilities();
     const veniceHasResolutionChoices = Array.isArray(veniceCaps.resolutions) && veniceCaps.resolutions.length > 0;
@@ -863,9 +922,6 @@
     );
     const showVeniceReferenceUrls = currentProvider === 'venice' && veniceAllowsReferenceAudioVideo();
     const showConsents = currentProvider === 'venice' && veniceAllowsConsents();
-    const showSegmindStartImage = (
-      currentProvider === 'segmind' && modelPresentation(modelSel.value).allows_start_image === true
-    );
 
     if (resolutionGroup) resolutionGroup.style.display = showResolution ? '' : 'none';
     if (aspectRatioGroup) aspectRatioGroup.style.display = showAspectRatio ? '' : 'none';
@@ -879,7 +935,6 @@
     if (referenceUrlRow) referenceUrlRow.style.display = showReferenceUrls ? '' : 'none';
     if (veniceReferenceUrlRow) veniceReferenceUrlRow.style.display = showVeniceReferenceUrls ? '' : 'none';
     if (consentsRow) consentsRow.style.display = showConsents ? '' : 'none';
-    if (segmindStartImageRow) segmindStartImageRow.style.display = showSegmindStartImage ? '' : 'none';
 
     if (!showResolution) document.getElementById('resolution').value = '';
     if (!showAspectRatio) document.getElementById('aspect_ratio').value = '';
@@ -890,7 +945,6 @@
     if (!showSeed) document.getElementById('seed').value = '';
     if (!showCallbackUrl) document.getElementById('callback_url').value = '';
     if (!showProviderJson) document.getElementById('provider_json').value = '';
-    if (!showSegmindStartImage) document.getElementById('segmind_start_image_url').value = '';
     if (!showReferenceUrls) {
       document.getElementById('audio_url').value = '';
       document.getElementById('video_url').value = '';
@@ -905,6 +959,7 @@
     const imageOptions = document.getElementById('image-options');
     if (!imageOptions) return;
     let genericImagesVisible, startVisible, endVisible, refVisible;
+    let segmindPickerDisabled = false, segmindPickerReason = '';
     if (currentProvider === 'venice') {
       const presentation = modelPresentation(modelSel.value);
       genericImagesVisible = presentation.shows_scene_images === true;
@@ -916,11 +971,27 @@
       startVisible = openrouterAllowsFirstFrameImage();
       endVisible = openrouterAllowsLastFrameImage();
       refVisible = openrouterAllowsReferenceImages();
+    } else if (currentProvider === 'segmind') {
+      const state = segmindStartImagePickerState(modelSel.value);
+      genericImagesVisible = false;
+      startVisible = state.visible;
+      endVisible = false;
+      refVisible = false;
+      segmindPickerDisabled = state.disabled;
+      segmindPickerReason = state.reason;
     } else {
       genericImagesVisible = false;
       startVisible = false;
       endVisible = false;
       refVisible = false;
+    }
+    const startBtn = document.getElementById('start-image-btn');
+    const startNote = document.getElementById('start-image-disabled-note');
+    if (startBtn) startBtn.disabled = currentProvider === 'segmind' && segmindPickerDisabled;
+    if (startNote) {
+      const showNote = currentProvider === 'segmind' && startVisible && segmindPickerDisabled;
+      startNote.style.display = showNote ? '' : 'none';
+      startNote.textContent = showNote ? segmindPickerReason : '';
     }
     const genericImagesRow = document.getElementById('generic-images-row');
     const startRow = document.getElementById('start-image-row');
@@ -939,6 +1010,7 @@
       clearRefImages();
     }
     updateReferenceDocLinkVisibility();
+    refreshSegmindConsent();
   }
   function applyProviderData(data) {
     MODEL_OPTIONS = data.model_options || [];
@@ -969,14 +1041,10 @@
     }
     const imageUrlParam = urlParams.get('image_url');
     if (imageUrlParam) {
-      if (currentProvider === 'segmind') {
-        document.getElementById('segmind_start_image_url').value = imageUrlParam;
-      } else {
-        for (const wrap of document.querySelectorAll('#image-picker-grid .image-thumb-wrap')) {
-          if (wrap.dataset.url === imageUrlParam) {
-            startImageUrl = imageUrlParam; startImageFname = wrap.dataset.fname;
-            updateStartImageDisplay(); break;
-          }
+      for (const wrap of document.querySelectorAll('#image-picker-grid .image-thumb-wrap')) {
+        if (wrap.dataset.url === imageUrlParam) {
+          startImageUrl = imageUrlParam; startImageFname = wrap.dataset.fname;
+          updateStartImageDisplay(); break;
         }
       }
     }
@@ -1057,7 +1125,6 @@
     document.getElementById('consents_json').value = '';
     document.getElementById('upscale_factor').value = '';
     document.getElementById('audio').value = '';
-    document.getElementById('segmind_start_image_url').value = '';
     clearStartImage();
     clearEndImage();
     clearGenericImages();
@@ -1256,6 +1323,7 @@
   document.getElementById('generic-images-btn').addEventListener('click', function () { openImagePicker('images'); });
   document.getElementById('ref-image-btn').addEventListener('click', function () { openImagePicker('ref'); });
   document.getElementById('start-image-clear-btn').addEventListener('click', clearStartImage);
+  document.getElementById('segmind-consent-checkbox').addEventListener('change', refreshSegmindConsent);
   document.getElementById('end-image-clear-btn').addEventListener('click', clearEndImage);
   document.getElementById('generic-images-clear-btn').addEventListener('click', clearGenericImages);
   document.getElementById('ref-image-clear-btn').addEventListener('click', clearRefImages);
@@ -1480,10 +1548,15 @@
         if (inputReferences.length) body.input_references = inputReferences;
       }
     } else if (currentProvider === 'segmind') {
-      if (modelPresentation(modelSel.value).allows_start_image === true) {
-        const startImageUrlValue = document.getElementById('segmind_start_image_url').value.trim();
-        if (startImageUrlValue) body.image_url = startImageUrlValue;
+      if (segmindConsentBlocksSubmit()) {
+        status.textContent = 'Please accept the data-handling warning before generating.';
+        return;
       }
+      if (modelPresentation(modelSel.value).allows_start_image === true && startImageUrl) {
+        body.image_url = startImageUrl;
+      }
+      const segmindConsentCb = document.getElementById('segmind-consent-checkbox');
+      body.accept_data_handling_warnings = !!(segmindConsentCb && segmindConsentCb.checked);
     }
     document.getElementById('result-thumb-wrap').style.display = 'none';
     document.getElementById('result-thumb').src = '';
@@ -1520,14 +1593,14 @@
     } catch (e) {
       status.textContent = 'Error: ' + e.message;
     } finally {
-      btn.disabled = false;
+      updateGenerateButtonAvailability();
     }
   });
   resetFilters();
   applyProviderData(initialProviderData);
   window.addEventListener('pageshow', function (e) {
     if (!e.persisted) return;
-    document.getElementById('generate-btn').disabled = false;
+    updateGenerateButtonAvailability();
     document.getElementById('status').textContent = '';
     closeVideoLightbox();
     document.getElementById('image-picker').style.display = 'none';

@@ -77,7 +77,7 @@ This unblocks Segmind image editing's `qwen-image-edit` upload path today.
 §1.2 below (the video start-image picker) can now proceed — it is the
 remaining reason this file exists.
 
-### 1.2 Swap the manual URL field for the picker — PLANNED
+### 1.2 Swap the manual URL field for the picker — IMPLEMENTED, pending review
 
 The hty7-dependent semantics this needs — exactly when the availability
 gate opens, when `accept_data_handling_warnings` may be set, and what the

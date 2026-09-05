@@ -573,6 +573,12 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
             presentation = model_presentation(model, provider, api)
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
+        accept_raw = data.get('accept_data_handling_warnings')
+        if accept_raw is not None and not isinstance(accept_raw, bool):
+            return JsonResponse(
+                {'error': 'accept_data_handling_warnings must be a boolean'}, status=400,
+            )
+        accept_data_handling_warnings = accept_raw is True
         gallery_dir = self._gallery_dir()
         if not gallery_dir:
             return JsonResponse({'error': 'video output directory is not configured'}, status=500)
@@ -693,7 +699,23 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                 value = data.get('image_url')
                 if isinstance(value, str) and value.strip():
                     clean_value = value.strip()
-                    generate_kwargs['image_url'] = self._data_reference_for_api(request, clean_value)
+                    resolved_value = self._data_reference_for_api(request, clean_value)
+                    if resolved_value.startswith('data:'):
+                        required = (presentation.get('required_backend_transports') or {}).get('data_url')
+                        if not required or required not in (presentation.get('available_backend_transports') or []):
+                            return JsonResponse(
+                                {'error': 'start image upload is not supported for this model'},
+                                status=400,
+                            )
+                        warning = (presentation.get('transport_warnings') or {}).get(required)
+                        if warning:
+                            if not accept_data_handling_warnings:
+                                return JsonResponse(
+                                    {'error': 'requires accepting a data-handling warning'},
+                                    status=400,
+                                )
+                            generate_kwargs['accept_data_handling_warnings'] = True
+                    generate_kwargs['image_url'] = resolved_value
                     metadata_options['image_url'] = clean_value
 
         if provider == 'openrouter':

@@ -508,6 +508,140 @@ class VideoEnhancementPassthroughTests(_DjviewTestCase):
         self.assertNotIn('Generated prompt', [row[0] for row in summary])
 
 
+class _RecordingVideoBackend:
+    recorded_kwargs: dict = {}
+
+    def __init__(self, **kwargs):
+        pass
+
+    def generate(self, prompt, **kwargs):
+        type(self).recorded_kwargs = dict(kwargs)
+        return {'model': 'wan-2.2-i2v-fast', 'videos': ['fake']}
+
+    def shutdown(self):
+        pass
+
+
+def _segmind_presentation(**overrides):
+    base = {
+        'reference_image_request_family': 'none',
+        'allows_start_image': True,
+        'allows_end_image': False,
+        'allows_reference_images': False,
+        'allows_scene_images': False,
+        'required_backend_transports': {'data_url': 'provider_upload'},
+        'available_backend_transports': ['provider_upload'],
+        'transport_warnings': {'provider_upload': 'Uploads your image to Segmind for hosting.'},
+    }
+    base.update(overrides)
+    return base
+
+
+class SegmindVideoStartImageConsentTests(_DjviewTestCase):
+    """Covers videogen.py's Segmind start-image accept_data_handling_warnings
+    gate (upgrades/segmind-image-to-video.md §1.2): a picker-sourced (or any
+    other) data: image_url for wan-2.2-i2v-fast's provider_upload transport
+    may reach the backend only with consent; a public https:// URL never
+    resolves to data: and so never needs it.
+    """
+
+    def _run_generate(self, body_extra, presentation, *, gallery_dir=None):
+        with mock.patch.dict(sys.modules, _fake_django_modules()):
+            from llemon_djview.videogen import LLemonVideoGenViewSet
+
+        _RecordingVideoBackend.recorded_kwargs = {}
+        patches = {
+            'normalize_provider_api': lambda *a, **k: ('segmind', 'segmind'),
+            'default_video_model': lambda *a, **k: 'wan-2.2-i2v-fast',
+            'default_duration': lambda *a, **k: 5,
+            'make_videogen_backend': mock.Mock(return_value=_RecordingVideoBackend),
+            'model_presentation': mock.Mock(return_value=presentation),
+            'save_generated_videos': mock.Mock(return_value=['out.mp4']),
+            'write_video_sidecar': mock.Mock(),
+            'model_display': lambda model, *a, **k: model,
+        }
+        view = LLemonVideoGenViewSet('llemon_video', 'llemon_video')
+        request = types.SimpleNamespace(
+            body=json.dumps({
+                'provider': 'segmind',
+                'prompt': 'a video',
+                'duration': 5,
+                **body_extra,
+            }),
+            get_host=lambda: 'testserver',
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(view, '_gallery_dir', return_value=gallery_dir or tmp), \
+                    mock.patch.object(view, '_log_dir', return_value=''), \
+                    mock.patch.object(view, '_u', return_value=''), \
+                    mock.patch.dict(view._generate.__globals__, patches):
+                resp = view._generate(request)
+        return resp, dict(_RecordingVideoBackend.recorded_kwargs)
+
+    def test_public_url_dispatches_without_consent(self) -> None:
+        resp, recorded = self._run_generate(
+            {'image_url': 'https://example.com/start.png'},
+            _segmind_presentation(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(recorded.get('image_url'), 'https://example.com/start.png')
+        self.assertNotIn('accept_data_handling_warnings', recorded)
+
+    def test_data_url_without_consent_is_rejected_before_dispatch(self) -> None:
+        resp, recorded = self._run_generate(
+            {'image_url': 'data:image/png;base64,AAAA'},
+            _segmind_presentation(),
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('data-handling warning', resp.data['error'])
+        self.assertEqual(recorded, {})
+
+    def test_data_url_with_consent_dispatches_and_forwards_flag(self) -> None:
+        resp, recorded = self._run_generate(
+            {
+                'image_url': 'data:image/png;base64,AAAA',
+                'accept_data_handling_warnings': True,
+            },
+            _segmind_presentation(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(recorded.get('image_url'), 'data:image/png;base64,AAAA')
+        self.assertIs(recorded.get('accept_data_handling_warnings'), True)
+
+    def test_non_boolean_accept_flag_is_rejected(self) -> None:
+        resp, recorded = self._run_generate(
+            {
+                'image_url': 'data:image/png;base64,AAAA',
+                'accept_data_handling_warnings': 'true',
+            },
+            _segmind_presentation(),
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('must be a boolean', resp.data['error'])
+        self.assertEqual(recorded, {})
+
+    def test_data_url_rejected_when_transport_unavailable(self) -> None:
+        resp, recorded = self._run_generate(
+            {
+                'image_url': 'data:image/png;base64,AAAA',
+                'accept_data_handling_warnings': True,
+            },
+            _segmind_presentation(available_backend_transports=[]),
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('not supported', resp.data['error'])
+        self.assertEqual(recorded, {})
+
+    def test_unwarned_model_dispatches_with_data_url_and_no_flag(self) -> None:
+        resp, recorded = self._run_generate(
+            {'image_url': 'data:image/png;base64,AAAA'},
+            _segmind_presentation(transport_warnings={}),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(recorded.get('image_url'), 'data:image/png;base64,AAAA')
+        self.assertNotIn('accept_data_handling_warnings', recorded)
+
+
 def _edit_option(model_id):
     operation = lambda available: {
         'available': available, 'unavailable_reason': None if available else 'unavailable',
