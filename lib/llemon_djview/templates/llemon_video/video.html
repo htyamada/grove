@@ -772,7 +772,7 @@
     modelDesc.textContent = (opt && opt.description) ? opt.description : '';
     const caveat = modelCapabilities(modelId).known_caveat;
     modelCaveatNotice.textContent = caveat || '';
-    modelCaveatNotice.style.display = caveat ? '' : 'none';
+    modelCaveatNotice.style.display = caveat ? 'block' : 'none';
   }
   function selectedModelOption() {
     return MODEL_OPTIONS.find(opt => opt.id === modelSel.value) || null;

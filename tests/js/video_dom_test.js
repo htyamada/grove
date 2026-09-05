@@ -96,6 +96,14 @@ function fire(win, el, type) {
   el.dispatchEvent(new win.Event(type, { bubbles: true }));
 }
 
+// Checks the resolved (stylesheet + inline) display, not just the inline
+// style attribute -- a handler that clears its own inline override (e.g.
+// style.display = '') can silently fall back to a stylesheet default of
+// display:none, which an inline-only check would miss entirely.
+function isHidden(win, el) {
+  return win.getComputedStyle(el).display === 'none';
+}
+
 async function main() {
   const { dom, windowErrors, state } = makeDom();
   const { window } = dom;
@@ -162,7 +170,7 @@ async function main() {
 
   await step('a model with a known caveat shows the caveat notice verbatim', function () {
     const notice = doc.getElementById('model-caveat-notice');
-    if (notice.style.display === 'none') throw new Error('caveat notice should be visible for wan-warned');
+    if (isHidden(window, notice)) throw new Error('caveat notice should be visible for wan-warned');
     if (notice.textContent !== (
       'This model has been observed to ignore the requested aspect '
       + 'ratio in image-to-video mode and return square (1:1) output '
@@ -222,7 +230,7 @@ async function main() {
 
   await step('an unwarned model needs no consent even with an image picked', async function () {
     await selectModel('wan-unwarned');
-    if (doc.getElementById('model-caveat-notice').style.display !== 'none') {
+    if (!isHidden(window, doc.getElementById('model-caveat-notice'))) {
       throw new Error('caveat notice should be hidden for a model with no known_caveat');
     }
     pickStartImage(1);
@@ -243,7 +251,7 @@ async function main() {
 
   await step('switching models resets a previously-checked consent checkbox', async function () {
     await selectModel('wan-warned');
-    if (doc.getElementById('model-caveat-notice').style.display === 'none') {
+    if (isHidden(window, doc.getElementById('model-caveat-notice'))) {
       throw new Error('caveat notice should reappear when switching back to wan-warned');
     }
     pickStartImage(0);
@@ -297,7 +305,7 @@ async function main() {
     if (doc.getElementById('start-image-disabled-note').style.display !== 'none') {
       throw new Error('disabled-note should not show when the row itself is hidden');
     }
-    if (doc.getElementById('model-caveat-notice').style.display !== 'none') {
+    if (!isHidden(window, doc.getElementById('model-caveat-notice'))) {
       throw new Error('caveat notice should be hidden for a model with no known_caveat');
     }
   }, ctx);
