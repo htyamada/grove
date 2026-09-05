@@ -592,6 +592,7 @@
     return (presentation.transport_warnings || {})[required] || null;
   }
   let segmindConsentKey = null;
+  let generationInFlight = false;
   function refreshSegmindConsent() {
     // Called from updateStartImageDisplay() (covers pick/clear/URL-prefill,
     // the only places startImageUrl changes) and from
@@ -624,7 +625,7 @@
     return !!(row && row.style.display !== 'none' && cb && !cb.checked);
   }
   function updateGenerateButtonAvailability() {
-    document.getElementById('generate-btn').disabled = segmindConsentBlocksSubmit();
+    document.getElementById('generate-btn').disabled = generationInFlight || segmindConsentBlocksSubmit();
   }
   function modelIsKlingReferenceVideo(modelId) {
     return modelPresentation(modelId).reference_image_request_family === 'kling';
@@ -1584,6 +1585,7 @@
     status.textContent = 'Generating…';
     status.prepend(spinner);
     if (outputSubdir) body.output_subdir = outputSubdir;
+    generationInFlight = true;
     btn.disabled = true;
     try {
       const resp = await fetch(generateUrl, {
@@ -1606,6 +1608,7 @@
     } catch (e) {
       status.textContent = 'Error: ' + e.message;
     } finally {
+      generationInFlight = false;
       updateGenerateButtonAvailability();
     }
   });
@@ -1613,6 +1616,7 @@
   applyProviderData(initialProviderData);
   window.addEventListener('pageshow', function (e) {
     if (!e.persisted) return;
+    generationInFlight = false;
     updateGenerateButtonAvailability();
     document.getElementById('status').textContent = '';
     closeVideoLightbox();

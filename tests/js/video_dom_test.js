@@ -215,6 +215,49 @@ async function main() {
     }
   }, ctx);
 
+  await step(
+    'toggling consent mid-request does not re-enable Generate before the request finishes',
+    async function () {
+      // Regression test: updateGenerateButtonAvailability() used to derive
+      // the button's disabled state from consent alone, so an in-flight
+      // request's own btn.disabled = true got clobbered the moment consent
+      // was (re-)satisfied while waiting on the response -- allowing a
+      // duplicate submission before the first one completed.
+      const btn = doc.getElementById('generate-btn');
+      const cb = doc.getElementById('segmind-consent-checkbox');
+      let resolveFetch;
+      state.fetchImpl = function () {
+        return new Promise(function (resolve) { resolveFetch = resolve; });
+      };
+      doc.getElementById('prompt').value = 'go slowly';
+      fire(window, doc.getElementById('videogen-form'), 'submit');
+      await sleep(0);
+      if (!btn.disabled) throw new Error('button should be disabled once generation starts');
+      cb.checked = false;
+      fire(window, cb, 'change');
+      cb.checked = true;
+      fire(window, cb, 'change');
+      if (!btn.disabled) {
+        throw new Error(
+          'button should stay disabled while a request is in flight, even if '
+          + 'consent toggles back to satisfied in the meantime',
+        );
+      }
+      resolveFetch({
+        headers: { get: () => 'application/json' },
+        json: () => Promise.resolve({
+          ok: true, file: 'out2.mp4', files: ['out2.mp4'],
+          url: '/file/out2.mp4', gallery_url: '/gallery/', meta: {}, summary: [],
+        }),
+        status: 200,
+      });
+      await sleep(0);
+      if (btn.disabled) throw new Error('button should re-enable once the request finishes');
+      state.fetchImpl = defaultFetchMock;
+    },
+    ctx,
+  );
+
   await step('clearing the start image hides the consent row and resets the checkbox', function () {
     fire(window, doc.getElementById('start-image-clear-btn'), 'click');
     if (doc.getElementById('segmind-consent-row').style.display !== 'none') {
