@@ -176,15 +176,22 @@ plumbing) and the still-untracked Grove-wide consent-checkbox UI (the
 upgrade file's "1.1") are separate, hty7-independent design work not
 covered here.
 
-1. **Availability gate.** Before offering picker-sourced private images
-   for a Segmind i2v model's start image, Grove's JS must read
-   `available_backend_transports` off that model's presentation record and
-   check it contains `'provider_upload'` — never hardcode
+1. **Availability gate, fail closed.** Before offering picker-sourced
+   private images for a Segmind i2v model's start image, Grove's JS must
+   read `available_backend_transports` off that model's presentation record
+   and check it contains `'provider_upload'` — never hardcode
    `wan-2.2-i2v-fast`. Re-evaluate this on every model-selection change
    (mirrors the existing re-evaluation already done for
    `allows_start_image`), since availability is per-model and
-   `UPLOAD_VERIFIED_I2V_MODELS` currently contains only one entry. A model
-   without it keeps today's manual-URL-only behavior unchanged.
+   `UPLOAD_VERIFIED_I2V_MODELS` currently contains only one entry. The
+   picker may be enabled only on a positive, declared signal — a required
+   transport present *and* listed as available; a model whose presentation
+   lacks this metadata entirely must be treated the same as one that
+   declares the transport unavailable, never as "must be fine." Per point 5
+   below, Grove no longer keeps a manual-URL field to fall back to: any of
+   these disabled cases must render the picker control itself in a visibly
+   disabled state with an explanation, never an enabled control that would
+   400 on every selection.
 
 2. **The warning text is LLemon's, not Grove's, to author.** Whatever
    consent-UI element gets built (upgrade file "1.1") must display
@@ -232,13 +239,16 @@ covered here.
      upload failures, surfaced the same generic way as any other
      `generate()` failure Grove already shows today.
 
-5. **The manual public-URL field's fate is a Grove UX decision, not an
-   hty7 one.** Nothing about the transport requires removing it: a
-   genuinely public, already-hosted `https://` URL still works exactly as
-   it does today, unaffected by any of the above — point 3's second
-   condition never triggers for it, so it never needs consent. Whether to
-   keep it as a fallback alongside the picker (per the upgrade file's
-   open question) is purely Grove's call.
+5. **The manual public-URL field's fate was a Grove UX decision, not an
+   hty7 one — decided (2026-09-04): removed.** Nothing about the transport
+   required removing it (a genuinely public, already-hosted `https://` URL
+   would have worked unaffected by any of the above, since point 3's second
+   condition never triggers for it), but Grove chose to make Segmind's
+   start-image control match Venice's own — picker-only, no manual-URL
+   fallback — rather than carry two input paths with different consent
+   rules. See point 1 above for the consequence: since there is no
+   fallback, an unavailable-transport model must disable the picker control
+   itself rather than leave the user with no working input at all.
 
 6. **Backend enforcement, for calibration.** `_generate_impl()` fails
    closed independent of anything Grove does: a `data:` `image_url` for a
