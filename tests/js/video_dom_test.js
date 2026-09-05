@@ -160,6 +160,18 @@ async function main() {
     }
   }, ctx);
 
+  await step('a model with a known caveat shows the caveat notice verbatim', function () {
+    const notice = doc.getElementById('model-caveat-notice');
+    if (notice.style.display === 'none') throw new Error('caveat notice should be visible for wan-warned');
+    if (notice.textContent !== (
+      'This model has been observed to ignore the requested aspect '
+      + 'ratio in image-to-video mode and return square (1:1) output '
+      + 'instead. This is Segmind provider behavior, not a Grove bug.'
+    )) {
+      throw new Error('unexpected caveat text: ' + notice.textContent);
+    }
+  }, ctx);
+
   await step('picking a gallery image shows the consent row with the verbatim warning', function () {
     pickStartImage(0);
     const row = doc.getElementById('segmind-consent-row');
@@ -210,6 +222,9 @@ async function main() {
 
   await step('an unwarned model needs no consent even with an image picked', async function () {
     await selectModel('wan-unwarned');
+    if (doc.getElementById('model-caveat-notice').style.display !== 'none') {
+      throw new Error('caveat notice should be hidden for a model with no known_caveat');
+    }
     pickStartImage(1);
     if (doc.getElementById('segmind-consent-row').style.display !== 'none') {
       throw new Error('consent row should stay hidden for an unwarned model');
@@ -228,6 +243,9 @@ async function main() {
 
   await step('switching models resets a previously-checked consent checkbox', async function () {
     await selectModel('wan-warned');
+    if (doc.getElementById('model-caveat-notice').style.display === 'none') {
+      throw new Error('caveat notice should reappear when switching back to wan-warned');
+    }
     pickStartImage(0);
     const cb = doc.getElementById('segmind-consent-checkbox');
     cb.checked = true;
@@ -278,6 +296,9 @@ async function main() {
     }
     if (doc.getElementById('start-image-disabled-note').style.display !== 'none') {
       throw new Error('disabled-note should not show when the row itself is hidden');
+    }
+    if (doc.getElementById('model-caveat-notice').style.display !== 'none') {
+      throw new Error('caveat notice should be hidden for a model with no known_caveat');
     }
   }, ctx);
 

@@ -76,11 +76,15 @@
   #model-notes { height:5em; width:100%; font-size:1em; box-sizing:border-box; margin-top:0.25em; resize:vertical; }
   #notes-status { display:block; font-style:italic; color:#555; font-size:0.85em; margin-top:0.3em; flex-shrink:0; }
   #description-section { margin-top:0.8em; flex-shrink:0; display:flex; flex-direction:column; }
-  #description-section:has(#model-description:empty) { display:none; }
+  #description-section:has(#model-description:empty):has(#model-caveat-notice:empty) { display:none; }
   #model-description {
     min-height:6em; max-height:14em; overflow-y:auto; white-space:pre-wrap; word-break:break-word;
     border:1px solid #ddd; padding:0.4em 0.5em; background:#fafafa;
     font-size:0.85em; color:#444; line-height:1.5;
+  }
+  #model-caveat-notice {
+    display:none; white-space:pre-line; color:#a60; font-size:0.85em;
+    margin-top:0.4em;
   }
   #reference-settings-section { margin-top:0.8em; flex:1; min-height:0; display:flex; flex-direction:column; }
   #reference-settings-section .section-heading { font-weight:bold; margin-bottom:0.25em; }
@@ -246,6 +250,7 @@
     <div id="description-section">
       <label>Model description</label>
       <div id="model-description"></div>
+      <div id="model-caveat-notice"></div>
     </div>
     <div id="reference-settings-section">
       <div id="negative-prompt-row" style="display:none; margin-bottom:0.5em;">
@@ -401,6 +406,7 @@
   const providerSel = document.getElementById('provider');
   const modelSel = document.getElementById('model');
   const modelDesc = document.getElementById('model-description');
+  const modelCaveatNotice = document.getElementById('model-caveat-notice');
   const notesArea = document.getElementById('model-notes');
   const notesStatus = document.getElementById('notes-status');
   const urlParams = new URLSearchParams(window.location.search);
@@ -550,6 +556,10 @@
     const option = MODEL_OPTIONS.find(item => item.id === modelId);
     const capabilities = (option && option.capabilities) || {};
     return capabilities.presentation || {};
+  }
+  function modelCapabilities(modelId) {
+    const option = MODEL_OPTIONS.find(item => item.id === modelId);
+    return (option && option.capabilities) || {};
   }
   function modelVideoType(modelId) {
     return modelPresentation(modelId).mode || 'other';
@@ -760,6 +770,9 @@
   function updateDescription(modelId) {
     const opt = MODEL_OPTIONS.find(function(option) { return option.id === modelId; });
     modelDesc.textContent = (opt && opt.description) ? opt.description : '';
+    const caveat = modelCapabilities(modelId).known_caveat;
+    modelCaveatNotice.textContent = caveat || '';
+    modelCaveatNotice.style.display = caveat ? '' : 'none';
   }
   function selectedModelOption() {
     return MODEL_OPTIONS.find(opt => opt.id === modelSel.value) || null;

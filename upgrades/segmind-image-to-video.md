@@ -251,7 +251,7 @@ via devtools if this environment can't reach Segmind discovery) confirming
 the field is gone, the picker/consent row work, and a real submission
 carries `accept_data_handling_warnings: true`.
 
-### 1.3 Warn users about the known aspect-ratio caveat — PLANNED
+### 1.3 Warn users about the known aspect-ratio caveat — DONE
 
 **Problem:** the "Status" section above records a live-validated,
 unexplained caveat: `wan-2.2-i2v-fast` image-to-video output came back
@@ -263,6 +263,23 @@ this can happen; they just get a mismatched result with no explanation.
 This task only adds a static, informational warning at the point of use so
 users aren't blindsided — it does not touch §1.2's picker/consent logic at
 all, and ships as a purely additive change.
+
+**Implemented as planned.** `_KNOWN_MODEL_CAVEATS` in `videogen.py` maps
+`('segmind', 'wan-2.2-i2v-fast')` to the warning text, merged into
+`capabilities['known_caveat']` by `_model_options()` (both branches) only
+when present. `video.html` reads it via a new `modelCapabilities(modelId)`
+helper and renders it in `#model-caveat-notice` (next to
+`#model-description`, `#a60` warning color), refreshed from the same
+`updateDescription()` call site the description text already uses — no new
+per-path wiring needed. Covered by a new backend test
+(`VideoModelCaveatTests` in `tests/test_llemon_djview_prompt_enhance.py`)
+asserting the key is present only for the flagged model, and new jsdom
+steps in `tests/js/video_dom_test.js` asserting the notice shows the exact
+text for `wan-warned` (reusing that fixture, now also carrying
+`known_caveat`) and hides for every other fixture model, including
+re-confirming it toggles independently of §1.2's consent row. Verified via
+`py_compile`, `manage.py check`, `unittest discover`, and `manage.py test`,
+all passing.
 
 **Decided:** this is a Grove-only, hardcoded note (model id → message),
 not data sourced from hty7. Confirmed by reading

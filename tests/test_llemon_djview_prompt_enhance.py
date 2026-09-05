@@ -642,6 +642,43 @@ class SegmindVideoStartImageConsentTests(_DjviewTestCase):
         self.assertNotIn('accept_data_handling_warnings', recorded)
 
 
+class _MetadataVideoBackend:
+    @staticmethod
+    def list_video_models_with_metadata():
+        return [
+            {'id': 'wan-2.2-i2v-fast', 'name': 'WAN 2.2 i2v Fast', 'description': ''},
+            {'id': 'other-model', 'name': 'Other Model', 'description': ''},
+        ]
+
+
+class VideoModelCaveatTests(_DjviewTestCase):
+    """Covers videogen.py's static known-caveat note (upgrades/
+    segmind-image-to-video.md §1.3): wan-2.2-i2v-fast's capabilities carry a
+    Grove-only 'known_caveat' key about its aspect-ratio quirk, while every
+    other model's capabilities dict has no such key at all.
+    """
+
+    def test_known_caveat_present_only_for_flagged_model(self) -> None:
+        with mock.patch.dict(sys.modules, _fake_django_modules()):
+            from llemon_djview.videogen import LLemonVideoGenViewSet
+
+        view = LLemonVideoGenViewSet('llemon_video', 'llemon_video')
+        patches = {
+            'make_videogen_backend': mock.Mock(return_value=_MetadataVideoBackend),
+            'model_presentation': mock.Mock(return_value={}),
+        }
+        with mock.patch.dict(view._model_options.__globals__, patches):
+            options = view._model_options('segmind', 'segmind')
+        by_id = {opt['id']: opt for opt in options}
+        self.assertEqual(
+            by_id['wan-2.2-i2v-fast']['capabilities']['known_caveat'],
+            'This model has been observed to ignore the requested aspect '
+            'ratio in image-to-video mode and return square (1:1) output '
+            'instead. This is Segmind provider behavior, not a Grove bug.',
+        )
+        self.assertNotIn('known_caveat', by_id['other-model']['capabilities'])
+
+
 def _edit_option(model_id):
     operation = lambda available: {
         'available': available, 'unavailable_reason': None if available else 'unavailable',

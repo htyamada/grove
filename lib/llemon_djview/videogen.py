@@ -58,6 +58,18 @@ logger = logging.getLogger(__name__)
 
 _MEDIA_EXTS = VIDEO_EXTS | IMAGE_EXTS
 
+# Grove-only, hardcoded notes about known provider quirks that aren't part of
+# hty7's model_presentation() payload (see upgrades/segmind-image-to-video.md
+# §1.3). Keyed by (provider, model id); omit the 'known_caveat' capability
+# key entirely when a model has no entry here.
+_KNOWN_MODEL_CAVEATS: dict[tuple[str, str], str] = {
+    ('segmind', 'wan-2.2-i2v-fast'): (
+        'This model has been observed to ignore the requested aspect '
+        'ratio in image-to-video mode and return square (1:1) output '
+        'instead. This is Segmind provider behavior, not a Grove bug.'
+    ),
+}
+
 def _sanitize_video_metadata(value: Any) -> Any:
     return sanitize_metadata_data_urls(value)
 
@@ -236,6 +248,9 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                 capabilities['presentation'] = model_presentation(
                     row['id'], provider, api, capabilities=capabilities,
                 )
+                caveat = _KNOWN_MODEL_CAVEATS.get((provider, row['id']))
+                if caveat:
+                    capabilities['known_caveat'] = caveat
                 options.append({
                     'id': row['id'],
                     'display': (
@@ -246,17 +261,19 @@ class LLemonVideoGenViewSet(MediaGenViewSetBase):
                     'capabilities': capabilities,
                 })
             return options
-        return [
-            {
+        options = []
+        for model_id in backend_cls.list_video_models():
+            capabilities = {'presentation': model_presentation(model_id, provider, api)}
+            caveat = _KNOWN_MODEL_CAVEATS.get((provider, model_id))
+            if caveat:
+                capabilities['known_caveat'] = caveat
+            options.append({
                 'id': model_id,
                 'display': model_id,
                 'description': '',
-                'capabilities': {
-                    'presentation': model_presentation(model_id, provider, api),
-                },
-            }
-            for model_id in backend_cls.list_video_models()
-        ]
+                'capabilities': capabilities,
+            })
+        return options
 
     def _creator_data(
         self,

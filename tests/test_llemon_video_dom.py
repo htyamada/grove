@@ -74,10 +74,13 @@ def _video_presentation(**overrides):
     return base
 
 
-def _video_model_option(model_id, **presentation_overrides):
+def _video_model_option(model_id, *, known_caveat=None, **presentation_overrides):
+    capabilities = {'presentation': _video_presentation(**presentation_overrides)}
+    if known_caveat:
+        capabilities['known_caveat'] = known_caveat
     return {
         'id': model_id, 'display': model_id, 'description': '',
-        'capabilities': {'presentation': _video_presentation(**presentation_overrides)},
+        'capabilities': capabilities,
     }
 
 
@@ -85,6 +88,11 @@ def _build_model_options():
     return [
         _video_model_option(
             'wan-warned',
+            known_caveat=(
+                'This model has been observed to ignore the requested aspect '
+                'ratio in image-to-video mode and return square (1:1) output '
+                'instead. This is Segmind provider behavior, not a Grove bug.'
+            ),
             required_backend_transports={'data_url': 'provider_upload'},
             available_backend_transports=['provider_upload'],
             transport_warnings={
