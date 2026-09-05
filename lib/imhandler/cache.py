@@ -26,6 +26,24 @@ def image_root() -> Path:
     return image_root_entries()[0][0]
 
 
+def configured_image_roots() -> list[Path]:
+    """Configured image_root paths, resolved but never required to exist.
+
+    Unlike image_root_entries()/image_roots(), this does not stat() or
+    require each root to currently be a directory -- callers that only
+    need root *identity* for path validation (not to actually read files
+    under it) use this so an offline/unmounted archive volume doesn't
+    block validation for a path under a different, available root, or
+    block validating a stale path under the offline root itself. Still
+    raises EnvironmentError if image_root is entirely unconfigured, same
+    as image_root_entries().
+    """
+    paths = appconfig.image_roots
+    if not paths:
+        raise EnvironmentError('image_root is not configured in etc/imhandler.conf')
+    return [Path(p).expanduser().resolve() for p in paths]
+
+
 def cache_root() -> Path:
     val = appconfig.cache_dir
     if not val:
