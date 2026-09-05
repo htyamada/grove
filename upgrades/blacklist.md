@@ -204,22 +204,41 @@ media endpoints deliberately block them.
 Add:
 
 ```sh
-imh blacklist export [-o FILE] [--format paths|json]
+imh blacklist export [-o FILE] [--format paths|paths0|json]
 ```
 
 The default `paths` format writes one absolute path per line, sorted exactly as
-in the store. `--format json` writes the versioned blacklist document. With no
-`-o`, output goes to stdout so the operator can redirect it locally. `-o FILE`
-uses atomic replacement and refuses to use the blacklist store itself as the
-destination. Export is read-only: it does not clear entries, mutate derived
-data, inspect or modify source files, or invoke another program.
+in the store. `--format json` writes the versioned blacklist document.
+`--format paths0` writes each absolute path terminated by a NUL byte instead
+of a newline (the `find -print0`/`xargs -0` convention), sorted the same way.
+With no `-o`, output goes to stdout so the operator can redirect it locally.
+`-o FILE` uses atomic replacement and refuses to use the blacklist store
+itself as the destination. Export is read-only: it does not clear entries,
+mutate derived data, inspect or modify source files, or invoke another
+program.
 
-The paths format is deliberately data, not shell syntax: paths are not quoted
-as commands, and no shebang, `rm`, or other executable content is generated.
-It is suitable as input to a separate, operator-invoked local script or manual
-process that reviews and removes archive files offline. This assists offline
-removal without giving the web application or the `imh` export command file
-deletion capability.
+Unix filenames may contain a literal newline byte, which a line-oriented
+format cannot represent: splitting output on newlines would silently turn one
+blacklisted path into two apparent removal targets for an offline consumer,
+one of which was never actually blacklisted. To keep the `paths` format safe
+for its one supported consumption pattern (splitting on newlines), exporting
+with `--format paths` must fail explicitly, before writing any output, if any
+entry in the store contains a newline — the same "explicit error, never
+silently wrong" policy already required of a malformed blacklist file
+(section 1.5). `--format paths0` and `--format json` have no such
+restriction: NUL cannot appear in a POSIX path, and JSON escapes embedded
+newlines in its string encoding, so both represent every accepted path
+exactly and are the correct choice for machine consumption of blacklists that
+may contain such entries.
+
+The paths formats are deliberately data, not shell syntax: paths are not
+quoted as commands, and no shebang, `rm`, or other executable content is
+generated. They are suitable as input to a separate, operator-invoked local
+script or manual process that reviews and removes archive files offline
+(`paths0` piping into `xargs -0` is the safe pattern for arbitrary filenames;
+plain `paths` remains convenient for the common case and for manual review).
+This assists offline removal without giving the web application or the `imh`
+export command file deletion capability.
 
 Each configured variant uses its own `cache_dir` and blacklist. An intentionally
 unconfigured `imh list DIR` has no blacklist to load and retains its current
@@ -257,8 +276,13 @@ Thread a blacklist snapshot through scans; audit explicit-path thumbnail and
 embedding entry points; filter clustering and reports; and extend purge to
 clean blocked derived state. Add command tests for list, thumb, embed, cluster,
 report, and purge, including assertions that source files remain untouched.
-Add export tests for stdout and files, stable ordering, both formats, malformed
-stores, destination conflicts, and confirmation that export changes no state.
+Add export tests for stdout and files, stable ordering, all three formats,
+malformed stores, destination conflicts, confirmation that export changes no
+state, and adversarial filenames: paths containing embedded newlines (must
+error before writing any output in `paths` format; must round-trip exactly
+in `paths0` and `json`), and other shell-metacharacter-heavy names (spaces,
+quotes, backslashes) to confirm no format ever produces executable or
+misquoted output.
 
 ### Step 3 — Django replacement
 
