@@ -6,7 +6,11 @@ variant instead of the default 'hty7'.
 
 import argparse
 import datetime
+import io
+import json
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -19,6 +23,24 @@ from imhandler.thumbnailer import get_or_create, purge
 from imhandler.db import open_db
 
 _CONF = 'etc/imhandler.conf'
+
+
+def _blocked_snapshot(prog: str, command: str) -> 'frozenset[Path]':
+    """Load the blacklist snapshot once for a command, failing closed.
+
+    Called after a command's existing configuration validation and before
+    any scan, so a corrupt store stops the command before it does any work
+    rather than surfacing from inside a recursive scan. An unconfigured
+    cache_dir is not an error here (load_if_configured's one sanctioned
+    fail-open) -- it yields an empty snapshot, so an intentionally
+    unconfigured 'imh list DIR' keeps its current, unfiltered behavior.
+    """
+    from imhandler import blacklist
+    try:
+        return blacklist.load_if_configured()
+    except blacklist.BlacklistError as exc:
+        print(f'{prog} {command}: {exc}', file=sys.stderr)
+        sys.exit(1)
 
 
 def _print_tree(album: Album, indent: int = 0) -> None:
@@ -37,7 +59,8 @@ def cmd_scan(args: argparse.Namespace, prog: str) -> None:
         print(f'{prog} list: {args.dir}: not a directory', file=sys.stderr)
         sys.exit(1)
 
-    album = scan(root)
+    blocked = _blocked_snapshot(prog, 'list')
+    album = scan(root, blocked=blocked)
 
     if args.count:
         images = album.all_images()
@@ -69,16 +92,21 @@ def cmd_thumb(args: argparse.Namespace, prog: str) -> None:
         print(f'{prog} thumb: error: cache_dir must be set in {_CONF}', file=sys.stderr)
         sys.exit(1)
 
+    blocked = _blocked_snapshot(prog, 'thumb')
+
     all_entries = []
+    hidden = 0
     for dir_arg in dirs:
         root = Path(dir_arg)
         if not root.is_dir():
             print(f'{prog} thumb: {dir_arg}: not a directory', file=sys.stderr)
             sys.exit(1)
-        all_entries.extend(scan(root).all_images())
+        album = scan(root, blocked=blocked)
+        all_entries.extend(album.all_images())
+        hidden += album.hidden_count()
 
     if args.dry_run:
-        print(f'{len(all_entries)} image(s) found, no thumbnails generated')
+        print(f'{len(all_entries)} image(s) found, {hidden} hidden, no thumbnails generated')
         return
 
     done = 0
@@ -90,7 +118,7 @@ def cmd_thumb(args: argparse.Namespace, prog: str) -> None:
     try:
         for entry in all_entries:
             try:
-                dest = get_or_create(entry, args.size)
+                dest = get_or_create(entry, args.size, blocked=blocked)
                 if args.verbose:
                     print(f'  {dest}')
                 done += 1
@@ -119,11 +147,11 @@ def cmd_thumb(args: argparse.Namespace, prog: str) -> None:
         with open(log_path, 'w') as f:
             for msg in error_msgs:
                 f.write(msg + '\n')
-        print(f'{done} thumbnail(s) generated, {len(error_msgs)} error(s)')
+        print(f'{done} thumbnail(s) generated, {len(error_msgs)} error(s), {hidden} hidden')
         print(f'errors logged to {log_path}')
         sys.exit(1)
     else:
-        print(f'{done} thumbnail(s) generated, 0 error(s)')
+        print(f'{done} thumbnail(s) generated, 0 error(s), {hidden} hidden')
 
 
 def cmd_embed(args: argparse.Namespace, prog: str) -> None:
@@ -170,25 +198,31 @@ def cmd_embed(args: argparse.Namespace, prog: str) -> None:
     if args.sc_hi is not None:
         tier_kw['sc_hi'] = args.sc_hi
 
+    blocked = _blocked_snapshot(prog, 'embed')
+
     db = open_db(Path(args.db) if args.db else None)
     total_processed = 0
     total_skipped = 0
+    total_excluded = 0
     try:
         for root in roots:
-            processed, skipped = embed_images(
+            processed, skipped, excluded = embed_images(
                 root, db,
                 model=args.model,
                 batch_size=args.batch_size,
                 weights_dir=weights,
                 tier_thresholds=tier_kw or None,
+                blocked=blocked,
             )
             total_processed += processed
             total_skipped += skipped
+            total_excluded += excluded
     except KeyboardInterrupt:
         print(f'\n{prog} embed: interrupted')
         sys.exit(1)
 
-    print(f'{total_processed} image(s) embedded, {total_skipped} skipped (up to date)')
+    print(f'{total_processed} image(s) embedded, {total_skipped} skipped (up to date), '
+          f'{total_excluded} hidden')
 
 
 def cmd_cluster(args: argparse.Namespace, prog: str) -> None:
@@ -198,8 +232,10 @@ def cmd_cluster(args: argparse.Namespace, prog: str) -> None:
 
     from imhandler.clusterer import cluster_images
 
+    blocked = _blocked_snapshot(prog, 'cluster')
+
     db = open_db(Path(args.db) if args.db else None)
-    n = cluster_images(db, threshold=args.threshold, model=args.model)
+    n = cluster_images(db, threshold=args.threshold, model=args.model, blocked=blocked)
     print(f'{n} cluster(s) written '
           f'(model={args.model}, threshold={args.threshold:.3f})')
 
@@ -211,6 +247,8 @@ def cmd_report(args: argparse.Namespace, prog: str) -> None:
 
     from imhandler.db import get_clusters, get_cluster_members
 
+    blocked = _blocked_snapshot(prog, 'report')
+
     db = open_db(Path(args.db) if args.db else None)
     clusters = get_clusters(db, model=args.model or None, threshold=args.threshold)
     if not clusters:
@@ -221,7 +259,9 @@ def cmd_report(args: argparse.Namespace, prog: str) -> None:
     try:
         tier_labels = ['clean', 'degraded', 'heavily degraded']
         for cluster in clusters:
-            members = get_cluster_members(db, cluster['id'])
+            members = get_cluster_members(db, cluster['id'], blocked=blocked)
+            if len(members) < 2:
+                continue
             print(
                 f'--- cluster {cluster["id"]} '
                 f'model={cluster["model_used"]} '
@@ -261,16 +301,126 @@ def cmd_purge(args: argparse.Namespace, prog: str) -> None:
         print(f'{prog} purge: {args.dir}: not a directory', file=sys.stderr)
         sys.exit(1)
 
+    blocked = _blocked_snapshot(prog, 'purge')
+
     try:
-        thumb_removed, thumb_errors, db_removed, db_errors = purge(root, dry_run=args.dry_run)
+        result = purge(root, dry_run=args.dry_run, blocked=blocked)
     except EnvironmentError as e:
         print(f'{prog} purge: {e}', file=sys.stderr)
         sys.exit(1)
 
     label = 'would remove' if args.dry_run else 'removed'
-    print(f'{thumb_removed} thumbnail(s) {label}, {thumb_errors} error(s)')
-    print(f'{db_removed} DB record(s) {label}, {db_errors} error(s)')
-    if thumb_errors or db_errors:
+    collapse_label = 'would collapse' if args.dry_run else 'collapsed'
+    if result.thumbs_skipped:
+        print('thumbnail sweep skipped (DIR given; run with no DIR to sweep thumbnails)')
+    else:
+        print(f'{result.thumbs_removed} thumbnail(s) {label}, {result.thumb_errors} error(s)')
+    print(f'{result.db_removed} DB record(s) {label}, {result.db_errors} error(s)')
+    print(f'{result.clusters_collapsed} cluster(s) {collapse_label} (fewer than two members remaining)')
+    if result.thumb_errors or result.db_errors:
+        sys.exit(1)
+
+
+def _write_export(paths: 'list[str]', fmt: str, stream) -> None:
+    """Write paths (already sorted) to a binary stream in fmt.
+
+    Pure: touches no filesystem beyond the given stream, so it is testable
+    against a BytesIO and shared by both the -o and stdout code paths.
+
+    paths and json escape every accepted path exactly; paths -- the only
+    format meant to be split on newlines by its consumer -- fails explicitly,
+    before writing anything, if any entry contains a newline or carriage
+    return, rather than silently turning one blacklisted path into two
+    apparent removal targets.
+    """
+    if fmt == 'paths':
+        bad = [p for p in paths if '\n' in p or '\r' in p]
+        if bad:
+            raise ValueError(
+                'cannot use --format paths: the following entries contain a '
+                'newline or carriage return and would be split into more '
+                'than one line; use --format paths0 or --format json instead: '
+                + ', '.join(repr(p) for p in bad)
+            )
+        for p in paths:
+            stream.write(os.fsencode(p) + b'\n')
+    elif fmt == 'paths0':
+        for p in paths:
+            stream.write(os.fsencode(p) + b'\x00')
+    elif fmt == 'json':
+        doc = {'version': 1, 'paths': paths}
+        stream.write(json.dumps(doc, ensure_ascii=True).encode('utf-8'))
+    else:
+        raise ValueError(f'unknown export format: {fmt}')
+
+
+def cmd_blacklist_export(args: argparse.Namespace, prog: str) -> None:
+    from imhandler import blacklist, cache
+
+    try:
+        paths = sorted(str(p) for p in blacklist.load())
+    except (blacklist.BlacklistError, EnvironmentError) as exc:
+        print(f'{prog} blacklist export: {exc}', file=sys.stderr)
+        sys.exit(1)
+
+    if not args.output:
+        try:
+            _write_export(paths, args.format, sys.stdout.buffer)
+        except ValueError as exc:
+            print(f'{prog} blacklist export: {exc}', file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.output == '-':
+        print(f'{prog} blacklist export: refusing to write to a file named "-"; '
+              f'omit -o to write to stdout', file=sys.stderr)
+        sys.exit(1)
+
+    dest = Path(args.output).expanduser().resolve()
+
+    try:
+        store = blacklist.store_path().resolve()
+        lock = store.with_name('.blacklist.lock')
+    except EnvironmentError:
+        store = lock = None
+    if store is not None and dest in (store, lock):
+        print(f'{prog} blacklist export: refusing to overwrite the blacklist store: {dest}',
+              file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        roots = cache.configured_image_roots()
+    except EnvironmentError:
+        roots = []
+    if any(dest.is_relative_to(r) for r in roots):
+        print(f'{prog} blacklist export: refusing to write under a configured image_root: {dest}',
+              file=sys.stderr)
+        sys.exit(1)
+
+    buf = io.BytesIO()
+    try:
+        _write_export(paths, args.format, buf)
+    except ValueError as exc:
+        print(f'{prog} blacklist export: {exc}', file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=str(dest.parent), prefix='.imh-blacklist-export-')
+    except OSError as exc:
+        print(f'{prog} blacklist export: {exc}', file=sys.stderr)
+        sys.exit(1)
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(buf.getvalue())
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, dest)
+    except Exception as exc:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        print(f'{prog} blacklist export: {exc}', file=sys.stderr)
         sys.exit(1)
 
 
@@ -357,6 +507,20 @@ def main(prog: str = 'imh', ac: AppConfig | None = None) -> None:
     p_report.add_argument('-o', '--output', metavar='FILE', default=None,
         help='write report to FILE instead of stdout')
 
+    p_blacklist = sub.add_parser('blacklist',
+        help='inspect and export the persistent image blacklist')
+    blacklist_sub = p_blacklist.add_subparsers(dest='blacklist_command', metavar='SUBCOMMAND')
+    blacklist_sub.required = False
+    p_bl_export = blacklist_sub.add_parser('export',
+        help='export the blacklist as offline, non-executable data')
+    p_bl_export.add_argument('-o', '--output', metavar='FILE', default=None,
+        help='write export to FILE instead of stdout (refuses the blacklist '
+             'store, lock file, or any path under a configured image_root)')
+    p_bl_export.add_argument('--format', metavar='FORMAT', default='paths',
+        choices=['paths', 'paths0', 'json'],
+        help='export format: paths (default, one per line), '
+             'paths0 (NUL-terminated, for find -print0/xargs -0), json')
+
     args = parser.parse_args()
     if ac is None:
         raise RuntimeError("AppConfig must be provided")
@@ -374,6 +538,13 @@ def main(prog: str = 'imh', ac: AppConfig | None = None) -> None:
             cmd_cluster(args, prog)
         case 'report':
             cmd_report(args, prog)
+        case 'blacklist':
+            match getattr(args, 'blacklist_command', None):
+                case 'export':
+                    cmd_blacklist_export(args, prog)
+                case _:
+                    p_blacklist.print_usage(sys.stderr)
+                    sys.exit(1)
         case _:
             print(f'usage: {prog} COMMAND [options] [DIR]')
             print()
@@ -384,3 +555,4 @@ def main(prog: str = 'imh', ac: AppConfig | None = None) -> None:
             print('  embed      compute embeddings and quality metrics; store in database')
             print('  cluster    cluster images by embedding similarity')
             print('  report     print image clusters from the database')
+            print('  blacklist  inspect and export the persistent image blacklist')

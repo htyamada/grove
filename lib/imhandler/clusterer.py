@@ -1,13 +1,15 @@
 """Clustering pass for the image dedup pipeline.
 
 Public API:
-    cluster_images(conn, *, threshold, model) -> int
+    cluster_images(conn, *, threshold, model, blocked) -> int
 """
 
 from __future__ import annotations
 
 import sqlite3
 from collections import defaultdict
+from pathlib import Path
+from typing import AbstractSet
 
 import numpy as np
 from scipy.sparse import csr_matrix  # type: ignore[import-untyped]
@@ -15,13 +17,26 @@ from scipy.sparse.csgraph import connected_components  # type: ignore[import-unt
 
 
 def _load_embeddings(
-    conn: sqlite3.Connection, model: str
+    conn: sqlite3.Connection, model: str, *, blocked: AbstractSet[Path] | None = None,
 ) -> tuple[list[int], np.ndarray]:
-    """Return (image_ids, embedding_matrix) for rows that have the given embedding."""
+    """Return (image_ids, embedding_matrix) for rows that have the given
+    embedding, excluding blocked images.
+
+    Filtered in Python (not SQL), same as the db.py helpers: the comparison
+    must be the same Path identity is_blocked uses, and it keeps exactly one
+    matching implementation. The cost is that a blocked row's embedding blob
+    is still read from the DB before being discarded.
+    """
+    from . import blacklist  # local import to avoid circular at module level
+
+    if blocked is None:
+        blocked = blacklist.load_if_configured()
+
     col = f'{model}_embedding'
     rows = conn.execute(
-        f'SELECT id, {col} FROM Images WHERE {col} IS NOT NULL'
+        f'SELECT id, path, {col} FROM Images WHERE {col} IS NOT NULL'
     ).fetchall()
+    rows = [r for r in rows if Path(r['path']) not in blocked]
     if not rows:
         return [], np.empty((0, 0), dtype=np.float32)
     ids = [r['id'] for r in rows]
@@ -51,16 +66,19 @@ def cluster_images(
     *,
     threshold: float = 0.85,
     model: str = 'clip',
+    blocked: AbstractSet[Path] | None = None,
 ) -> int:
     """Compute pairwise cosine similarity, extract connected components,
     rank members by quality, and write results to the database.
 
     Any existing clusters with the same threshold and model are replaced.
-    Singleton components (no duplicates) are discarded.
+    Singleton components (no duplicates) are discarded -- which also means a
+    cluster is never written with only blocked-then-excluded members, since
+    those clusters shrink below size 2 once _load_embeddings drops them.
 
     Returns the number of clusters written.
     """
-    ids, embs = _load_embeddings(conn, model)
+    ids, embs = _load_embeddings(conn, model, blocked=blocked)
     if len(ids) < 2:
         _delete_existing(conn, threshold, model)
         conn.commit()

@@ -17,9 +17,13 @@ class Album:
     depth: int
     children: list['Album'] = field(default_factory=list)
     images: list[ImageEntry] = field(default_factory=list)
+    hidden_images: int = 0
 
     def image_count(self) -> int:
         return len(self.images) + sum(c.image_count() for c in self.children)
+
+    def hidden_count(self) -> int:
+        return self.hidden_images + sum(c.hidden_count() for c in self.children)
 
     def find(self, rel_path: Path | str) -> 'Album | None':
         """Return the album whose rel_path matches, or None."""

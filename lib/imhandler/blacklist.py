@@ -26,8 +26,19 @@ class BlacklistError(Exception):
     """The blacklist store exists but is corrupt or unsupported."""
 
 
+class BlockedImageError(Exception):
+    """An explicit-path operation was asked to act on a blocked image."""
+
+
 def _store_path() -> Path:
     return cache.cache_root() / _STORE_NAME
+
+
+def store_path() -> Path:
+    """Public path to the blacklist store, for callers (e.g. the CLI export
+    command) that must refuse to overwrite it without reaching into a
+    private name."""
+    return _store_path()
 
 
 def _lock_path() -> Path:
@@ -150,3 +161,20 @@ def add(path: Path | str) -> bool:
 def remove(path: Path | str) -> bool:
     normalized = _normalize(path)
     return _update(normalized, adding=False)
+
+
+def load_if_configured() -> frozenset[Path]:
+    """load(), or empty when no cache_dir is configured at all.
+
+    The single sanctioned fail-open in the whole feature, and it exists for
+    exactly one documented case: an `imh list DIR` run against an
+    unconfigured variant, which has no cache_dir and therefore no store to
+    consult. A *corrupt* store still raises BlacklistError here -- only
+    "there is no configured store" is tolerated, never "there is a store
+    and it cannot be read."
+    """
+    try:
+        cache.cache_root()
+    except EnvironmentError:
+        return frozenset()
+    return load()

@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 from django.http import Http404, HttpResponse, JsonResponse, StreamingHttpResponse  # type: ignore[import-untyped]
 from django.shortcuts import redirect, render  # type: ignore[import-untyped]
 from django.urls import NoReverseMatch, reverse  # type: ignore[import-untyped]
+from django.utils.http import http_date, parse_http_date_safe  # type: ignore[import-untyped]
 from django.views.decorators.csrf import csrf_exempt  # type: ignore[import-untyped]
 from django.views.decorators.http import require_POST  # type: ignore[import-untyped]
 
@@ -146,6 +147,37 @@ def _embed_targets(album_rel: str, roots: list[Path]) -> list[Path]:
 
 def _embed_job_key(targets: list[Path]) -> str:
     return '||'.join(sorted(str(path) for path in targets))
+
+
+def _not_found(message: str = 'Not found') -> HttpResponse:
+    """A 404 for the image/thumb media endpoints.
+
+    Returned rather than raised as Http404 so it can carry
+    Cache-Control: no-store -- the block itself must never be cached, or a
+    later restore would not take effect immediately for a client holding a
+    cached 404.
+    """
+    resp = HttpResponse(message, status=404, content_type='text/plain; charset=utf-8')
+    resp['Cache-Control'] = 'no-store'
+    return resp
+
+
+def _is_not_modified(request, last_modified_epoch: float) -> bool:
+    """True if the request's If-Modified-Since matches last_modified_epoch.
+
+    Compared by hand, in the view body, rather than via Django's @condition
+    decorator: that decorator answers before the view runs, so a blacklist
+    check inside the view would never execute for a revalidating request --
+    exactly the bypass that would let a client's cached copy of a
+    since-hidden image keep rendering.
+    """
+    header = request.META.get('HTTP_IF_MODIFIED_SINCE')
+    if not header:
+        return False
+    since = parse_http_date_safe(header)
+    if since is None:
+        return False
+    return int(last_modified_epoch) <= since
 
 
 class ImageHandlerViewSet:
@@ -613,16 +645,16 @@ class ImageHandlerViewSet:
     def thumb(request):
         path_str = request.GET.get('path', '')
         if not path_str:
-            raise Http404('No path given')
+            return _not_found('No path given')
         root_entries = _get_roots()
         if root_entries is None:
-            raise Http404('image_root not configured')
+            return _not_found('image_root not configured')
         root_paths = [p for p, _ in root_entries]
         path = Path(path_str).resolve()
         if not any(path.is_relative_to(r) for r in root_paths):
-            raise Http404('Path not under any configured root')
+            return _not_found('Path not under any configured root')
         if not path.is_file():
-            raise Http404('Image not found')
+            return _not_found('Image not found')
 
         try:
             size = int(request.GET.get('size', '200'))
@@ -635,32 +667,52 @@ class ImageHandlerViewSet:
         try:
             thumb_path = get_or_create(entry, long_edge=size)
         except EnvironmentError as e:
-            raise Http404(f'Cache unavailable: {e}')
+            return _not_found(f'Cache unavailable: {e}')
         except Exception:
-            raise Http404('Thumbnail generation failed')
+            # Also covers blacklist.BlockedImageError: a hidden image 404s
+            # here whether or not the image endpoint has its own explicit
+            # check yet.
+            return _not_found('Thumbnail generation failed')
 
-        data = thumb_path.read_bytes()
-        resp = HttpResponse(data, content_type='image/jpeg')
-        resp['Cache-Control'] = 'max-age=3600'
+        # Enforcement (get_or_create, above) runs before this conditional
+        # check: a blocked image never reaches here to be compared against
+        # If-Modified-Since, so a stale validator can never be answered 304
+        # for an image that has since been hidden.
+        last_modified = thumb_path.stat().st_mtime
+        header_date = http_date(last_modified)
+        if _is_not_modified(request, last_modified):
+            resp = HttpResponse(status=304)
+        else:
+            resp = HttpResponse(thumb_path.read_bytes(), content_type='image/jpeg')
+        resp['Cache-Control'] = 'private, no-cache'
+        resp['Last-Modified'] = header_date
         return resp
 
     @staticmethod
     def image(request):
         path_str = request.GET.get('path', '')
         if not path_str:
-            raise Http404('Missing path')
+            return _not_found('Missing path')
         root_entries = _get_roots()
         if root_entries is None:
-            raise Http404('image_root not configured')
+            return _not_found('image_root not configured')
         root_paths = [p for p, _ in root_entries]
         path = Path(path_str).resolve()
         if not any(path.is_relative_to(r) for r in root_paths):
-            raise Http404('Path not under any configured root')
+            return _not_found('Path not under any configured root')
         if not path.is_file():
-            raise Http404('Image not found')
+            return _not_found('Image not found')
 
         content_type, _ = mimetypes.guess_type(str(path))
         content_type = content_type or 'application/octet-stream'
+
+        last_modified = path.stat().st_mtime
+        header_date = http_date(last_modified)
+        if _is_not_modified(request, last_modified):
+            resp = HttpResponse(status=304)
+            resp['Cache-Control'] = 'private, no-cache'
+            resp['Last-Modified'] = header_date
+            return resp
 
         def _iter(p, chunk=65536):
             with open(p, 'rb') as f:
@@ -672,7 +724,8 @@ class ImageHandlerViewSet:
 
         resp = HttpResponse(_iter(path), content_type=content_type)
         resp['Content-Length'] = path.stat().st_size
-        resp['Cache-Control'] = 'max-age=3600'
+        resp['Cache-Control'] = 'private, no-cache'
+        resp['Last-Modified'] = header_date
         return resp
 
     # ── embed ──────────────────────────────────────────────────────────────
@@ -739,7 +792,7 @@ class ImageHandlerViewSet:
                             'type': 'output',
                             'message': f'[{index}/{total_targets}] {target}',
                         })
-                        p, s = embed_images(
+                        p, s, _excluded = embed_images(
                             target, conn,
                             cancel=cancel,
                             on_progress=lambda pct, d, i=index, n=total_targets:

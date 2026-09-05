@@ -2,7 +2,8 @@
 
 Public API:
     compute_quality_metrics(img) -> dict
-    embed_images(root, conn, *, model, batch_size, weights_dir, tier_thresholds) -> (processed, skipped)
+    embed_images(root, conn, *, model, batch_size, weights_dir, tier_thresholds, blocked)
+        -> (processed, skipped, excluded)
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import AbstractSet
 
 import numpy as np
 from PIL import Image
@@ -285,11 +287,15 @@ def embed_images(
     tier_thresholds: dict[str, float] | None = None,
     cancel=None,
     on_progress=None,
-) -> tuple[int, int]:
+    blocked: AbstractSet[Path] | None = None,
+) -> tuple[int, int, int]:
     """Scan root, compute embeddings and quality metrics, upsert into conn.
 
     model: 'clip', 'sscd', or 'both'
-    Returns (processed, skipped).
+    Returns (processed, skipped, excluded). excluded is the number of
+    blocked images the scan discarded (album.hidden_count()), not a count
+    derived from the blacklist store -- the store may hold entries for
+    files, roots, or directories this scan never visits.
     Images are keyed by (path, mtime): unchanged files are skipped unless
     they are missing an embedding requested by this run.
     """
@@ -297,10 +303,11 @@ def embed_images(
         weights_dir = _default_weights_dir()
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    album = scan(root)
+    album = scan(root, blocked=blocked)
     all_entries = album.all_images()
+    excluded = album.hidden_count()
     if not all_entries:
-        return 0, 0
+        return 0, 0, excluded
 
     do_clip = model in ('clip', 'both')
     do_sscd = model in ('sscd', 'both')
@@ -320,7 +327,7 @@ def embed_images(
 
     skipped = len(all_entries) - len(todo)
     if not todo:
-        return 0, skipped
+        return 0, skipped, excluded
 
     # Load models lazily
     clip_model = clip_prep = sscd_model = None
@@ -474,7 +481,7 @@ def embed_images(
                 last_pct = pct
                 on_progress(pct, current_label)
 
-    return processed, skipped
+    return processed, skipped, excluded
 
 
 def find_similar(
@@ -483,15 +490,29 @@ def find_similar(
     model: str,
     *,
     n: int = 8,
+    blocked: AbstractSet[Path] | None = None,
 ) -> tuple[object | None, list[dict]]:
     """Find the n most similar images in the same directory as path.
 
     Returns (target_row, neighbors) where:
-      - target_row is the sqlite3.Row for path (None if no embedding exists)
+      - target_row is the sqlite3.Row for path (None if no embedding exists,
+        including when path itself is blocked)
       - neighbors is a list of dicts with keys: path, similarity, width, height
-        ordered by descending similarity, excluding the target itself
+        ordered by descending similarity, excluding the target itself and any
+        blocked image
+
+    path is resolved before use, matching the resolved identity the Images
+    table stores and the blacklist checks against -- an unresolved alias
+    would otherwise match neither the target row nor the blocked set.
     """
-    path = Path(path)
+    from . import blacklist  # local import to avoid circular at module level
+
+    path = Path(path).resolve()
+    if blocked is None:
+        blocked = blacklist.load_if_configured()
+    if path in blocked:
+        return None, []
+
     emb_col = f'{model}_embedding'
     target_row = conn.execute(
         f'SELECT {emb_col}, width, height FROM Images WHERE path = ?',
@@ -509,6 +530,7 @@ def find_similar(
         (dir_str + '/%', str(path)),
     ).fetchall()
     rows = [r for r in rows if Path(r['path']).parent == path.parent]
+    rows = [r for r in rows if Path(r['path']) not in blocked]
 
     if not rows:
         return target_row, []
@@ -538,14 +560,20 @@ def find_semantic(
     scope: 'Path | str | None' = None,
     n: int = 24,
     weights_dir: Path | None = None,
+    blocked: AbstractSet[Path] | None = None,
 ) -> tuple[list[dict], int]:
-    """Find the n CLIP-nearest images for a text query."""
+    """Find the n CLIP-nearest images for a text query, excluding blocked images."""
+    from . import blacklist  # local import to avoid circular at module level
+
     if weights_dir is None:
         weights_dir = _default_weights_dir()
 
     query = query.strip()
     if not query:
         return [], 0
+
+    if blocked is None:
+        blocked = blacklist.load_if_configured()
 
     scope_path = Path(scope).resolve() if scope is not None else None
     rows = conn.execute(
@@ -562,6 +590,7 @@ def find_semantic(
     ).fetchall()
     if scope_path is not None:
         rows = [row for row in rows if Path(row['path']).is_relative_to(scope_path)]
+    rows = [row for row in rows if Path(row['path']) not in blocked]
     if not rows:
         return [], 0
 

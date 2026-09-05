@@ -55,7 +55,10 @@ else:
     from django.urls import include, path
     from django.contrib.sessions.middleware import SessionMiddleware
 
-    from imhandler import appconfig
+    from PIL import Image
+
+    from imhandler import appconfig, blacklist
+    from imhandler.db import open_db
     from imhandler.djview import ImageHandlerViewSet
     from imhandler.models import Album
 
@@ -188,11 +191,11 @@ else:
 
             calls = []
 
-            def fake_embed_images(target, conn, *, cancel=None, on_progress=None):
+            def fake_embed_images(target, conn, *, cancel=None, on_progress=None, blocked=None):
                 calls.append(Path(target))
                 if on_progress is not None:
                     on_progress(100, Path(target).name)
-                return (1, 0)
+                return (1, 0, 0)
 
             conn = mock.Mock()
             with mock.patch('imhandler.db.open_db', return_value=conn):
@@ -203,6 +206,162 @@ else:
             self.assertEqual(calls, [self.root.resolve(), other_root.resolve()])
             self.assertIn('Embedding 2 roots', body)
             self.assertIn('"processed": 2', body)
+
+    class ImhandlerDjviewMediaCachingTests(unittest.TestCase):
+        """Section 2.4's caching rules: private, no-cache with a
+        Last-Modified validator on 200s, no-store on 404s, and the
+        blacklist check (where one already exists in Step 2) running
+        before the conditional comparison so a stale validator can never
+        be answered 304 for an image that has since been hidden."""
+
+        def setUp(self) -> None:
+            self.tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(self.tmp.cleanup)
+            self.root = Path(self.tmp.name) / 'images'
+            self.root.mkdir()
+            self.cache = Path(self.tmp.name) / 'cache'
+            appconfig.image_roots = [str(self.root)]
+            appconfig.image_root_names = ['Images']
+            appconfig.cache_dir = str(self.cache)
+            self.factory = RequestFactory()
+
+            self.image_path = self.root / 'photo.jpg'
+            Image.new('RGB', (20, 20), color='red').save(self.image_path, 'JPEG')
+
+        def test_image_sends_private_no_cache_and_last_modified(self) -> None:
+            request = self.factory.get('/image/', {'path': str(self.image_path)})
+            response = _vs.image(request)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response['Cache-Control'], 'private, no-cache')
+            self.assertIn('Last-Modified', response)
+
+        def test_image_revalidates_to_304(self) -> None:
+            request = self.factory.get('/image/', {'path': str(self.image_path)})
+            first = _vs.image(request)
+
+            second_request = self.factory.get(
+                '/image/', {'path': str(self.image_path)},
+                HTTP_IF_MODIFIED_SINCE=first['Last-Modified'],
+            )
+            second = _vs.image(second_request)
+
+            self.assertEqual(second.status_code, 304)
+
+        def test_image_missing_path_404_has_no_store(self) -> None:
+            request = self.factory.get('/image/', {'path': str(self.root / 'missing.jpg')})
+            response = _vs.image(request)
+
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response['Cache-Control'], 'no-store')
+
+        def test_thumb_sends_private_no_cache_and_last_modified(self) -> None:
+            request = self.factory.get('/thumb/', {'path': str(self.image_path)})
+            response = _vs.thumb(request)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response['Cache-Control'], 'private, no-cache')
+            self.assertIn('Last-Modified', response)
+
+        def test_thumb_revalidates_to_304(self) -> None:
+            request = self.factory.get('/thumb/', {'path': str(self.image_path)})
+            first = _vs.thumb(request)
+
+            second_request = self.factory.get(
+                '/thumb/', {'path': str(self.image_path)},
+                HTTP_IF_MODIFIED_SINCE=first['Last-Modified'],
+            )
+            second = _vs.thumb(second_request)
+
+            self.assertEqual(second.status_code, 304)
+
+        def test_thumb_missing_path_404_has_no_store(self) -> None:
+            request = self.factory.get('/thumb/', {'path': str(self.root / 'missing.jpg')})
+            response = _vs.thumb(request)
+
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response['Cache-Control'], 'no-store')
+
+        def test_thumb_hidden_after_cache_returns_404_not_304(self) -> None:
+            """The ordering test: hiding an image does not touch its mtime,
+            so a client's stale If-Modified-Since would still match if the
+            validator check ran before the blacklist check. It must not --
+            get_or_create's BlockedImageError must be raised first."""
+            request = self.factory.get('/thumb/', {'path': str(self.image_path)})
+            first = _vs.thumb(request)
+            last_modified = first['Last-Modified']
+
+            self.assertTrue(blacklist.add(self.image_path))
+
+            second_request = self.factory.get(
+                '/thumb/', {'path': str(self.image_path)},
+                HTTP_IF_MODIFIED_SINCE=last_modified,
+            )
+            second = _vs.thumb(second_request)
+
+            self.assertEqual(second.status_code, 404)
+            self.assertEqual(second['Cache-Control'], 'no-store')
+
+    class ImhandlerDjviewClusterDetailTests(unittest.TestCase):
+        """Viewing a cluster must never destroy cluster metadata just
+        because one of its members is hidden (as opposed to genuinely
+        missing from disk) -- that is purge's job, not a side effect of a
+        GET request."""
+
+        def setUp(self) -> None:
+            self.tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(self.tmp.cleanup)
+            self.root = Path(self.tmp.name) / 'images'
+            self.root.mkdir()
+            self.cache = Path(self.tmp.name) / 'cache'
+            appconfig.image_roots = [str(self.root)]
+            appconfig.image_root_names = ['Images']
+            appconfig.cache_dir = str(self.cache)
+            self.factory = RequestFactory()
+
+        def _with_session(self, request):
+            middleware = SessionMiddleware(lambda req: None)
+            middleware.process_request(request)
+            return request
+
+        def _make_cluster(self, paths):
+            db = open_db(self.cache / 'db' / 'dedup.db')
+            ids = []
+            for p in paths:
+                db.execute('INSERT INTO Images (path, mtime) VALUES (?, ?)', (str(p), 0.0))
+                ids.append(db.execute('SELECT last_insert_rowid()').fetchone()[0])
+            db.execute('INSERT INTO Clusters (threshold_used, model_used) VALUES (?, ?)', (0.85, 'clip'))
+            cluster_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            for rank, image_id in enumerate(ids):
+                db.execute(
+                    'INSERT INTO ClusterMembership (cluster_id, image_id, quality_rank) VALUES (?, ?, ?)',
+                    (cluster_id, image_id, rank),
+                )
+            db.commit()
+            db.close()
+            return cluster_id
+
+        def test_hidden_but_present_member_does_not_delete_cluster(self) -> None:
+            a = self.root / 'a.jpg'
+            b = self.root / 'b.jpg'
+            Image.new('RGB', (10, 10)).save(a, 'JPEG')
+            Image.new('RGB', (10, 10)).save(b, 'JPEG')
+            cluster_id = self._make_cluster([a.resolve(), b.resolve()])
+            self.assertTrue(blacklist.add(a))
+
+            request = self._with_session(self.factory.get(f'/cluster/{cluster_id}/'))
+            response = _vs.cluster_detail(request, cluster_id)
+
+            self.assertEqual(response.status_code, 200)
+            db = open_db(self.cache / 'db' / 'dedup.db')
+            self.assertEqual(
+                len(db.execute('SELECT id FROM Clusters WHERE id = ?', (cluster_id,)).fetchall()), 1,
+            )
+            memberships = db.execute(
+                'SELECT image_id FROM ClusterMembership WHERE cluster_id = ?', (cluster_id,)
+            ).fetchall()
+            self.assertEqual(len(memberships), 2)
+            db.close()
 
 
 if __name__ == '__main__':

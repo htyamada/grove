@@ -1,6 +1,6 @@
 import sqlite3
 from pathlib import Path
-from typing import Iterable
+from typing import AbstractSet, Iterable
 
 from .cache import db_path
 
@@ -78,8 +78,22 @@ def get_clusters(conn: sqlite3.Connection, *, model: str | None = None,
 
 
 def get_cluster_member_rows(conn: sqlite3.Connection, *, model: str | None = None,
-                            threshold: float | None = None) -> list:
-    """Return flat join of Clusters+ClusterMembership+Images, ordered by cluster id and rank."""
+                            threshold: float | None = None,
+                            blocked: AbstractSet[Path] | None = None) -> list:
+    """Return flat join of Clusters+ClusterMembership+Images, ordered by cluster id and rank.
+
+    Rows for blocked images are omitted (filtered in Python, not SQL, per
+    section 1.2 -- one matching implementation, and the comparison must be
+    the same Path identity is_blocked uses). This can leave a cluster with
+    fewer than two visible rows; collapsing such a cluster is the caller's
+    job, since "no such cluster" and "cluster you may not usefully see"
+    must stay distinguishable.
+    """
+    from . import blacklist  # local import to avoid circular at module level
+
+    if blocked is None:
+        blocked = blacklist.load_if_configured()
+
     q = '''
         SELECT c.id AS cluster_id, c.threshold_used, c.model_used, c.created_at,
                cm.quality_rank, i.path, i.width, i.height,
@@ -100,12 +114,25 @@ def get_cluster_member_rows(conn: sqlite3.Connection, *, model: str | None = Non
     if conditions:
         q += ' WHERE ' + ' AND '.join(conditions)
     q += ' ORDER BY c.created_at DESC, c.id, cm.quality_rank'
-    return conn.execute(q, params).fetchall()
+    rows = conn.execute(q, params).fetchall()
+    return [r for r in rows if Path(r['path']) not in blocked]
 
 
-def get_cluster_members(conn: sqlite3.Connection, cluster_id: int) -> list:
-    """Return ClusterMembership+Images rows for one cluster, ordered by quality_rank."""
-    return conn.execute(
+def get_cluster_members(conn: sqlite3.Connection, cluster_id: int,
+                        *, blocked: AbstractSet[Path] | None = None) -> list:
+    """Return ClusterMembership+Images rows for one cluster, ordered by quality_rank.
+
+    Rows for blocked images are omitted (see get_cluster_member_rows). A
+    cluster whose members are all blocked returns an empty list, the same
+    shape as "no such cluster" -- callers that must tell those apart check
+    row existence before calling this, not after.
+    """
+    from . import blacklist  # local import to avoid circular at module level
+
+    if blocked is None:
+        blocked = blacklist.load_if_configured()
+
+    rows = conn.execute(
         '''
         SELECT i.id AS image_id, i.path, i.width, i.height,
                i.laplacian_score, i.hf_power_ratio, i.blocking_score,
@@ -118,6 +145,7 @@ def get_cluster_members(conn: sqlite3.Connection, cluster_id: int) -> list:
         ''',
         (cluster_id,),
     ).fetchall()
+    return [r for r in rows if Path(r['path']) not in blocked]
 
 
 def cleanup_missing_members(conn: sqlite3.Connection,
@@ -126,8 +154,17 @@ def cleanup_missing_members(conn: sqlite3.Connection,
 
     Returns (missing_ids, remaining_count).
     If remaining_count <= 1, the caller should delete the cluster itself.
+
+    Deliberately blacklist-blind: passes blocked=frozenset() so a blocked
+    (but still-present) member is never treated as "missing" and never
+    counted out of remaining_count. Filtering here by the default
+    get_cluster_members() snapshot would make a plain page view delete
+    ClusterMembership/Clusters rows for images the user only hid, not
+    deleted -- reversible only by re-embedding. Removing blocked derived
+    state is purge's job, on the operator's schedule, not a side effect of
+    viewing a cluster.
     """
-    rows = get_cluster_members(conn, cluster_id)
+    rows = get_cluster_members(conn, cluster_id, blocked=frozenset())
     missing_ids = [row['image_id'] for row in rows if not Path(row['path']).exists()]
     if missing_ids:
         ph = ','.join('?' * len(missing_ids))
