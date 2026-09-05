@@ -346,18 +346,45 @@ own transport. Eligibility follows the same required-vs-optional split
 `edit_images_availability()` uses: every required role must be usable,
 or — with no required roles — at least one optional role must be.
 
-**Warning-consent asymmetry.** Grove does not collect data-handling-
-warning consent (`_edit_result()` always passes
-`accept_data_handling_warnings=False`), so a warned transport is
-unreachable through Grove regardless of what "available" means
-elsewhere. For a schema with required roles, one warned *usable* role
-forces consent for the whole call (AND semantics: any warned usable
-candidate disables it). For an all-optional schema, a warned usable role
-does not disable the model as long as some other usable role needs no
-consent (OR semantics: only disabled when *every* usable candidate is
+**Warning consent, in two layers.** Grove now collects
+`accept_data_handling_warnings` consent (`upgrades/
+data-handling-warning-consent.md`), but the two layers must not be
+confused: `_operation_state()`'s schema-level aggregate below is an
+*eligibility* fact (can this model be selected at all, and could it ever
+need consent), not the actual per-request gate.
+
+`_operation_state()`'s `(eligible, enabled, reason)` split does the same
+job here that it does for `detail == 'summary'`: a warned candidate is
+always *eligible* (selectable -- the caller has to be able to pick the
+model to see the warning and consent to it) but *enabled* only when the
+caller passes `accept_data_handling_warnings=True` itself. For a schema
+with required roles, one warned *usable* role means some request through
+this model will need consent (AND semantics: any warned usable candidate
+lowers `enabled`, absent the flag). For an all-optional schema, a warned
+usable role does not lower `enabled` as long as some other usable role
+needs no consent (OR semantics: only when *every* usable candidate is
 warned). The single-scope (ordered/top-level) case applies the same
 warned-transport check without the AND/OR split, since there is only one
-scope to satisfy.
+scope to satisfy. This aggregate is schema-wide and assignment-blind --
+useful for annotating the model dropdown, and for `_do_edit_image()`'s
+own preflight (called with `accept_data_handling_warnings=True` forced,
+to isolate genuine unusability from the consent question), but it must
+never itself be the thing that gates a real submission.
+
+The actual per-request gate is `_resolved_edit_warning_reason()`
+(Python) and its JS mirror `resolvedEditWarning()`: given the images
+*actually* assigned to roles for this specific request, they look only
+at every required role plus whichever optional roles the caller actually
+used, and return the verbatim warning text if any of those resolves to a
+warned transport. An optional role nobody assigned an image to cannot
+make a request need consent, even if that role would be warned in
+isolation -- the schema-level aggregate's OR/AND semantics above answer
+"could this model ever need it", not "does this one". `_do_edit_image()`
+calls this immediately after `normalize_edit_inputs()` succeeds and 400s
+before touching the filesystem if it returns a reason and the caller
+didn't pass a literal JSON `true` for `accept_data_handling_warnings`
+(any other value, including a truthy non-boolean, is rejected rather
+than coerced).
 
 **Preflight-pending sources.** `_edit_input_transport_pending()` mirrors
 `llemon-image`'s identical check: a canonical image whose source will be

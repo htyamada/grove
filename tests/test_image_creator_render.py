@@ -262,12 +262,11 @@ else:
                 (True, True, None),
             )
 
-        def test_warned_transport_is_not_enabled_without_consent_ui(self) -> None:
-            # Grove does not yet collect data-handling-warning consent
-            # (Task 13 Phase 2): a transport that carries one can never
-            # actually be dispatched through Grove today even though it is
-            # "available", so it must be reported disabled with an
-            # accurate reason rather than left to fail at dispatch.
+        def test_warned_transport_is_eligible_but_not_enabled_without_consent(self) -> None:
+            # A warned transport must stay *eligible* (selectable -- the
+            # caller has to be able to pick it to see the warning and
+            # consent) but not *enabled* until the caller explicitly passes
+            # accept_data_handling_warnings=True.
             row = {'id': 'warned', 'presentation': _presentation(
                 'warned', generate=False, edit=True,
             )}
@@ -279,7 +278,14 @@ else:
             })
             self.assertEqual(
                 imagegen_view._operation_state(row, 'edit', source_kind='data_url'),
-                (False, False, 'requires accepting a data-handling warning'),
+                (True, False, 'requires accepting a data-handling warning'),
+            )
+            self.assertEqual(
+                imagegen_view._operation_state(
+                    row, 'edit', source_kind='data_url',
+                    accept_data_handling_warnings=True,
+                ),
+                (True, True, None),
             )
 
         def test_named_schema_eligibility_is_role_scoped_not_top_level(self) -> None:
@@ -379,7 +385,7 @@ else:
                 (True, True, None),
             )
 
-        def test_all_optional_named_schema_disabled_if_every_usable_role_is_warned(self) -> None:
+        def test_all_optional_named_schema_eligible_but_not_enabled_if_every_usable_role_is_warned(self) -> None:
             row = {'id': 'optional-all-warned', 'presentation': _presentation(
                 'optional-all-warned', generate=False, edit=True,
             )}
@@ -406,10 +412,17 @@ else:
             }
             self.assertEqual(
                 imagegen_view._operation_state(row, 'edit_images', source_kind='data_url'),
-                (False, False, 'requires accepting a data-handling warning'),
+                (True, False, 'requires accepting a data-handling warning'),
+            )
+            self.assertEqual(
+                imagegen_view._operation_state(
+                    row, 'edit_images', source_kind='data_url',
+                    accept_data_handling_warnings=True,
+                ),
+                (True, True, None),
             )
 
-        def test_required_roles_disabled_if_any_usable_role_is_warned(self) -> None:
+        def test_required_roles_eligible_but_not_enabled_if_any_usable_role_is_warned(self) -> None:
             # Required-role schema (AND semantics): every required role must
             # be dispatched together, so even one warned required role
             # forces consent for the whole call.
@@ -438,7 +451,111 @@ else:
             }
             self.assertEqual(
                 imagegen_view._operation_state(row, 'edit_images', source_kind='data_url'),
-                (False, False, 'requires accepting a data-handling warning'),
+                (True, False, 'requires accepting a data-handling warning'),
+            )
+            self.assertEqual(
+                imagegen_view._operation_state(
+                    row, 'edit_images', source_kind='data_url',
+                    accept_data_handling_warnings=True,
+                ),
+                (True, True, None),
+            )
+
+        def test_resolved_edit_warning_reason_none_without_transport_warnings(self) -> None:
+            inputs = _presentation('m1', edit=True)['edit_inputs']
+            self.assertIsNone(
+                imagegen_view._resolved_edit_warning_reason(inputs, [{'source': 'data:x'}]),
+            )
+
+        def test_resolved_edit_warning_reason_required_role_warns_regardless_of_assignment(
+            self,
+        ) -> None:
+            # A required role's warned-ness is deterministic (every Grove
+            # source resolves to the same 'data_url' kind), so it
+            # contributes to the reason regardless of which image is
+            # assigned to which role.
+            inputs = {
+                'shape': 'named', 'min_count': 2, 'max_count': 2,
+                'effective_max_count': 2,
+                'accepted_source_kinds': [], 'required_backend_transports': {},
+                'available_backend_transports': [],
+                'transport_warnings': {
+                    'provider_upload': 'uploads leave LLemon-managed storage',
+                },
+                'roles': [
+                    {'name': 'clean', 'required': True, 'position': 0,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': ['data_url'],
+                     'required_backend_transports': {}, 'available_backend_transports': []},
+                    {'name': 'warned', 'required': True, 'position': 1,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': [],
+                     'required_backend_transports': {'data_url': 'provider_upload'},
+                     'available_backend_transports': ['provider_upload']},
+                ],
+            }
+            images = [{'source': 'data:a', 'role': 'clean'},
+                      {'source': 'data:b', 'role': 'warned'}]
+            self.assertEqual(
+                imagegen_view._resolved_edit_warning_reason(inputs, images),
+                'uploads leave LLemon-managed storage',
+            )
+
+        def test_resolved_edit_warning_reason_optional_role_only_warns_when_assigned(
+            self,
+        ) -> None:
+            # This is the direct regression test for the bug the schema-
+            # level aggregate has: an optional role that is warned must
+            # only make *this* request need consent when the caller
+            # actually assigned an image to it -- not merely because the
+            # schema declares it.
+            inputs = {
+                'shape': 'named', 'min_count': 0, 'max_count': 2,
+                'effective_max_count': 2,
+                'accepted_source_kinds': [], 'required_backend_transports': {},
+                'available_backend_transports': [],
+                'transport_warnings': {
+                    'provider_upload': 'uploads leave LLemon-managed storage',
+                },
+                'roles': [
+                    {'name': 'warned', 'required': False, 'position': 0,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': [],
+                     'required_backend_transports': {'data_url': 'provider_upload'},
+                     'available_backend_transports': ['provider_upload']},
+                    {'name': 'clean', 'required': False, 'position': 1,
+                     'description': None, 'aliases': [],
+                     'accepted_source_kinds': ['data_url'],
+                     'required_backend_transports': {}, 'available_backend_transports': []},
+                ],
+            }
+            self.assertIsNone(
+                imagegen_view._resolved_edit_warning_reason(
+                    inputs, [{'source': 'data:a', 'role': 'clean'}],
+                ),
+            )
+            self.assertEqual(
+                imagegen_view._resolved_edit_warning_reason(
+                    inputs, [{'source': 'data:a', 'role': 'warned'}],
+                ),
+                'uploads leave LLemon-managed storage',
+            )
+
+        def test_resolved_edit_warning_reason_ordered_schema(self) -> None:
+            inputs = {
+                'shape': 'ordered', 'min_count': 1, 'max_count': None,
+                'effective_max_count': 1,
+                'accepted_source_kinds': [],
+                'required_backend_transports': {'data_url': 'provider_upload'},
+                'available_backend_transports': ['provider_upload'],
+                'transport_warnings': {
+                    'provider_upload': 'uploads leave LLemon-managed storage',
+                },
+                'roles': [],
+            }
+            self.assertEqual(
+                imagegen_view._resolved_edit_warning_reason(inputs, [{'source': 'data:a'}]),
+                'uploads leave LLemon-managed storage',
             )
 
         def test_model_options_are_independent_complete_copies(self) -> None:
@@ -650,7 +767,7 @@ else:
             self.assertIn('function renderEditImagesList()', html)
             self.assertIn('function ensureEditImagesCompatible()', html)
             self.assertIn('function moveEditImage(index, delta)', html)
-            self.assertIn('function roleDataUrlUnusableReason(role, transportWarnings)', html)
+            self.assertIn('function roleDataUrlUnusableReason(role)', html)
             self.assertIn('window.__editImagesBridge', html)
             self.assertIn('maxCount: currentEditImagesMaxCount', html)
             self.assertIn('function openImagePicker(multi)', html)

@@ -25,6 +25,7 @@
   #error-msg { color: #c00; padding: 0.5em 0; }
   #model-info-notices { white-space: pre-line; padding: 0.25em 0; color: #555; }
   #model-info-notices.warning { color: #a60; }
+  #edit-consent-message { white-space: pre-line; padding: 0.25em 0; color: #a60; }
 
   .separator { border: none; border-top: 2px solid #ccc; margin: 0.8em 0; }
 
@@ -191,6 +192,10 @@
           </div>
           <div class="row" id="edit-size-note"{% if edit_image_sizes %} style="display:none;"{% endif %}>
             <span style="font-size:0.85em; color:#666;">Output size is determined by the source image.</span>
+          </div>
+          <div class="row" id="edit-consent-row" style="display:none;">
+            <div id="edit-consent-message"></div>
+            <label style="width:auto;"><input type="checkbox" id="edit-consent-checkbox"> I accept sending this data as described above</label>
           </div>
         </div>
         <div class="row" id="model-row">
@@ -364,17 +369,16 @@ document.addEventListener('keydown', function(e) {
     return {state: 'unsupported', transport: null};
   }
 
-  function roleDataUrlUnusableReason(role, transportWarnings) {
-    // A role that can't actually take Grove's data_url source, or whose
-    // only path needs consent Grove doesn't yet collect, would produce a
-    // predictable backend rejection if selected -- surface that up front
-    // instead of letting the choice look selectable.
+  function roleDataUrlUnusableReason(role) {
+    // A role that can't actually take Grove's data_url source at all would
+    // produce a predictable backend rejection if selected -- surface that
+    // up front instead of letting the choice look selectable. A role whose
+    // only path is warned stays selectable: consent is a whole-call gate
+    // (see resolvedEditWarning()/refreshEditWarningState()), not a reason
+    // to exclude the role from the picker.
     const result = sourceKindUsability(role, 'data_url');
     if (result.state === 'unavailable_transport') return 'required transport unavailable';
     if (result.state === 'unsupported') return 'data URL unsupported';
-    if (result.transport && transportWarnings[result.transport]) {
-      return 'requires accepting a data-handling warning';
-    }
     return null;
   }
 
@@ -415,11 +419,16 @@ document.addEventListener('keydown', function(e) {
         return {disabled: true, reason: reason};
       }
       // Same required-vs-optional split as the usability check above: with
-      // required roles (AND semantics), one warned usable role forces
-      // consent for the whole call, so *any* warned usable candidate
-      // disables it. With only optional roles (OR semantics), a warned
-      // usable role does not disable the model as long as some other
-      // usable role needs no consent at all.
+      // required roles (AND semantics), one warned usable role means
+      // *some* request through this model will need consent; with only
+      // optional roles (OR semantics), likewise if every usable role is
+      // warned. Either way this is a schema-level, assignment-blind
+      // aggregate -- it only annotates the model as selectable-but-maybe-
+      // warned; it must not disable the model, since the user has to be
+      // able to select it to see the warning and consent. Whether *this*
+      // request actually needs consent is decided by
+      // resolvedEditWarning()/refreshEditWarningState() instead, from the
+      // roles actually assigned.
       const isWarned = function (transport) {
         return !!transport && !!(input.transport_warnings || {})[transport];
       };
@@ -430,7 +439,7 @@ document.addEventListener('keydown', function(e) {
         ? usableTransports.some(isWarned)
         : usableTransports.every(isWarned);
       if (warned) {
-        return {disabled: true, reason: 'requires accepting a data-handling warning'};
+        return {disabled: false, reason: 'requires accepting a data-handling warning'};
       }
       return {disabled: false, reason: ''};
     }
@@ -442,9 +451,46 @@ document.addEventListener('keydown', function(e) {
       return {disabled: true, reason: 'data URL unsupported'};
     }
     if (result.transport && (input.transport_warnings || {})[result.transport]) {
-      return {disabled: true, reason: 'requires accepting a data-handling warning'};
+      // Deterministic here (no roles, so no per-assignment variability) --
+      // still just an annotation; consent gating goes through
+      // resolvedEditWarning()/refreshEditWarningState(), not `disabled`.
+      return {disabled: false, reason: 'requires accepting a data-handling warning'};
     }
     return {disabled: false, reason: ''};
+  }
+
+  function resolvedEditWarning(option) {
+    // The assignment-aware counterpart to editOptionState()'s schema-level
+    // aggregate above -- mirrors llemon_djview.imagegen.
+    // _resolved_edit_warning_reason(): for a named schema, only the roles
+    // actually in play (every required role, plus any optional role the
+    // user has actually assigned an image to via editImageRoles) can make
+    // *this* submission need consent; an optional role nobody chose
+    // cannot, even if it would be warned in isolation. Returns
+    // {warned, messages}, messages being the deduped verbatim
+    // transport_warnings text for whichever such roles are both usable
+    // and warned.
+    const input = ((option || {}).presentation || {}).edit_inputs || {};
+    const warnings = input.transport_warnings || {};
+    if (!Object.keys(warnings).length) return {warned: false, messages: []};
+    const roles = input.roles || [];
+    let scopes;
+    if (roles.length) {
+      const assigned = {};
+      editImageRoles.forEach(function (name) { if (name) assigned[name] = true; });
+      scopes = roles.filter(function (r) { return r.required || assigned[r.name]; });
+    } else {
+      scopes = [input];
+    }
+    const messages = [];
+    scopes.forEach(function (scope) {
+      const result = sourceKindUsability(scope, 'data_url');
+      if (result.state === 'usable' && result.transport && warnings[result.transport]) {
+        const msg = warnings[result.transport];
+        if (messages.indexOf(msg) === -1) messages.push(msg);
+      }
+    });
+    return {warned: messages.length > 0, messages: messages};
   }
   function operationEvidence(option, operationName) {
     const operation = ((((option || {}).presentation || {}).operations || {})[operationName] || {});
@@ -662,6 +708,50 @@ document.addEventListener('keydown', function(e) {
 
   // Repopulate the edit-model / edit-aspect dropdowns and show/hide the
   // Upscale & Edit type options for the selected provider's capabilities.
+  let _editConsentKey = null;
+
+  function refreshEditWarningState() {
+    // Always reads current global state (the selected edit model plus the
+    // current editImageRoles/editImageFnames assignment) rather than being
+    // handed a specific option/state -- called from several places
+    // (model change, image add/remove/move/clear, per-thumbnail role
+    // reassignment, the consent checkbox itself) and must reflect
+    // whichever of those happened most recently, not whichever one last
+    // passed it a (possibly stale) argument.
+    const consentRow = document.getElementById('edit-consent-row');
+    const consentMsg = document.getElementById('edit-consent-message');
+    const consentCb = document.getElementById('edit-consent-checkbox');
+    const edit = (CREATOR_PRESENTATION.operations || {}).edit || {};
+    const emSel = document.getElementById('edit-model-sel');
+    const modelId = emSel ? emSel.value : '';
+    const option = (edit.model_options || []).find(function (row) { return row.id === modelId; });
+    const state = option ? editOptionState(option) : {disabled: true, reason: 'unavailable'};
+    const resolved = option ? resolvedEditWarning(option) : {warned: false, messages: []};
+    // Model ids are only unique within a provider/API, so the reset key
+    // must include both -- otherwise switching to a different provider
+    // whose model list happens to reuse the same id and warning text
+    // would wrongly preserve a checked box across that switch.
+    const key = option
+      ? (currentProvider + '/' + CREATOR_PRESENTATION.api + '/' + option.id
+         + '|' + resolved.messages.join('␟'))
+      : null;
+    if (consentRow && consentMsg && consentCb) {
+      if (key !== _editConsentKey) {
+        consentCb.checked = false;
+        _editConsentKey = key;
+      }
+      consentRow.style.display = resolved.warned ? '' : 'none';
+      consentMsg.textContent = resolved.warned ? resolved.messages.join('\n\n') : '';
+    }
+    const checked = !!(consentCb && consentCb.checked);
+    edit.availability = {
+      enabled: !!option && !state.disabled && (!resolved.warned || checked),
+      reason: state.reason || null,
+      operation_supported: (edit.availability || {}).operation_supported === true,
+    };
+    updateActionAvailability();
+  }
+
   function _applyEditMetadata(data) {
     const emSel = document.getElementById('edit-model-sel');
     if (emSel && Array.isArray(data.edit_models)) {
@@ -725,6 +815,7 @@ document.addEventListener('keydown', function(e) {
       }
     }
     ensureEditImagesCompatible();
+    refreshEditWarningState();
   }
 
   _applyEditMetadata(initialProviderData);
@@ -759,13 +850,18 @@ document.addEventListener('keydown', function(e) {
       default_edit_aspect_ratio: ratioDefault, edit_image_sizes: sizes,
       default_edit_image_size: sizeDefault});
     if (!option) this.selectedIndex = -1;
-    edit.availability = {
-      enabled: !!option && !state.disabled,
-      reason: state.reason || null,
-      operation_supported: (edit.availability || {}).operation_supported === true,
-    };
-    updateActionAvailability();
+    // _applyEditMetadata() above already calls refreshEditWarningState()
+    // once, but that ran before the selectedIndex reset just above (for
+    // the !option case) could change which option is actually selected --
+    // call it again now so edit.availability/the consent row reflect the
+    // final selection, not a stale one.
+    refreshEditWarningState();
   });
+
+  const editConsentCheckbox = document.getElementById('edit-consent-checkbox');
+  if (editConsentCheckbox) {
+    editConsentCheckbox.addEventListener('change', refreshEditWarningState);
+  }
 
   function _modelFilterBoxes() {
     return document.querySelectorAll('#model-filter-tags input[type=checkbox]');
@@ -1458,23 +1554,27 @@ document.addEventListener('keydown', function(e) {
     const declared = inputs ? inputs.effective_max_count : 1;
     if (!inputs || inputs.shape !== 'named') return declared;
     const usableRoles = (inputs.roles || []).filter(function (role) {
-      return !roleDataUrlUnusableReason(role, inputs.transport_warnings || {});
+      return !roleDataUrlUnusableReason(role);
     }).length;
     return Math.min(declared, usableRoles);
   }
 
   function _editInputsSignatureFor(inputs) {
     if (!inputs) return '';
-    // Includes each role's usability/warning status (via
-    // roleDataUrlUnusableReason(), the same check the role <select> and
-    // currentEditImagesMaxCount() use), not just its name -- a model or
-    // provider switch that keeps identical shape/count/role names but
-    // changes a role's transport or warning facts must still be treated
-    // as incompatible, since a previously-usable selected role could
-    // silently become disabled, or the usable-role cap could silently
-    // shrink below the current selection.
+    // Includes each role's usability (via roleDataUrlUnusableReason(), the
+    // same check the role <select> and currentEditImagesMaxCount() use),
+    // not just its name -- a model or provider switch that keeps identical
+    // shape/count/role names but changes a role's transport must still be
+    // treated as incompatible, since a previously-usable selected role
+    // could silently become disabled, or the usable-role cap could
+    // silently shrink below the current selection. A role's *warning*
+    // status is deliberately not part of this signature: a role that
+    // merely gains or loses a data-handling warning is still equally
+    // usable, so the user's existing selection/assignment should survive
+    // that change rather than being wiped (see refreshEditWarningState()
+    // for how the warning itself is surfaced instead).
     const roleSignature = (inputs.roles || []).map(function (r) {
-      const reason = roleDataUrlUnusableReason(r, inputs.transport_warnings || {}) || '';
+      const reason = roleDataUrlUnusableReason(r) || '';
       return r.name + '/' + (r.required ? '1' : '0') + '/' + reason;
     }).join(',');
     return inputs.shape + ':' + inputs.effective_max_count + ':' + inputs.min_count
@@ -1539,17 +1639,28 @@ document.addEventListener('keydown', function(e) {
           const opt = document.createElement('option');
           opt.value = role.name;
           let label = role.name + (role.required ? ' *' : '');
-          const unusableReason = roleDataUrlUnusableReason(role, inputs.transport_warnings || {});
+          const unusableReason = roleDataUrlUnusableReason(role);
           if (unusableReason) {
             opt.disabled = true;
             label += ' (' + unusableReason + ')';
+          } else {
+            // A warned-but-usable role stays selectable (consent is a
+            // whole-call gate, handled by refreshEditWarningState() once
+            // assigned) -- this is an informational annotation only.
+            const roleResult = sourceKindUsability(role, 'data_url');
+            if (roleResult.transport && (inputs.transport_warnings || {})[roleResult.transport]) {
+              label += ' (requires accepting a data-handling warning)';
+            }
           }
           opt.textContent = label;
           if (editImageRoles[i] === role.name) opt.selected = true;
           roleSel.appendChild(opt);
         }
         const roleIndex = i;
-        roleSel.addEventListener('change', function () { editImageRoles[roleIndex] = this.value; });
+        roleSel.addEventListener('change', function () {
+          editImageRoles[roleIndex] = this.value;
+          refreshEditWarningState();
+        });
         item.appendChild(roleSel);
       } else {
         const tag = document.createElement('span');
@@ -1576,6 +1687,7 @@ document.addEventListener('keydown', function(e) {
     if (addBtn) addBtn.disabled = editImageUrls.length >= maxCount;
     const labelEl = document.getElementById('edit-images-label');
     if (labelEl) labelEl.textContent = maxCount > 1 ? 'Source images' : 'Source image';
+    refreshEditWarningState();
   }
 
   function moveEditImage(index, delta) {
@@ -1721,6 +1833,16 @@ document.addEventListener('keydown', function(e) {
         return;
       }
     }
+    const consentRow = document.getElementById('edit-consent-row');
+    const consentCheckbox = document.getElementById('edit-consent-checkbox');
+    const consentRequired = !!(consentRow && consentRow.style.display !== 'none');
+    if (consentRequired && !(consentCheckbox && consentCheckbox.checked)) {
+      // The button's disabled state should already prevent reaching this
+      // point -- this mirrors the defensive re-checks above it (min_count,
+      // role assignment) rather than trusting that state alone.
+      errMsg.textContent = 'Please accept the data-handling warning above to continue.';
+      return;
+    }
 
     btn.disabled = true;
     status.textContent = 'Editing…';
@@ -1737,6 +1859,7 @@ document.addEventListener('keydown', function(e) {
       prompt: prompt,
       model: editModel,
       stream: true,
+      accept_data_handling_warnings: !!(consentCheckbox && consentCheckbox.checked),
     };
 
     const aspectRatio = document.getElementById('edit-aspect-sel').value;

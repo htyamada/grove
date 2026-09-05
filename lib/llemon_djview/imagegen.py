@@ -131,6 +131,7 @@ def _source_kind_usability(
 
 def _operation_state(
     row: dict[str, Any], operation: str, *, source_kind: str | None = None,
+    accept_data_handling_warnings: bool = False,
 ) -> tuple[bool, bool, str | None]:
     """Return (eligible, enabled, brief reason) from normalized presentation.
 
@@ -149,6 +150,19 @@ def _operation_state(
     ``source_kind`` through its own (possibly different) transport --
     using the flattened intersection here would wrongly disable a model
     ``operations.edit_images.available`` already reports as usable.
+
+    A candidate that is usable only through a warned transport is always
+    *eligible* (selectable/it can become the default model -- the caller
+    must be able to pick it before it can see the warning and consent to
+    it) but *enabled* only when ``accept_data_handling_warnings`` is True.
+    This is a schema-level, assignment-blind aggregate: for a named schema
+    it approximates "could this model ever need consent", not "does this
+    specific request need it" -- see ``_resolved_edit_warning_reason()``
+    for the assignment-aware check that actually gates a submission. A
+    caller that only wants to know whether the schema is fundamentally
+    usable, independent of consent, should pass
+    ``accept_data_handling_warnings=True`` itself to suppress this
+    warned-lowers-``enabled`` behavior.
     """
     presentation = row['presentation']
     detail = presentation['detail']
@@ -193,22 +207,59 @@ def _operation_state(
             else all(_is_warned(t) for t in usable_transports)
         )
         if warned:
-            return False, False, 'requires accepting a data-handling warning'
+            return (True, True, None) if accept_data_handling_warnings else (
+                True, False, 'requires accepting a data-handling warning',
+            )
         return True, True, None
     state, transport = _source_kind_usability(edit_input, source_kind)
     if state == 'unavailable_transport':
         return False, False, 'required transport unavailable'
     if state == 'unsupported':
         return False, False, 'data URL unsupported'
-    # Grove does not yet collect data-handling-warning consent (Task 13
-    # Phase 2): accept_data_handling_warnings is always False in
-    # _edit_result(), so a warned transport can never actually be
-    # dispatched through Grove today even though it is "available". Report
-    # that accurately here instead of claiming the model is enabled and
-    # only failing at dispatch with warning_not_accepted.
     if transport and transport in edit_input['transport_warnings']:
-        return False, False, 'requires accepting a data-handling warning'
+        return (True, True, None) if accept_data_handling_warnings else (
+            True, False, 'requires accepting a data-handling warning',
+        )
     return True, True, None
+
+
+def _resolved_edit_warning_reason(
+    edit_inputs: dict[str, Any], images: list[dict[str, Any]],
+) -> str | None:
+    """Return the verbatim data-handling warning text for the transport(s)
+    this specific request would actually exercise, or None.
+
+    Unlike ``_operation_state()``'s schema-level aggregate -- which asks
+    "could this model ever need consent" across every role it declares,
+    independent of what the caller is actually submitting -- this looks
+    only at the roles ``images`` actually assigns (each entry's ``role``,
+    for a named schema; the whole ``edit_inputs`` scope otherwise). An
+    optional role nobody assigned an image to cannot make this request
+    need consent even if that role would be warned in isolation, and a
+    required role always contributes regardless of assignment, since
+    every request must satisfy it. This is the only check that may gate a
+    real submission; ``_operation_state()``'s aggregate must not be used
+    for that (see its docstring).
+    """
+    warnings = edit_inputs.get('transport_warnings') or {}
+    if not warnings:
+        return None
+    roles = edit_inputs.get('roles')
+    if roles:
+        by_name = {role['name']: role for role in roles}
+        scopes = [role for role in roles if role['required']]
+        for image in images:
+            role_name = image.get('role')
+            role = by_name.get(role_name)
+            if role is not None and not role['required']:
+                scopes.append(role)
+    else:
+        scopes = [edit_inputs]
+    for scope in scopes:
+        state, transport = _source_kind_usability(scope, 'data_url')
+        if state == 'usable' and transport and transport in warnings:
+            return warnings[transport]
+    return None
 
 
 def _edit_input_transport_pending(
@@ -1778,6 +1829,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         safe_mode: bool | None,
         provider: str,
         api: str,
+        accept_data_handling_warnings: bool,
     ) -> 'tuple[dict[str, Any], int]':
         backend_cls = make_imagegen_backend(provider, api)
         backend = backend_cls(model=edit_model, log_dir=self._log_dir())
@@ -1785,11 +1837,11 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             'model':        edit_model,
             'aspect_ratio': aspect_ratio,
             'safe_mode':    safe_mode,
-            # Grove does not yet collect data-handling-warning consent
-            # (Task 13 Phase 2); this matches today's behavior, where a
-            # warned transport (e.g. Segmind's qwen-image-edit upload path)
-            # is unreachable through Grove either way.
-            'accept_data_handling_warnings': False,
+            # Set only when _do_edit_image() has already verified, against
+            # this specific request's resolved images/roles (see
+            # _resolved_edit_warning_reason()), that the caller explicitly
+            # consented to whatever warned transport it would exercise.
+            'accept_data_handling_warnings': accept_data_handling_warnings,
         }
         if image_size is not None:
             edit_kwargs['image_size'] = image_size
@@ -1819,14 +1871,16 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
     def _edit_stream(self, images: list[dict[str, Any]], source_filenames: list[str],
                      media_dir: str, prompt: str, edit_model: str,
                      aspect_ratio: 'str | None', image_size: 'str | None',
-                     safe_mode: 'bool | None', provider: str, api: str):
+                     safe_mode: 'bool | None', provider: str, api: str,
+                     accept_data_handling_warnings: bool):
         q: queue.Queue[dict[str, Any]] = queue.Queue()
 
         def _worker() -> None:
             try:
                 payload, status = self._edit_result(images, source_filenames, media_dir,
                                                     prompt, edit_model, aspect_ratio,
-                                                    image_size, safe_mode, provider, api)
+                                                    image_size, safe_mode, provider, api,
+                                                    accept_data_handling_warnings)
                 q.put({'event': 'done', 'status': status, **payload})
             except Exception as e:
                 logger.exception('edit stream failed')
@@ -1890,18 +1944,37 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
                 {'error': f'invalid edit model; use one of: {", ".join(valid_models)}'},
                 status=400,
             )
+        # accept_data_handling_warnings=True here isolates genuine schema
+        # unusability (unavailable_transport/unsupported) from the consent
+        # question -- _operation_state()'s warned aggregate is schema-wide,
+        # not aware of which roles this request actually assigns, so it
+        # must never by itself 400 a request that doesn't need consent.
+        # _resolved_edit_warning_reason() below, evaluated against the
+        # actual resolved images, is the real consent gate.
         _, enabled, reason = _operation_state(
             selected_row, 'edit_images', source_kind='data_url',
+            accept_data_handling_warnings=True,
         )
         if not enabled:
             return JsonResponse(
                 {'error': reason or 'edit model is unavailable'}, status=400,
             )
+        accept_raw = data.get('accept_data_handling_warnings')
+        if accept_raw is not None and not isinstance(accept_raw, bool):
+            return JsonResponse(
+                {'error': 'accept_data_handling_warnings must be a boolean'}, status=400,
+            )
+        accept_data_handling_warnings = accept_raw is True
         edit_inputs_schema = selected_row['presentation']['edit_inputs']
         try:
             canonical_images = normalize_edit_inputs(raw_images, edit_inputs_schema)
         except LLemonImageEditInputError as e:
             return JsonResponse({'error': str(e)}, status=400)
+        warning_reason = _resolved_edit_warning_reason(edit_inputs_schema, canonical_images)
+        if warning_reason and not accept_data_handling_warnings:
+            return JsonResponse(
+                {'error': 'requires accepting a data-handling warning'}, status=400,
+            )
         # Only now -- after request shape/count/role has been validated
         # against the selected model without touching the filesystem -- are
         # the actual gallery files read and base64-encoded.
@@ -1991,7 +2064,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
             resp = StreamingHttpResponse(
                 self._edit_stream(canonical_images, filenames, result_dir, prompt,
                                   edit_model, aspect_ratio, image_size, safe_mode,
-                                  provider, api),
+                                  provider, api, accept_data_handling_warnings),
                 content_type='application/x-ndjson',
             )
             resp['Cache-Control'] = 'no-cache'
@@ -2000,7 +2073,8 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
 
         payload, status = self._edit_result(canonical_images, filenames, result_dir,
                                             prompt, edit_model, aspect_ratio, image_size,
-                                            safe_mode, provider, api)
+                                            safe_mode, provider, api,
+                                            accept_data_handling_warnings)
         return JsonResponse(payload, status=status)
 
     def _edit_image(self, request):

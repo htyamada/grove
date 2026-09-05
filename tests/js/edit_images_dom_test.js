@@ -364,43 +364,99 @@ async function main() {
     if (opt.disabled) throw new Error('wrongly disabled: ' + opt.title);
   });
 
-  await step('role dropdown disables unusable options with an explanatory label', function () {
-    selectEditModel('mixed-optional-roles'); // roles: warned, clean, unreachable; effective_max_count 2
-    addImagesByIndex([0]);
-    const options = Array.from(doc.querySelector('#edit-images-list select.edit-thumb-role').options);
-    const warned = options.find(function (o) { return o.value === 'warned'; });
-    const clean = options.find(function (o) { return o.value === 'clean'; });
-    const unreachable = options.find(function (o) { return o.value === 'unreachable'; });
-    if (!warned.disabled || !/data-handling warning/.test(warned.textContent)) {
-      throw new Error('warned role option not disabled+labeled: ' + warned.textContent);
-    }
-    if (clean.disabled) throw new Error('clean role option should stay enabled');
-    if (!unreachable.disabled || !/data URL unsupported/.test(unreachable.textContent)) {
-      throw new Error('unreachable role option not disabled+labeled: ' + unreachable.textContent);
-    }
-  });
+  await step(
+    'role dropdown disables only genuinely unusable options; a warned role stays selectable',
+    function () {
+      selectEditModel('mixed-optional-roles'); // roles: warned, clean, unreachable; effective_max_count 2
+      addImagesByIndex([0]);
+      const options = Array.from(doc.querySelector('#edit-images-list select.edit-thumb-role').options);
+      const warned = options.find(function (o) { return o.value === 'warned'; });
+      const clean = options.find(function (o) { return o.value === 'clean'; });
+      const unreachable = options.find(function (o) { return o.value === 'unreachable'; });
+      // A warned-but-usable role must stay selectable -- consent is a
+      // whole-call gate, not a reason to exclude the role from the picker
+      // (it may still carry a non-blocking annotation).
+      if (warned.disabled) throw new Error('warned role option should stay selectable');
+      if (!/data-handling warning/.test(warned.textContent)) {
+        throw new Error('warned role option missing its annotation: ' + warned.textContent);
+      }
+      if (clean.disabled) throw new Error('clean role option should stay enabled');
+      if (!unreachable.disabled || !/data URL unsupported/.test(unreachable.textContent)) {
+        throw new Error('unreachable role option not disabled+labeled: ' + unreachable.textContent);
+      }
+    },
+  );
 
-  await step('selection cap is reduced to the usable-role count, not the declared max', function () {
-    // Only 'clean' is usable, so the cap must be 1 even though
-    // effective_max_count is 2.
+  await step('selection cap counts a warned role as usable, not just clean ones', function () {
+    // 'warned' and 'clean' are both usable now (only 'unreachable' isn't),
+    // so the cap must be 2 even though it used to be wrongly reduced to 1.
     const thumbs = pickerThumbs();
     fire(doc.getElementById('edit-images-btn'), 'click');
-    fire(thumbs[1], 'click'); // attempt a second image
-    if (editListItems().length !== 1) {
-      throw new Error('cap should hold at 1, got ' + editListItems().length);
+    fire(thumbs[1], 'click');
+    if (editListItems().length !== 2) {
+      throw new Error('cap should allow 2, got ' + editListItems().length);
     }
     if (!doc.getElementById('image-picker-grid').classList.contains('at-cap')) {
-      throw new Error('picker should show at-cap once the single usable-role slot fills');
+      throw new Error('picker should show at-cap once both usable-role slots fill');
     }
     if (!doc.getElementById('edit-images-btn').disabled) {
-      throw new Error('Add image button should be disabled at the reduced cap');
+      throw new Error('Add image button should be disabled at the cap');
     }
     fire(doc.getElementById('image-picker-close'), 'click');
+    // Drop back to a single image for the consent-row steps below.
+    fire(doc.querySelectorAll('.edit-thumb-remove')[1], 'click');
+    if (editListItems().length !== 1) throw new Error('setup: expected 1 image after removal');
   });
 
-  // -- Compatibility signature: same names, different transport/warning facts --
+  // -- Consent row: assignment-aware, not schema-aggregate --
   await step(
-    'switching between same-shaped schemas with different role facts clears a stale selection',
+    'consent row appears only once the warned role is actually assigned, with the verbatim message',
+    function () {
+      const roleSel = doc.querySelector('#edit-images-list select.edit-thumb-role');
+      const consentRow = doc.getElementById('edit-consent-row');
+      const consentMsg = doc.getElementById('edit-consent-message');
+      const submitBtn = doc.getElementById('generate-btn');
+
+      roleSel.value = 'clean';
+      fire(roleSel, 'change');
+      if (consentRow.style.display !== 'none') {
+        throw new Error('consent row should stay hidden while only the clean role is assigned');
+      }
+
+      roleSel.value = 'warned';
+      fire(roleSel, 'change');
+      if (consentRow.style.display === 'none') {
+        throw new Error('consent row should appear once the warned role is assigned');
+      }
+      if (consentMsg.textContent !== 'uploads leave LLemon-managed storage') {
+        throw new Error('consent message not shown verbatim: ' + consentMsg.textContent);
+      }
+      if (!submitBtn.disabled) {
+        throw new Error('submit button should stay disabled until the warning is accepted');
+      }
+    },
+  );
+
+  await step('checking the consent box enables submission without reselecting the model', function () {
+    const checkbox = doc.getElementById('edit-consent-checkbox');
+    const submitBtn = doc.getElementById('generate-btn');
+    checkbox.checked = true;
+    fire(checkbox, 'change');
+    if (submitBtn.disabled) throw new Error('submit button should enable once the box is checked');
+  });
+
+  await step('switching to an unwarned model hides the row and re-enables the button', function () {
+    selectEditModel('ordered-multi');
+    const consentRow = doc.getElementById('edit-consent-row');
+    const checkbox = doc.getElementById('edit-consent-checkbox');
+    if (consentRow.style.display !== 'none') throw new Error('consent row should hide for an unwarned model');
+    if (checkbox.checked) throw new Error('consent checkbox should reset when the model changes');
+  });
+
+  // -- Compatibility signature: a warning-only change preserves the
+  // selection; a genuine usability change still clears it --
+  await step(
+    'a warning-only schema change preserves a stale selection; a usability change clears it',
     function () {
       selectEditModel('compat-a'); // role 'x' (optional, clean), role 'y' (optional, clean)
       addImagesByIndex([0]);
@@ -410,13 +466,75 @@ async function main() {
       if (editListItems().length !== 1) throw new Error('setup: expected 1 selected image under compat-a');
 
       // compat-b has identical shape/effective_max_count/min_count/role
-      // names, but role 'x' now requires warning consent -- the old
-      // signature (names only) would treat this as "the same schema" and
-      // keep the stale selection/role assignment around.
+      // names, but role 'x' now needs warning consent -- a role gaining a
+      // warning is not a usability change (it's still equally selectable),
+      // so the stale selection/role assignment must survive this switch.
       selectEditModel('compat-b');
-      if (editListItems().length !== 0) {
-        throw new Error('stale selection should have been cleared on the role-fact change, got '
+      if (editListItems().length !== 1) {
+        throw new Error('a warning-only schema change should not clear the selection, got '
           + editListItems().length + ' items');
+      }
+
+      // compat-c instead has genuinely lost role 'x''s only usable path
+      // (its required transport is no longer available) -- a real
+      // usability change, so the stale selection must still be cleared.
+      selectEditModel('compat-c');
+      if (editListItems().length !== 0) {
+        throw new Error('a genuine usability change should still clear a stale selection, got '
+          + editListItems().length + ' items');
+      }
+    },
+  );
+
+  // -- Consent reset key must be provider-scoped, not just model-id-scoped --
+  await step(
+    'switching providers resets consent even when the model id and warning text collide',
+    async function () {
+      selectEditModel('mixed-optional-roles');
+      addImagesByIndex([0]);
+      const roleSel = doc.querySelector('#edit-images-list select.edit-thumb-role');
+      roleSel.value = 'warned';
+      fire(roleSel, 'change');
+      const checkbox = doc.getElementById('edit-consent-checkbox');
+      checkbox.checked = true;
+      fire(checkbox, 'change');
+      if (!checkbox.checked) throw new Error('setup: checkbox should be checked before switching providers');
+
+      // A second provider whose edit-model list happens to reuse the same
+      // model id ('mixed-optional-roles') and the same warning text --
+      // constructed by cloning the page's own rendered presentation and
+      // relabeling only the provider/api, so everything else (including
+      // the warning string) is guaranteed byte-identical.
+      const raw = JSON.parse(doc.getElementById('creator-presentation-data').textContent);
+      const otherProviderPresentation = JSON.parse(JSON.stringify(raw));
+      otherProviderPresentation.provider = 'openrouter';
+      otherProviderPresentation.api = 'images';
+      otherProviderPresentation.operations.edit.selected_model = 'mixed-optional-roles';
+
+      const previousFetchImpl = fetchImpl;
+      fetchImpl = function () {
+        return Promise.resolve({
+          headers: { get: () => 'application/json' },
+          json: () => Promise.resolve({ presentation: otherProviderPresentation, notices: [] }),
+          status: 200,
+        });
+      };
+      try {
+        doc.getElementById('provider').value = 'openrouter';
+        fire(doc.getElementById('provider'), 'change');
+        await sleep(20); // let switchProvider()'s fetch/json promises resolve
+      } finally {
+        fetchImpl = previousFetchImpl;
+      }
+
+      const checkboxAfter = doc.getElementById('edit-consent-checkbox');
+      const rowAfter = doc.getElementById('edit-consent-row');
+      if (checkboxAfter.checked) {
+        throw new Error('consent must not carry over across a provider switch, even with a '
+          + 'colliding model id and warning text');
+      }
+      if (rowAfter.style.display === 'none') {
+        throw new Error('consent row should still show the warning for the new provider/model');
       }
     },
   );

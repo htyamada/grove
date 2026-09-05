@@ -157,9 +157,11 @@ def _build_edit_meta():
         ),
         _make_option(
             # Identical shape/effective_max_count/min_count/role names to
-            # compat-a, but role 'x' now needs warning consent -- the
-            # compatibility-signature fix must still detect this as a
-            # different schema and clear a stale selection.
+            # compat-a, but role 'x' now needs warning consent -- a role
+            # gaining or losing a warning is *not* a usability change (the
+            # role is equally selectable either way), so the compatibility
+            # signature must treat this as the same schema and preserve a
+            # stale selection rather than clearing it.
             'compat-b', shape='named', effective_max_count=2, min_count=0,
             roles=[
                 _role('x', False, required_transport='provider_upload',
@@ -167,6 +169,19 @@ def _build_edit_meta():
                 _role('y', False, accepted=['data_url']),
             ],
             transport_warnings={'provider_upload': 'uploads leave LLemon-managed storage'},
+        ),
+        _make_option(
+            # Same shape/effective_max_count/min_count/role names as
+            # compat-a, but role 'x' has genuinely lost its only usable
+            # path (its required transport is no longer available) -- a
+            # real usability change, unlike compat-b's warning-only one,
+            # so the compatibility signature must still detect this as a
+            # different schema and clear a stale selection.
+            'compat-c', shape='named', effective_max_count=2, min_count=0,
+            roles=[
+                _role('x', False, required_transport='provider_upload', available=[]),
+                _role('y', False, accepted=['data_url']),
+            ],
         ),
     ]
     return {

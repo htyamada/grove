@@ -920,9 +920,122 @@ class ImageEditControlTests(_DjviewTestCase):
         self.assertIn('does not use named roles', resp.data['error'])
         edit_result.assert_not_called()
 
+    def _warned_single_scope_edit_meta(self):
+        # Ordered (no-roles) schema whose only path is a warned transport --
+        # exercises _resolved_edit_warning_reason()'s non-named branch.
+        edit_meta = dict(_OPENROUTER_EDIT_META)
+        option = _edit_option('vendor/edit-model')
+        option['presentation']['edit_input'].update({
+            'accepted_source_kinds': [],
+            'required_backend_transports': {'data_url': 'provider_upload'},
+            'available_backend_transports': ['provider_upload'],
+            'transport_warnings': {'provider_upload': 'uploads leave LLemon-managed storage'},
+        })
+        option['presentation']['edit_inputs'].update({
+            'accepted_source_kinds': [],
+            'required_backend_transports': {'data_url': 'provider_upload'},
+            'available_backend_transports': ['provider_upload'],
+            'transport_warnings': {'provider_upload': 'uploads leave LLemon-managed storage'},
+        })
+        edit_meta['edit_model_options'] = [option]
+        return edit_meta
+
+    def test_warned_transport_requires_consent_before_dispatch(self) -> None:
+        resp, edit_result = self._run_edit(
+            {'filename': 'a.png', 'prompt': 'change it',
+             'model': 'vendor/edit-model', 'aspect_ratio': '1:1'},
+            self._warned_single_scope_edit_meta(),
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('requires accepting a data-handling warning', resp.data['error'])
+        edit_result.assert_not_called()
+
+    def test_warned_transport_dispatches_once_consent_is_given(self) -> None:
+        resp, edit_result = self._run_edit(
+            {'filename': 'a.png', 'prompt': 'change it',
+             'model': 'vendor/edit-model', 'aspect_ratio': '1:1',
+             'accept_data_handling_warnings': True},
+            self._warned_single_scope_edit_meta(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIs(edit_result.call_args.args[10], True)
+
+    def test_accept_data_handling_warnings_rejects_non_boolean_values(self) -> None:
+        for bad_value in ('true', 'false', 1, 0):
+            with self.subTest(bad_value=bad_value):
+                resp, edit_result = self._run_edit(
+                    {'filename': 'a.png', 'prompt': 'change it',
+                     'model': 'vendor/edit-model', 'aspect_ratio': '1:1',
+                     'accept_data_handling_warnings': bad_value},
+                    self._warned_single_scope_edit_meta(),
+                )
+                self.assertEqual(resp.status_code, 400)
+                self.assertIn('must be a boolean', resp.data['error'])
+                edit_result.assert_not_called()
+
+    def _optional_warned_role_edit_meta(self):
+        # All-optional named schema mirroring the JS fixture
+        # ('mixed-optional-roles'): an optional role is warned, a sibling
+        # optional role is clean -- this is the direct regression fixture
+        # for "an optional role only needs consent when actually assigned".
+        edit_meta = dict(_OPENROUTER_EDIT_META)
+        option = _edit_option('vendor/edit-model')
+        option['presentation']['edit_inputs'].update({
+            'shape': 'named', 'min_count': 0, 'max_count': 2,
+            'effective_max_count': 2,
+            'transport_warnings': {'provider_upload': 'uploads leave LLemon-managed storage'},
+            'roles': [
+                {'name': 'warned', 'required': False, 'position': 0,
+                 'description': None, 'aliases': [],
+                 'accepted_source_kinds': [],
+                 'required_backend_transports': {'data_url': 'provider_upload'},
+                 'available_backend_transports': ['provider_upload']},
+                {'name': 'clean', 'required': False, 'position': 1,
+                 'description': None, 'aliases': [],
+                 'accepted_source_kinds': ['data_url'],
+                 'required_backend_transports': {}, 'available_backend_transports': []},
+            ],
+        })
+        edit_meta['edit_model_options'] = [option]
+        return edit_meta
+
+    def test_optional_clean_role_dispatches_without_consent(self) -> None:
+        resp, edit_result = self._run_edit(
+            {'images': [{'filename': 'a.png', 'role': 'clean'}],
+             'prompt': 'change it', 'model': 'vendor/edit-model',
+             'aspect_ratio': '1:1'},
+            self._optional_warned_role_edit_meta(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        edit_result.assert_called_once()
+
+    def test_optional_warned_role_requires_consent_only_when_assigned(self) -> None:
+        # This is the direct regression test for the schema-level
+        # aggregate's bug: assigning the same image to the *warned*
+        # optional role instead of the clean one must require consent,
+        # even though the model as a whole was usable without it above.
+        resp, edit_result = self._run_edit(
+            {'images': [{'filename': 'a.png', 'role': 'warned'}],
+             'prompt': 'change it', 'model': 'vendor/edit-model',
+             'aspect_ratio': '1:1'},
+            self._optional_warned_role_edit_meta(),
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('requires accepting a data-handling warning', resp.data['error'])
+        edit_result.assert_not_called()
+
+        resp, edit_result = self._run_edit(
+            {'images': [{'filename': 'a.png', 'role': 'warned'}],
+             'prompt': 'change it', 'model': 'vendor/edit-model',
+             'aspect_ratio': '1:1', 'accept_data_handling_warnings': True},
+            self._optional_warned_role_edit_meta(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIs(edit_result.call_args.args[10], True)
+
 
 class EditResultBackendForwardingTests(_DjviewTestCase):
-    def _run_edit_result(self, image_size):
+    def _run_edit_result(self, image_size, accept_data_handling_warnings=False):
         with mock.patch.dict(sys.modules, _fake_django_modules()):
             from llemon_djview.imagegen import LLemonImageGenViewSet
 
@@ -949,7 +1062,7 @@ class EditResultBackendForwardingTests(_DjviewTestCase):
                 payload, status = view._edit_result(
                     [{'source': 'data:image/png;base64,x'}], ['a.png'], tmp, 'change it',
                     'vendor/edit-model', '1:1', image_size, None,
-                    'openrouter', 'images',
+                    'openrouter', 'images', accept_data_handling_warnings,
                 )
         sidecar = save_result.call_args.args[3]
         return recorded, sidecar
@@ -963,6 +1076,45 @@ class EditResultBackendForwardingTests(_DjviewTestCase):
         recorded, sidecar = self._run_edit_result(None)
         self.assertNotIn('image_size', recorded)
         self.assertNotIn('image_size', sidecar)
+
+    def test_accept_data_handling_warnings_false_reaches_backend(self) -> None:
+        recorded, _sidecar = self._run_edit_result(None, accept_data_handling_warnings=False)
+        self.assertIs(recorded['accept_data_handling_warnings'], False)
+
+    def test_accept_data_handling_warnings_true_reaches_backend(self) -> None:
+        recorded, _sidecar = self._run_edit_result(None, accept_data_handling_warnings=True)
+        self.assertIs(recorded['accept_data_handling_warnings'], True)
+
+    def _run_edit_stream(self, accept_data_handling_warnings):
+        # The streaming path threads accept_data_handling_warnings through
+        # _edit_stream()'s worker thread to the same _edit_result() call the
+        # non-streaming path uses -- consumed here directly (not through
+        # _do_edit_image()'s StreamingHttpResponse, which this test file's
+        # faked Django stubs out as bare `object` and can't construct).
+        with mock.patch.dict(sys.modules, _fake_django_modules()):
+            from llemon_djview.imagegen import LLemonImageGenViewSet
+
+        view = LLemonImageGenViewSet('llemon_image', 'llemon_image')
+        edit_result = mock.Mock(return_value=({'files': ['out.png']}, 200))
+        with mock.patch.object(view, '_edit_result', edit_result):
+            events = [
+                json.loads(line) for line in view._edit_stream(
+                    [{'source': 'data:image/png;base64,x'}], ['a.png'], '/tmp', 'change it',
+                    'vendor/edit-model', '1:1', None, None,
+                    'openrouter', 'images', accept_data_handling_warnings,
+                )
+            ]
+        return edit_result, events
+
+    def test_edit_stream_forwards_accept_data_handling_warnings_true(self) -> None:
+        edit_result, events = self._run_edit_stream(True)
+        self.assertIs(edit_result.call_args.args[-1], True)
+        self.assertTrue(any(e.get('event') == 'done' for e in events))
+
+    def test_edit_stream_forwards_accept_data_handling_warnings_false(self) -> None:
+        edit_result, events = self._run_edit_stream(False)
+        self.assertIs(edit_result.call_args.args[-1], False)
+        self.assertTrue(any(e.get('event') == 'done' for e in events))
 
 
 if __name__ == '__main__':
