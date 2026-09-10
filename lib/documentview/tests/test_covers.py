@@ -198,6 +198,41 @@ class CacheInvalidationTests(DocumentViewTestCase):
             self.assertFalse(covers._cache_path(doc, size_name).exists())
 
 
+class CacheNamespaceTests(DocumentViewTestCase):
+    """An export's Variant.rel_path is just its bare filename -- the same
+    value a same-named top-level collection document would carry -- so the
+    cache key must fold in an explicit namespace to keep the two from ever
+    sharing (or colliding on) a cover cache entry.
+    """
+
+    def test_same_looking_document_in_different_namespaces_gets_different_cache_entries(self):
+        self.mkdir('a')
+        fixtures.make_pdf(self.root / 'a' / 'Book.pdf', color=(200, 9, 9))
+        _, docs = _scan(self.root, 'a')
+        doc = docs[0]
+
+        default_key = covers._cache_key(doc, 'thumb')
+        export_key = covers._cache_key(doc, 'thumb', cache_namespace='exports')
+        self.assertNotEqual(default_key, export_key)
+        self.assertNotEqual(
+            covers._cache_path(doc, 'thumb'),
+            covers._cache_path(doc, 'thumb', cache_namespace='exports'),
+        )
+
+    def test_invalidate_only_clears_its_own_namespace(self):
+        self.mkdir('a')
+        fixtures.make_pdf(self.root / 'a' / 'Book.pdf', color=(200, 9, 9))
+        _, docs = _scan(self.root, 'a')
+        doc = docs[0]
+
+        covers.cover_for(doc, 'thumb')
+        covers.cover_for(doc, 'thumb', cache_namespace='exports')
+        covers.invalidate(doc, cache_namespace='exports')
+
+        self.assertTrue(covers._cache_path(doc, 'thumb').exists())
+        self.assertFalse(covers._cache_path(doc, 'thumb', cache_namespace='exports').exists())
+
+
 class FitAndPadTests(DocumentViewTestCase):
     def test_wider_than_box_no_crop_no_stretch(self):
         img = Image.new('RGB', (400, 100), (10, 10, 10))

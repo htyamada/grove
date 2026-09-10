@@ -296,6 +296,28 @@ class CbzPreviewTests(DocumentViewTestCase):
                 previews.cbz_preview_page(resolved, 1)
 
 
+class PdfCacheNamespaceTests(DocumentViewTestCase):
+    """An exported copy can share a bare filename (and, since `add_active()`
+    preserves mtime, even size/mtime) with an unrelated top-level
+    collection document -- `resolve_export()`'s `.rel_path` must still
+    never collide with `resolve_document()`'s, or the two would share (or
+    overwrite) a PDF-page render cache despite being unrelated files.
+    """
+
+    def test_export_and_root_level_document_use_different_cache_dirs(self):
+        from .. import active
+
+        fixtures.make_pdf(self.root / 'Doc.pdf')
+        active.add_active('Doc.pdf')
+
+        with paths.resolve_document('Doc.pdf') as collection_resolved:
+            collection_dir = previews._pdf_cache_dir(collection_resolved)
+        with paths.resolve_export('Doc.pdf') as export_resolved:
+            export_dir = previews._pdf_cache_dir(export_resolved)
+
+        self.assertNotEqual(collection_dir, export_dir)
+
+
 class PdfPreviewTests(DocumentViewTestCase):
     def test_page_count_reflects_renderer_output(self):
         self.mkdir('a')

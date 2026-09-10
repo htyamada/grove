@@ -29,8 +29,8 @@ class CoverError(Exception):
     pass
 
 
-def _open_variant_stream(variant):
-    resolved = paths.resolve_document(variant.rel_path)
+def _open_variant_stream(variant, resolve):
+    resolved = resolve(variant.rel_path)
     try:
         fd = os.dup(resolved.fd)
     finally:
@@ -39,11 +39,11 @@ def _open_variant_stream(variant):
 
 
 @contextlib.contextmanager
-def _open_archive(variant):
+def _open_archive(variant, resolve):
     """Open one variant as a bounded ZIP archive, closing both the reader
     and the underlying stream on the way out.
     """
-    with _open_variant_stream(variant) as fh:
+    with _open_variant_stream(variant, resolve) as fh:
         with archives.SafeZipReader(fh) as reader:
             yield reader
 
@@ -67,8 +67,8 @@ def _epub_cover_href(opf_root, manifest, opf_dir):
     return None
 
 
-def _epub_cover(variant):
-    with _open_archive(variant) as reader:
+def _epub_cover(variant, resolve):
+    with _open_archive(variant, resolve) as reader:
         try:
             opf_root, _opf_path, opf_dir = epub.open_package(reader)
         except epub.EpubStructureError:
@@ -82,8 +82,8 @@ def _epub_cover(variant):
     return images.bounded_image_open(data)
 
 
-def _cbz_cover(variant):
-    with _open_archive(variant) as reader:
+def _cbz_cover(variant, resolve):
+    with _open_archive(variant, resolve) as reader:
         names = reader.image_names_natural_order(documents.CBZ_IMAGE_SUFFIXES)
         if not names:
             return None
@@ -91,9 +91,9 @@ def _cbz_cover(variant):
     return images.bounded_image_open(data)
 
 
-def _pdf_cover(variant):
+def _pdf_cover(variant, resolve):
     max_dim = config.limit('DOCUMENT_VIEWER_MAX_PDF_RENDER_DIMENSION')
-    with paths.resolve_document(variant.rel_path) as resolved:
+    with resolve(variant.rel_path) as resolved:
         pages = pdfrender.render_pdf_pages(resolved.fd, 1, 1)
     if not pages:
         return None
@@ -125,14 +125,14 @@ def _generic_cover(document):
     return img
 
 
-def _extract_raw_cover(document):
+def _extract_raw_cover(document, resolve):
     for suffix in documents.FORMAT_PREFERENCE:
         variant = document.variants.get(suffix)
         extractor = _EXTRACTORS.get(suffix)
         if variant is None or extractor is None:
             continue
         try:
-            img = extractor(variant)
+            img = extractor(variant, resolve)
         except Exception as e:
             logger.warning('cover extraction failed for %s: %s', variant.rel_path, e)
             img = None
@@ -160,33 +160,45 @@ def _encode_jpeg(img):
     return buf.getvalue()
 
 
-def _cache_key(document, size_name):
+def _cache_key(document, size_name, cache_namespace=''):
     rep = documents.representative_variant(document)
     candidates = tuple(sorted((v.rel_path, v.mtime_ns, v.size) for v in document.variants.values()))
-    payload = repr((rep.rel_path, rep.mtime_ns, rep.size, candidates, size_name, EXTRACTOR_VERSION))
+    payload = repr((cache_namespace, rep.rel_path, rep.mtime_ns, rep.size, candidates, size_name, EXTRACTOR_VERSION))
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _cache_path(document, size_name):
-    key = _cache_key(document, size_name)
+def _cache_path(document, size_name, cache_namespace=''):
+    key = _cache_key(document, size_name, cache_namespace)
     return config.cache_dir() / 'covers' / key[:2] / f'{key}.jpg'
 
 
-def cover_for(document, size_name: str) -> bytes:
+def cover_for(document, size_name: str, *, resolve=paths.resolve_document, cache_namespace: str = '') -> bytes:
+    """`resolve` opens a variant's `rel_path` -- the collection resolver by
+    default, or `paths.resolve_export` for a one-off exports-directory
+    document (views.py's `exports_cover`).
+
+    `cache_namespace` must be set to a value unique to `resolve` (views.py
+    passes `'exports'` alongside `paths.resolve_export`) whenever `resolve`
+    isn't the collection default: an export's `rel_path` is just its bare
+    filename, the same value a same-named top-level collection document
+    would carry, and the two must never share a cache entry -- they are
+    independent files (bytes may already have diverged) that only look
+    alike by name.
+    """
     config.validate_live()
     sizes = config.cover_sizes()
     if size_name not in sizes:
         raise CoverError(f'unknown cover size: {size_name}')
     box = tuple(sizes[size_name])
 
-    cache_path = _cache_path(document, size_name)
+    cache_path = _cache_path(document, size_name, cache_namespace)
     try:
         return cache_path.read_bytes()
     except OSError:
         pass
 
     try:
-        raw = _extract_raw_cover(document)
+        raw = _extract_raw_cover(document, resolve)
     except Exception as e:
         logger.warning('cover extraction raised for %s: %s', document.basename, e)
         raw = _generic_cover(document)
@@ -200,7 +212,7 @@ def cover_for(document, size_name: str) -> bytes:
     return data
 
 
-def invalidate(document) -> None:
+def invalidate(document, *, cache_namespace: str = '') -> None:
     config.validate_live()
     for size_name in config.cover_sizes():
-        _cache_path(document, size_name).unlink(missing_ok=True)
+        _cache_path(document, size_name, cache_namespace).unlink(missing_ok=True)

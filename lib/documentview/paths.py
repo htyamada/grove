@@ -222,6 +222,56 @@ def _open_final_component(parts):
     return fd, real_target
 
 
+def resolve_export(name: str) -> ResolvedDocument:
+    """Resolve a name inside `DOCUMENT_VIEWER_EXPORTS_DIR` to a
+    `ResolvedDocument`, mirroring `resolve_document()`'s contract (suffix
+    and regular-file validation, an already-open fd the caller reads from)
+    but without any of the collection's hardened symlink/traversal
+    handling: the exports directory is flat (`name` may not contain '/'),
+    and its contents are either copies this app wrote or files the
+    operator placed there directly -- both equally trusted (see the app's
+    Security Model), unlike the collection, which stores third-party
+    archive content.
+    """
+    config.validate_live()
+    if not name or '/' in name or name in ('.', '..') or '\x00' in name or name.startswith('.'):
+        raise PathError('invalid export name')
+
+    exports_dir = config.exports_dir()
+    abs_path = exports_dir / name
+    try:
+        fd = os.open(abs_path, os.O_RDONLY)
+    except OSError as e:
+        raise NotFoundError(f'not found: {name}') from e
+
+    try:
+        suffix = abs_path.suffix.lower()
+        if suffix not in SUPPORTED_SUFFIXES:
+            raise PathError(f'unsupported suffix: {abs_path.suffix}')
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise PathError('not a regular file')
+    except Exception:
+        os.close(fd)
+        raise
+
+    return ResolvedDocument(
+        # NUL-prefixed so this can never collide with a real collection
+        # rel_path (paths.py rejects NUL in collection input, and no POSIX
+        # filename can contain one either) -- `resolve_document()`'s cache
+        # consumers (previews.py's PDF-page cache) key on `.rel_path`, and
+        # an export and a same-named top-level collection document would
+        # otherwise share a cache entry despite being unrelated files.
+        rel_path=f'\x00exports/{name}',
+        abs_path=abs_path,
+        directory=exports_dir,
+        suffix=suffix[1:],
+        fd=fd,
+        mtime_ns=st.st_mtime_ns,
+        size=st.st_size,
+    )
+
+
 def resolve_document(rel_path: str) -> ResolvedDocument:
     config.validate_live()
     parts = _split_parts(rel_path, allow_empty=False)

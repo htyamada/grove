@@ -36,10 +36,17 @@
   <div class="dv-cover-grid">
     {% for doc in documents %}
     <div class="dv-cover-tile">
+      {% if exports_mode %}
+      <a class="dv-cover-link" href="{% url 'documentview:exports_view' name=doc.rel_path %}">
+      <img class="dv-cover-image" loading="lazy"
+           src="{% url 'documentview:exports_cover' name=doc.rel_path %}?size=thumb"
+           alt="{{ doc.title }}">
+      {% else %}
       <a class="dv-cover-link" href="{% url 'documentview:view' rel_path=doc.rel_path %}">
       <img class="dv-cover-image" loading="lazy"
            src="{% url 'documentview:cover' rel_path=doc.rel_path %}?size=thumb"
            alt="{{ doc.title }}">
+      {% endif %}
       <div class="dv-cover-title">{{ doc.title }}</div>
       <div class="dv-format-badges">
         {% with active=active_links|dict_get:doc.rel_path %}
@@ -50,7 +57,7 @@
       </div>
       </a>
       {% if exports_mode %}
-        {% include "documentview/_exports_remove_control.html" with link_name=doc.link_name rel_path=doc.rel_path %}
+        {% include "documentview/_exports_remove_control.html" with link_name=doc.link_name return_to=request.get_full_path %}
       {% else %}
         {% include "documentview/_export_controls.html" with active=active_links|dict_get:doc.rel_path %}
       {% endif %}
@@ -64,7 +71,13 @@
     <tbody>
     {% for doc in documents %}
       <tr>
-        <td><a href="{% url 'documentview:view' rel_path=doc.rel_path %}">{{ doc.title }}</a></td>
+        <td>
+          {% if exports_mode %}
+          <a href="{% url 'documentview:exports_view' name=doc.rel_path %}">{{ doc.title }}</a>
+          {% else %}
+          <a href="{% url 'documentview:view' rel_path=doc.rel_path %}">{{ doc.title }}</a>
+          {% endif %}
+        </td>
         <td class="dv-format-badges">
           {% with active=active_links|dict_get:doc.rel_path %}
           {% for suffix, variant in doc.variants.items %}
@@ -72,7 +85,7 @@
           {% endfor %}
           {% endwith %}
           {% if exports_mode %}
-            {% include "documentview/_exports_remove_control.html" with link_name=doc.link_name rel_path=doc.rel_path %}
+            {% include "documentview/_exports_remove_control.html" with link_name=doc.link_name return_to=request.get_full_path %}
           {% else %}
             {% include "documentview/_export_controls.html" with active=active_links|dict_get:doc.rel_path %}
           {% endif %}
@@ -85,40 +98,5 @@
   {% endif %}
 {% elif not subdirs %}
   <p class="dv-empty">{% if exports_mode %}Nothing is currently exported.{% else %}This directory has no supported documents.{% endif %}</p>
-{% endif %}
-
-{% if exports_mode %}
-{% if invalid_links %}
-<div class="dv-invalid-links">
-  <h3>Invalid links</h3>
-  <form method="post" action="{% url 'documentview:exports_prune' %}" class="dv-active-form">
-    {% csrf_token %}
-    <input type="hidden" name="return_to" value="{{ request.get_full_path }}">
-    <button type="submit">Delete all invalid links</button>
-  </form>
-  <ul>
-    {% for link in invalid_links %}
-    <li>
-      {{ link.link_name }} &mdash; {{ link.label }}
-      <form method="post" action="{% url 'documentview:active_remove' %}" class="dv-active-form">
-        {% csrf_token %}
-        <input type="hidden" name="link_name" value="{{ link.link_name }}">
-        <input type="hidden" name="return_to" value="{{ request.get_full_path }}">
-        <button type="submit">Remove</button>
-      </form>
-    </li>
-    {% endfor %}
-  </ul>
-</div>
-{% endif %}
-
-{% if unexpected_entries %}
-<div class="dv-unexpected-entries">
-  <h3>Unexpected files</h3>
-  <ul>
-    {% for name in unexpected_entries %}<li>{{ name }}</li>{% endfor %}
-  </ul>
-</div>
-{% endif %}
 {% endif %}
 {% endblock %}

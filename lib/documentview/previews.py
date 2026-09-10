@@ -13,7 +13,6 @@ import re
 
 import bleach
 import markdown as markdown_lib
-from django.urls import reverse
 
 from . import archives, config, documents, epub, images, pdfrender, subresources
 
@@ -249,7 +248,7 @@ def _select_preview_hrefs(opf_root, manifest, spine, opf_dir, toc, max_sections)
     return hrefs[:max_sections]
 
 
-def _rewrite_epub_html(html_fragment, manifest, member_ids, opf_dir, content_dir, resolved, rel_path):
+def _rewrite_epub_html(html_fragment, manifest, member_ids, opf_dir, content_dir, resolved, preview_base_url):
     """Rewrite `<img src>` to an internal validated preview-subresource URL
     when it names a real manifest item (dropped otherwise); strip remote
     resource loads; keep `http(s)` `<a href>` as inert, hardened
@@ -263,8 +262,14 @@ def _rewrite_epub_html(html_fragment, manifest, member_ids, opf_dir, content_dir
     own markup, since XHTML content resolves references relative to
     itself, not to the OPF. A layout like `Text/chapter.xhtml` referencing
     `../Images/cover.jpg` only resolves correctly against `content_dir`.
+
+    `preview_base_url` is the already-reversed subresource route for this
+    document (the collection's `documentview:preview`, or an export's
+    `documentview:exports_preview`) -- the caller picks it, not this
+    module, so previews.py stays agnostic to which resolver produced
+    `resolved`.
     """
-    base_url = reverse('documentview:preview', kwargs={'rel_path': rel_path})
+    base_url = preview_base_url
     href_to_index = {}
     for position, item_id in enumerate(member_ids):
         info = manifest[item_id]
@@ -303,7 +308,7 @@ def _rewrite_epub_html(html_fragment, manifest, member_ids, opf_dir, content_dir
     return out
 
 
-def epub_preview(resolved, rel_path: str) -> dict:
+def epub_preview(resolved, preview_base_url: str) -> dict:
     """Returns `{'toc': [...], 'sections': [{'label', 'html'}, ...]}`,
     capped at `DOCUMENT_VIEWER_MAX_PREVIEW_SECTIONS` sections, each capped
     at `DOCUMENT_VIEWER_MAX_PREVIEW_BYTES`. Never raises -- malformed
@@ -315,12 +320,12 @@ def epub_preview(resolved, rel_path: str) -> dict:
 
     try:
         with _open_archive(resolved) as reader:
-            return _epub_preview_from_archive(reader, resolved, rel_path, max_sections, max_bytes)
+            return _epub_preview_from_archive(reader, resolved, preview_base_url, max_sections, max_bytes)
     except (archives.ArchiveError, epub.EpubStructureError):
         return {'toc': [], 'sections': []}
 
 
-def _epub_preview_from_archive(reader, resolved, rel_path, max_sections, max_bytes):
+def _epub_preview_from_archive(reader, resolved, preview_base_url, max_sections, max_bytes):
     opf_root, _opf_path, opf_dir = epub.open_package(reader)
     manifest = epub.manifest_items(opf_root)
     member_ids = list(manifest)
@@ -354,7 +359,7 @@ def _epub_preview_from_archive(reader, resolved, rel_path, max_sections, max_byt
         fragment = body_match.group(1) if body_match else text
         safe_html = _bounded_sanitize(fragment)
         safe_html = _rewrite_epub_html(
-            safe_html, manifest, member_ids, opf_dir, posixpath.dirname(href), resolved, rel_path
+            safe_html, manifest, member_ids, opf_dir, posixpath.dirname(href), resolved, preview_base_url
         )
         sections.append({'label': posixpath.basename(href), 'html': safe_html})
 

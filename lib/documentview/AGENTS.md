@@ -13,7 +13,7 @@ reader shared by EPUB/CBZ code; `images.py` is the shared bounded-image
 decode helper; `epub.py` is shared EPUB container/OPF parsing;
 `pdfrender.py` wraps the `pdftoppm` subprocess; `subresources.py` signs
 archive-internal preview identifiers; `active.py` owns the exports
-directory's locked, directory-is-authority symlink staging;
+directory's locked, directory-is-authority copy-on-export staging;
 `appconfig.py` loads the filesystem
 paths from `etc/documentview.conf`; `config.py` owns settings, defaults,
 and lazy filesystem validation; `views.py` / `urls.py` wire it all up.
@@ -241,115 +241,127 @@ serves the explicitly selected file, never a substituted preferred format.
 
 ## Exports Directory
 
-`active.py` is directory-is-authority: whatever symlink physically exists
-in `DOCUMENT_VIEWER_EXPORTS_DIR` (the module and its functions -- `active.py`,
-`add_active()`, `remove_active()`, `ActiveError` -- keep the older "active"
-name; the setting and user-facing term are both "exports directory") *is*
-an export link, full stop.
-There is no separate manifest recording ownership or intent, and nothing
-is ever "foreign" the way an older manifest-backed design would treat an
-unregistered symlink -- presence as a symlink in that one configured
-directory is the only authorization `remove_active()` needs.
+`active.py` is directory-is-authority: whatever regular file physically
+exists in `DOCUMENT_VIEWER_EXPORTS_DIR` (the module and its functions --
+`active.py`, `add_active()`, `remove_active()`, `ActiveError` -- keep the
+older "active" name; the setting and user-facing term are both "exports
+directory") *is* an export, full stop. Exports are byte-for-byte **copies**,
+not symlinks -- sync software/devices that can't follow a symlink (e.g. an
+e-reader mounted over MTP) still get real files. There is no separate
+manifest recording ownership or intent, and no distinction is kept between
+a copy this app wrote and a file placed there by hand: both are equally
+exported and equally removable, matching the "prevent accidents, not
+attacks" trust model below (this directory holds either app-written
+copies or files the single operator placed there themselves, so there's
+nothing to protect it against).
 
-All add/remove/reconcile/prune operations acquire an `fcntl.flock` lock on
+All add/remove operations acquire an `fcntl.flock` lock on
 `config.active_lock_path()` (`DOCUMENT_VIEWER_CACHE_DIR/active.lock`) --
 deliberately *not* inside the exports directory itself, since that
 directory is exported as-is to external sync software/devices and the app
 must never create metadata there.
 
 - **`add_active(source)`** uses the source's filename as the only
-  candidate link name, checked with an `lstat`-style, non-following
-  existence check (a dangling symlink still occupies that directory-entry
-  name). Nothing there -> create the symlink. A symlink there (dangling or
-  not) -> resolves and matches the new source exactly -> idempotent no-op;
-  otherwise (points elsewhere, or is dangling) -> unlink and recreate,
-  conflict resolved as latest-write-wins. A non-symlink entry there (a
-  real file or directory) -> refused and raised, rather than silently
-  deleted -- the one safety net kept, matching the "prevent accidents, not
-  attacks" trust model below.
-- **`remove_active(link_name)`** only ever unlinks a symlink directly
-  inside `DOCUMENT_VIEWER_EXPORTS_DIR` (`dir_fd`-relative unlink, target
-  never followed or touched). Removal always succeeds once "is a symlink
-  at this name" is confirmed, regardless of whether its target still
-  validates -- missing (including a symlink loop), outside the collection
-  root, replaced by a directory, unreadable, or no longer a supported
-  suffix are each reported with their own specific reason
-  (`_classify_link()`'s `REASON_*` constants) rather than a generic
-  failure or silent no-op.
-- **`_classify_link(link_path)`** classifies a symlink from its own
-  resolved target (not a trusted rel_path -- a hand-created symlink can
-  point anywhere): a dangling target or a symlink loop both fold into one
-  `missing` reason (identical handling everywhere, and a hand-created
-  loop is too obscure an edge case to earn a second reason code); a
-  target that resolves outside `DOCUMENT_VIEWER_ROOT` is `outside_root`;
-  only then do not-a-file / unreadable / unsupported-suffix apply.
-- **Badge lookup is a deliberately-lossy set, not a link registry.**
-  `active_badge_paths()` scans `exports_dir`, keeps only links
-  `_classify_link()` reports no reason for, and returns the **set** of
-  their real paths (a plain, display-only `Path.resolve()`, not the
-  hardened O_NOFOLLOW resolver used to actually open files) -- used only
-  to answer "is this document currently exported at all" for
-  collection-page badges. Multiple links (including hand-created
-  duplicates, or a document reached both directly and through an
-  in-hierarchy curated symlink directory like `humble-bundle/selected/`)
-  resolving to the same real file collapse to one set entry, which is
-  correct for an existence check. The Exports page and bulk-invalid
-  cleanup never go through this set -- they iterate `exports_dir` directly,
-  one row per directory entry, since two hand-created links pointing at
-  the same target must still appear (and be individually removable) as
-  two separate rows.
+  candidate name, and always writes: the resolved source's bytes are
+  streamed into a `tempfile.mkstemp()` sibling inside `exports_dir` (its
+  mtime set to match the source's), then `os.replace()`d into place
+  atomically. Whatever previously occupied that name -- a stale copy, an
+  unrelated file, nothing -- is simply overwritten; conflict is resolved
+  as latest-write-wins, the same rule the old symlink design used. There
+  is no manifest recording which source a given exported name came from,
+  so an existing file there is always overwritten unconditionally rather
+  than compared against the source and skipped when it merely looks
+  unchanged (two different sources can share a size, and at whatever
+  mtime resolution the filesystem offers, an mtime too).
+- **`remove_active(link_name)`** only ever unlinks a directory entry
+  directly inside `DOCUMENT_VIEWER_EXPORTS_DIR` by name (`dir_fd`-relative
+  unlink) -- never a directory (`unlink` fails on one, surfaced as
+  `ActiveError`), and never touches the source document; there is nothing
+  left to touch, since an exported copy carries no reference back to its
+  source at all. Presence there is the only authorization needed.
+- **Badge lookup is a name set, not a link registry.** `exported_names()`
+  scans `exports_dir` and returns the **set** of non-hidden regular
+  filenames there -- used only to answer "is this document currently
+  exported at all" for collection-page badges, matched against a
+  variant's own filename (`documents.Variant.filename`). Two source
+  documents that happen to share a filename (in different directories, or
+  reached both directly and through an in-hierarchy curated symlink
+  directory like `humble-bundle/selected/`) are indistinguishable by name
+  alone and will badge together -- the same ambiguity `add_active()`'s
+  name-keyed, latest-write-wins conflict resolution already accepts.
 - **Enumeration rules for `exports_dir`**, applied consistently everywhere
-  it's scanned (badge lookup, the Exports page, `reconcile()`,
-  `remove_invalid()`): hidden entries (name starting with `.`) are always
-  skipped entirely -- macOS metadata like `.DS_Store`/`._*` transiently
-  dropped by Samba sync is invisible to the app, not even flagged. Only
-  symlinks are ever passed to `_classify_link()`; a visible, non-hidden,
-  non-symlink entry is never something the app itself creates (the lock
-  file lives under `DOCUMENT_VIEWER_CACHE_DIR`, never here), so one
-  showing up is flagged as informational only (the Exports page's
-  "Unexpected files" notice, or `reconcile()`'s `unexpected_entry` issue)
-  and never touched by bulk removal or `--repair`.
+  it's scanned (badge lookup, the Exports page): hidden entries (name
+  starting with `.`) are always skipped entirely -- macOS metadata like
+  `.DS_Store`/`._*` transiently dropped by Samba sync is invisible to the
+  app. Only regular files (`os.DirEntry.is_file()`, which follows a
+  symlink entry to its target) are ever treated as exports; a directory is
+  silently skipped, never touched by any operation.
 - Activation is per underlying format: activating an EPUB never implicitly
   activates or deactivates a sibling PDF variant.
-- `remove_invalid()` (wired to the Exports page's "Delete all invalid
-  links" button and `documentview:exports_prune`) deletes every symlink
-  `_classify_link()` flags with any reason, under the same lock; it never
-  calls `_classify_link()` on a non-symlink entry, so it can't touch an
-  unexpected file.
-- `./manage.py documentview_reconcile_active [--repair]` reports every
-  invalid export symlink (any `REASON_*`, via `_classify_link()`) and, with
-  `--repair`, deletes them -- a pure "remove broken/invalid links" tool; it
-  can no longer recreate a missing symlink, since there's no manifest
-  recording that intent. A visible non-symlink entry is reported as its
-  own `unexpected_entry` issue, informational only, never touched by
-  `--repair`.
+- There is no invalid-export or reconcile/prune concept any more, and no
+  `./manage.py documentview_reconcile_active` command: a copy carries no
+  reference to its source, so there is nothing to validate it against --
+  it either exists as a file in the exports directory or it doesn't. If a
+  copy needs refreshing after its source changed, re-adding it (or
+  removing and re-adding) always overwrites unconditionally (see
+  `add_active()` above).
 
 ### Exports Page
 
 `documentview:exports_index` (`/documents/exports/`) renders through the
 *same* `browse.html` template and cover/title-toggle UI as any other
-directory (an `exports_mode` flag swaps the breadcrumb/heading and adds
-the "Invalid links"/"Unexpected files" sections below the grid), but is
-populated by scanning `exports_dir` directly rather than a collection
-directory: each valid symlink becomes a one-off, single-variant
-`LogicalDocument` (reusing `documents.LogicalDocument`/`Variant`, so tiles,
-covers, and downloads need no new rendering code), with `view`/`cover`/
-`download` URLs built from the link's canonical real rel_path so clicking
-through lands on the normal detail page for that document. An invalid
-link (any `_classify_link()` reason) instead renders in a separate
-"Invalid links" list (name + reason + an individual remove button), with
-a "Delete all invalid links" button wired to `remove_invalid()`
-(`documentview:exports_prune`, POST-only). A stray non-symlink entry gets
-its own read-only "Unexpected files" notice, no delete action at all.
+directory (an `exports_mode` flag swaps the breadcrumb/heading and the
+tile/row link targets), but is populated by scanning `exports_dir`
+directly rather than a collection directory: each visible regular file
+becomes a one-off, single-variant `LogicalDocument` (reusing
+`documents.LogicalDocument`/`Variant`, so tiles need no new rendering
+code), addressed purely by its own name -- never regrouped by basename
+with anything else, so two exports sharing a basename (different format,
+or a plain name collision) still show as two independent rows. A name
+that isn't a supported document type is silently skipped (no "unexpected
+files" notice -- there's no distinction left to report).
 
-Add/remove is asymmetric by page: the Exports page only ever offers
-Remove (every tile there is by definition already exported; there's no
-"add" affordance since the exports-directory browser doesn't create
-links). Collection browse/detail pages only ever offer Add -- once a
-variant is exported, its per-variant action cell (`_export_controls.html`,
-`view.html`'s variant table) shows nothing further, just the existing
-"exported" badge. Removal is therefore reachable from exactly one place
-(the Exports page), regardless of which page the user navigated from.
+Unlike a collection document, an export's `view`/`cover`/`preview`/
+`download` URLs cannot route back through the collection (a copy carries
+no reference to its source, and may not even resolve to one any more), so
+the Exports page is fully self-contained: `exports_view`/`exports_cover`/
+`exports_preview`/`exports_download`/`exports_cover_refresh` are their own
+routes and views, resolving through `paths.resolve_export()` (flat,
+unhardened -- see Security Model) instead of `paths.resolve_document()`,
+and rendering a dedicated `export_view.html` rather than `view.html`.
+`covers.cover_for()` and the preview builders in `views.py`
+(`_render_preview()`, shared by both detail pages) take the resolver as a
+parameter for exactly this reason -- `covers.py`/`previews.py` themselves
+stay agnostic to which directory a document came from.
+
+An export's `Variant.rel_path` is just its bare filename -- the same
+value a same-named top-level collection document would carry -- since
+`covers.py`'s `_open_variant_stream()`/`_pdf_cover()` pass it straight to
+`resolve()` to reopen the file, so it can't be given a distinguishing
+prefix the way `paths.resolve_export()`'s own `ResolvedDocument.rel_path`
+can (NUL-prefixed there, since nothing re-resolves from that field). The
+cover/PDF-page caches key on rel_path, so `covers.cover_for()`/
+`covers.invalidate()` take an explicit `cache_namespace` (`views.py`
+passes `'exports'` alongside `paths.resolve_export`) folded into the
+cache key instead, keeping an export and a same-named collection document
+from ever sharing (or colliding on) a cache entry -- they're independent
+files whose bytes may already have diverged, not the same cache subject
+under two paths.
+
+Add/remove is asymmetric by page: the Exports page (listing or an
+export's own detail page) only ever offers Remove -- every tile there is
+by definition already exported, and there's no "add" affordance since the
+exports-directory browser doesn't create exports. Collection browse/
+detail pages only ever offer Add -- once a variant is exported, its
+per-variant action cell (`_export_controls.html`, `view.html`'s variant
+table) shows nothing further, just the existing "exported" badge.
+Removal is therefore reachable only from the Exports page, and
+`active_remove()` neither needs nor accepts a collection `rel_path`: it
+redirects to `return_to` on success, or re-renders the Exports listing
+with a notice or error either way. `return_to` is always an explicit,
+still-live URL -- the Exports listing itself from a listing row, or the
+listing again (not the export's own, about-to-be-deleted detail page)
+from `export_view.html`'s remove control.
 
 ## Security Model
 
@@ -375,6 +387,18 @@ separate or untrusted users.
   none are expected to exist in the real collection. Concurrent hostile
   mutation of the collection is explicitly outside the threat model: the
   person browsing is the same person who manually maintains the archive.
+- **Exports directory resolution** (`paths.resolve_export()`) is
+  deliberately *not* the hardened resolver above: the exports directory is
+  flat (a bare name, no `/`, no directory-component walk), and its
+  contents are either copies this app wrote or files the operator placed
+  there directly -- unlike the collection, never third-party archive
+  content -- so a plain `os.open()` by name (symlinks followed, no
+  containment check) is all it does. `covers.py`/`previews.py` stay
+  agnostic to which resolver produced a given `ResolvedDocument`
+  (`covers.cover_for(..., resolve=...)`, and `views.py`'s preview
+  builders take an already-resolved document plus a base URL), so the
+  same extraction/preview code serves both the collection and the exports
+  directory without duplication.
 - **Archive input** (`archives.py`): EPUB/CBZ are treated as potentially
   hostile ZIP input -- traversal member names and encrypted entries are
   rejected outright, and the streamed decompressed-byte total (not the
@@ -438,11 +462,11 @@ policy, TOCTOU), `test_documents.py` (grouping, natural sort),
 `test_covers.py` (extraction, fallbacks, bomb fixtures, fit-and-pad),
 `test_previews.py` (bounded previews, sanitization, signed subresource
 ids), `test_download.py` (exact-byte download, preview subresource HTTP
-behavior), `test_active.py` (add/remove/reconcile/prune, including
-concurrency, symlinked sources, hidden entries, unexpected non-symlink
-entries, and the Exports page), `test_headers.py` (the `nosniff`/CSP
-contract above), and
-`test_config.py` (settings/limit resolution). Each
+behavior), `test_active.py` (add/remove, including concurrency, symlinked
+sources, hidden entries, hand-placed files, and the Exports listing),
+`test_exports_browse.py` (the exports directory's own cover/view/preview/
+download routes), `test_headers.py` (the `nosniff`/CSP contract above),
+and `test_config.py` (settings/limit resolution). Each
 `DocumentViewTestCase` (in `tests/base.py`) points
 `DOCUMENT_VIEWER_*` settings at a fresh temp collection per test via
 `override_settings`, so tests never touch the real configured collection.

@@ -104,11 +104,30 @@ def _return_after_mutation(request):
     return None
 
 
-def _variant_real_path(variant):
-    """Plain, display-only resolved path for an "exported" badge lookup --
-    not the hardened O_NOFOLLOW resolver used to actually open files.
+def _resolve_export_document(name):
+    """Resolve one exports-directory entry to a `(LogicalDocument, Variant)`
+    pair, or `(None, None)` if `name` doesn't name a valid, supported file
+    there. Always single-variant and never grouped with anything else --
+    exports are addressed by their own flat name, not regrouped by
+    basename the way collection directories are (two exports happening to
+    share a basename must stay two independent rows/pages).
     """
-    return config.root().joinpath(*variant.rel_path.split('/')).resolve()
+    try:
+        resolved = paths.resolve_export(name)
+    except paths.PathError:
+        return None, None
+    resolved.close()
+
+    split = documents.strip_supported_suffix(name)
+    if split is None:
+        return None, None
+    basename, _suffix = split
+    variant = documents.Variant(
+        suffix=resolved.suffix, filename=name, rel_path=name,
+        mtime_ns=resolved.mtime_ns, size=resolved.size,
+    )
+    document = documents.LogicalDocument(basename=basename, directory='', variants={resolved.suffix: variant})
+    return document, variant
 
 
 def _resolve_logical(rel_path):
@@ -179,12 +198,12 @@ def browse(request, rel_path=''):
     except paths.PathError:
         raise Http404('directory not found')
     subdirs, docs = documents.scan_directory(resolved.abs_path, resolved.rel_path)
-    exported_paths = active.active_badge_paths()
+    exported = active.exported_names()
     active_links = {
         doc.rel_path: {
             suffix
             for suffix, variant in doc.variants.items()
-            if _variant_real_path(variant) in exported_paths
+            if variant.filename in exported
         }
         for doc in docs
     }
@@ -202,10 +221,11 @@ def browse(request, rel_path=''):
 
 
 def _exports_context(request, *, notice=None, error=None):
-    """Scan `exports_dir` directly, one row per **symlink** entry -- not
-    through `active.active_badge_paths()`, which is badge-only (§1). Hidden
-    entries are skipped entirely; a non-symlink entry is never classified,
-    it's surfaced separately as an "unexpected file".
+    """Scan `exports_dir` directly, one row per non-hidden regular file --
+    every visible file is an export (directory-is-authority; there's no
+    manifest, and no distinction between a copy this app wrote and a file
+    placed there by hand). A name that isn't a supported document type, or
+    that fails to stat, is silently skipped.
     """
     config.validate_live()  # same live config check browse()/view() get via paths.resolve_*()
     exports_dir = config.exports_dir()
@@ -216,47 +236,35 @@ def _exports_context(request, *, notice=None, error=None):
     entries.sort(key=lambda e: e.name)
 
     docs = []
-    invalid_links = []
-    unexpected_entries = []
 
     for entry in entries:
         name = entry.name
         if name.startswith('.'):
             continue
         try:
-            is_symlink = entry.is_symlink()
+            if not entry.is_file():
+                continue
         except OSError:
             continue
-        if not is_symlink:
-            unexpected_entries.append(name)
-            continue
 
-        reason, real = active._classify_link(exports_dir / name)
-        if reason is not None:
-            invalid_links.append({'link_name': name, 'label': active.REASON_LABELS[reason]})
+        split = documents.strip_supported_suffix(name)
+        if split is None:
             continue
-
-        rel_parts = real.relative_to(config.root()).parts
-        rel_path = '/'.join(rel_parts)
-        suffix = real.suffix.lower()[1:]
         try:
-            st = real.stat()
+            st = entry.stat()
         except OSError:
-            invalid_links.append({'link_name': name, 'label': active.REASON_LABELS[active.REASON_MISSING]})
             continue
 
+        basename, suffix = split
         variant = documents.Variant(
-            suffix=suffix, filename=real.name, rel_path=rel_path,
+            suffix=suffix, filename=name, rel_path=name,
             mtime_ns=st.st_mtime_ns, size=st.st_size,
         )
-        basename, _ = documents.strip_supported_suffix(real.name)
-        doc = documents.LogicalDocument(
-            basename=basename, directory='/'.join(rel_parts[:-1]), variants={suffix: variant},
-        )
-        # Two link names can resolve to the same real file (a hand-created
-        # duplicate), which would collide as a dict key on doc.rel_path --
-        # each row needs its own tile-to-link_name pairing, so it's carried
-        # directly on the one-off doc instance instead.
+        doc = documents.LogicalDocument(basename=basename, directory='', variants={suffix: variant})
+        # Two exports can share a basename (different format, or a plain
+        # name collision) and must not collide as a dict key on
+        # doc.rel_path -- each row carries its own name directly, matching
+        # exports_view()'s per-name (not per-basename) addressing.
         doc.link_name = name
         docs.append(doc)
 
@@ -271,8 +279,6 @@ def _exports_context(request, *, notice=None, error=None):
         'view_mode': _view_mode(request),
         'format_preference': documents.FORMAT_PREFERENCE,
         'exports_mode': True,
-        'invalid_links': invalid_links,
-        'unexpected_entries': unexpected_entries,
     }
     if notice:
         context['active_notice'] = notice
@@ -286,62 +292,82 @@ def exports_index(request):
     return _render_page(request, 'documentview/browse.html', _exports_context(request))
 
 
-@require_POST
-def exports_prune(request):
-    _require(request, 'mutate')
-    removed = active.remove_invalid()
-    return_response = _return_after_mutation(request)
-    if return_response is not None:
-        return return_response
-    if removed:
-        notice = f'Deleted {removed} invalid link{"s" if removed != 1 else ""}.'
-    else:
-        notice = 'No invalid links to delete.'
-    return _render_page(request, 'documentview/browse.html', _exports_context(request, notice=notice))
+def exports_view(request, name):
+    _require(request, 'browse')
+    document, variant = _resolve_export_document(name)
+    if document is None:
+        raise Http404('export not found')
+    preview = _build_export_preview(name)
+    return _render_page(
+        request, 'documentview/export_view.html',
+        {'document': document, 'variant': variant, 'preview': preview},
+        allow_remote_images=(preview or {}).get('kind') == 'markdown',
+    )
+
+
+def _render_preview(resolved, preview_url):
+    """Format-appropriate fast-preview context (spec 1.3), shared by a
+    collection document's detail page and an export's own detail page --
+    the two differ only in which resolver produced `resolved` and which
+    route `preview_url` (already reversed by the caller) points subresource
+    requests at. Never lets a preview failure break the detail page --
+    returns `None` on any resolution problem, same as a missing/malformed
+    cover.
+    """
+    if resolved.suffix == 'epub':
+        data = previews.epub_preview(resolved, preview_url)
+        return {'kind': 'epub', 'preview_url': preview_url, **data}
+    if resolved.suffix == 'pdf':
+        return {
+            'kind': 'pdf',
+            'preview_url': preview_url,
+            'pages': list(range(1, previews.pdf_preview_pages(resolved) + 1)),
+        }
+    if resolved.suffix == 'cbz':
+        return {
+            'kind': 'cbz',
+            'preview_url': preview_url,
+            'pages': list(range(1, previews.cbz_preview_page_count(resolved) + 1)),
+        }
+    if resolved.suffix == 'md':
+        return {'kind': 'markdown', 'html': previews.markdown_preview(resolved)}
+    if resolved.suffix == 'txt':
+        return {'kind': 'text', 'text': previews.text_preview(resolved)}
+    return None
 
 
 def _build_preview(variant):
-    """Format-appropriate fast-preview context for the `view` page (spec
-    1.3). Never lets a preview failure break the detail page -- returns
-    `None` on any resolution problem, same as a missing/malformed cover.
-    """
     try:
         resolved = paths.resolve_document(variant.rel_path)
     except paths.PathError:
         return None
     try:
-        if resolved.suffix == 'epub':
-            data = previews.epub_preview(resolved, resolved.rel_path)
-            return {'kind': 'epub', 'rel_path': resolved.rel_path, **data}
-        if resolved.suffix == 'pdf':
-            return {
-                'kind': 'pdf',
-                'rel_path': resolved.rel_path,
-                'pages': list(range(1, previews.pdf_preview_pages(resolved) + 1)),
-            }
-        if resolved.suffix == 'cbz':
-            return {
-                'kind': 'cbz',
-                'rel_path': resolved.rel_path,
-                'pages': list(range(1, previews.cbz_preview_page_count(resolved) + 1)),
-            }
-        if resolved.suffix == 'md':
-            return {'kind': 'markdown', 'html': previews.markdown_preview(resolved)}
-        if resolved.suffix == 'txt':
-            return {'kind': 'text', 'text': previews.text_preview(resolved)}
+        preview_url = reverse('documentview:preview', kwargs={'rel_path': resolved.rel_path})
+        return _render_preview(resolved, preview_url)
+    finally:
+        resolved.close()
+
+
+def _build_export_preview(name):
+    try:
+        resolved = paths.resolve_export(name)
+    except paths.PathError:
         return None
+    try:
+        preview_url = reverse('documentview:exports_preview', kwargs={'name': name})
+        return _render_preview(resolved, preview_url)
     finally:
         resolved.close()
 
 
 def _variant_rows(document):
-    exported_paths = active.active_badge_paths()
+    exported = active.exported_names()
     rows = []
     for suffix in documents.FORMAT_PREFERENCE:
         variant = document.variants.get(suffix)
         if variant is None:
             continue
-        rows.append({'variant': variant, 'exported': _variant_real_path(variant) in exported_paths})
+        rows.append({'variant': variant, 'exported': variant.filename in exported})
     return rows
 
 
@@ -364,19 +390,31 @@ def view(request, rel_path):
     return _render_view_page(request, _view_context(document, resolved.rel_path))
 
 
-def cover(request, rel_path):
-    _require(request, 'browse')
-    document, _resolved = _resolve_logical(rel_path)
-    if document is None:
-        raise Http404('document not found')
+def _serve_cover(request, document, *, resolve=paths.resolve_document, cache_namespace=''):
     size_name = request.GET.get('size', 'thumb')
     try:
-        data = covers.cover_for(document, size_name)
+        data = covers.cover_for(document, size_name, resolve=resolve, cache_namespace=cache_namespace)
     except covers.CoverError:
         raise Http404('unknown cover size')
     response = HttpResponse(data, content_type='image/jpeg')
     response['Cache-Control'] = 'private, max-age=3600'
     return _secure_resource(response)
+
+
+def cover(request, rel_path):
+    _require(request, 'browse')
+    document, _resolved = _resolve_logical(rel_path)
+    if document is None:
+        raise Http404('document not found')
+    return _serve_cover(request, document)
+
+
+def exports_cover(request, name):
+    _require(request, 'browse')
+    document, _variant = _resolve_export_document(name)
+    if document is None:
+        raise Http404('export not found')
+    return _serve_cover(request, document, resolve=paths.resolve_export, cache_namespace='exports')
 
 
 @require_POST
@@ -389,11 +427,59 @@ def cover_refresh(request):
     return HttpResponseRedirect(reverse('documentview:view', kwargs={'rel_path': document.rel_path}))
 
 
+@require_POST
+def exports_cover_refresh(request):
+    _require(request, 'mutate')
+    document, _variant = _resolve_export_document(request.POST.get('name', ''))
+    if document is None:
+        raise Http404('export not found')
+    covers.invalidate(document, cache_namespace='exports')
+    return HttpResponseRedirect(reverse('documentview:exports_view', kwargs={'name': document.rel_path}))
+
+
 def _int_param(request, name):
     try:
         return int(request.GET[name])
     except (KeyError, ValueError, TypeError):
         return None
+
+
+def _serve_preview_subresource(request, resolved):
+    kind = request.GET.get('kind')
+
+    if resolved.suffix == 'epub' and kind == 'epub-image':
+        try:
+            content_type, data = previews.epub_image_subresource(resolved, request.GET.get('id', ''))
+        except subresources.StaleSubresourceError:
+            return HttpResponse(status=409)
+        except (subresources.SubresourceError, previews.PreviewError):
+            return HttpResponse(status=400)
+        response = HttpResponse(data, content_type=content_type)
+        return _secure_resource(response)
+
+    if resolved.suffix == 'pdf' and kind == 'pdf-page':
+        page = _int_param(request, 'page')
+        if page is None:
+            return HttpResponse(status=400)
+        try:
+            data = previews.pdf_preview_page(resolved, page)
+        except previews.PreviewError:
+            raise Http404('preview page unavailable')
+        response = HttpResponse(data, content_type='image/jpeg')
+        return _secure_resource(response)
+
+    if resolved.suffix == 'cbz' and kind == 'cbz-page':
+        page = _int_param(request, 'page')
+        if page is None:
+            return HttpResponse(status=400)
+        try:
+            data = previews.cbz_preview_page(resolved, page)
+        except previews.PreviewError:
+            raise Http404('preview page unavailable')
+        response = HttpResponse(data, content_type='image/jpeg')
+        return _secure_resource(response)
+
+    raise Http404('unsupported preview subresource')
 
 
 def preview(request, rel_path):
@@ -408,43 +494,31 @@ def preview(request, rel_path):
     except paths.PathError:
         raise Http404('document not found')
     try:
-        kind = request.GET.get('kind')
-
-        if resolved.suffix == 'epub' and kind == 'epub-image':
-            try:
-                content_type, data = previews.epub_image_subresource(resolved, request.GET.get('id', ''))
-            except subresources.StaleSubresourceError:
-                return HttpResponse(status=409)
-            except (subresources.SubresourceError, previews.PreviewError):
-                return HttpResponse(status=400)
-            response = HttpResponse(data, content_type=content_type)
-            return _secure_resource(response)
-
-        if resolved.suffix == 'pdf' and kind == 'pdf-page':
-            page = _int_param(request, 'page')
-            if page is None:
-                return HttpResponse(status=400)
-            try:
-                data = previews.pdf_preview_page(resolved, page)
-            except previews.PreviewError:
-                raise Http404('preview page unavailable')
-            response = HttpResponse(data, content_type='image/jpeg')
-            return _secure_resource(response)
-
-        if resolved.suffix == 'cbz' and kind == 'cbz-page':
-            page = _int_param(request, 'page')
-            if page is None:
-                return HttpResponse(status=400)
-            try:
-                data = previews.cbz_preview_page(resolved, page)
-            except previews.PreviewError:
-                raise Http404('preview page unavailable')
-            response = HttpResponse(data, content_type='image/jpeg')
-            return _secure_resource(response)
-
-        raise Http404('unsupported preview subresource')
+        return _serve_preview_subresource(request, resolved)
     finally:
         resolved.close()
+
+
+def exports_preview(request, name):
+    """Exports-directory counterpart of `preview()`: same subresource
+    dispatch, resolved against the exports directory instead of the
+    collection.
+    """
+    _require(request, 'browse')
+    try:
+        resolved = paths.resolve_export(name)
+    except paths.PathError:
+        raise Http404('export not found')
+    try:
+        return _serve_preview_subresource(request, resolved)
+    finally:
+        resolved.close()
+
+
+def _serve_download(resolved):
+    fh = os.fdopen(resolved.fd, 'rb')  # FileResponse closes fh (and so fd) when done
+    response = FileResponse(fh, as_attachment=True, filename=resolved.abs_path.name)
+    return _secure_resource(response)
 
 
 def download(request, rel_path):
@@ -457,9 +531,19 @@ def download(request, rel_path):
         resolved = paths.resolve_document(rel_path)
     except paths.PathError:
         raise Http404('document not found')
-    fh = os.fdopen(resolved.fd, 'rb')  # FileResponse closes fh (and so fd) when done
-    response = FileResponse(fh, as_attachment=True, filename=resolved.abs_path.name)
-    return _secure_resource(response)
+    return _serve_download(resolved)
+
+
+def exports_download(request, name):
+    """Exports-directory counterpart of `download()`: serves the exported
+    copy itself, exact bytes, not the original collection document.
+    """
+    _require(request, 'download')
+    try:
+        resolved = paths.resolve_export(name)
+    except paths.PathError:
+        raise Http404('export not found')
+    return _serve_download(resolved)
 
 
 @require_POST
@@ -484,14 +568,14 @@ def active_add(request):
 
 @require_POST
 def active_remove(request):
-    """Removal is driven by `link_name` (the export directory entry) alone:
-    it must succeed and unlink the symlink even when the source document no
-    longer resolves (missing, unreadable, no longer a supported type, ...)
-    -- that's precisely the case this endpoint exists to clean up.
-    Resolving `rel_path` back to a document is only for choosing which page
-    to render the result on; its failure must never block the removal
-    itself. Reachable in practice only from the Exports page, since
-    collection browse/detail pages no longer offer a remove control.
+    """Removal is driven by `link_name` (the exported file's own name)
+    alone -- there's no source document to fall back to resolving, or to
+    need to: exported copies are independent of their source's current
+    state, and Remove is reachable only from the Exports listing or an
+    export's own detail page (collection browse/detail pages never offer a
+    remove control). A successful removal redirects to `return_to` when
+    given; either way, failing that, the Exports listing is re-rendered
+    with a notice or error.
     """
     _require(request, 'mutate')
     link_name = request.POST.get('link_name', '')
@@ -501,27 +585,11 @@ def active_remove(request):
         error, notice = str(e), None
     else:
         error = None
-        if result.reason:
-            label = active.REASON_LABELS[result.reason]
-            notice = f'Removed "{result.link_name}" from Exports ({label}).'
-        else:
-            notice = f'Removed "{result.link_name}" from Exports.'
+        notice = f'Removed "{result.link_name}" from Exports.'
 
     if error is None:
         return_response = _return_after_mutation(request)
         if return_response is not None:
             return return_response
 
-    document, resolved = _resolve_logical(request.POST.get('rel_path', ''))
-    if document is not None:
-        context = _view_context(document, resolved.rel_path)
-        if error:
-            context['active_error'] = error
-        if notice:
-            context['active_notice'] = notice
-        return _render_view_page(request, context)
-
-    return _render_page(
-        request, 'documentview/active_removed.html',
-        {'active_error': error, 'active_notice': notice},
-    )
+    return _render_page(request, 'documentview/browse.html', _exports_context(request, notice=notice, error=error))
