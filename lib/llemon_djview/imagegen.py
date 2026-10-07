@@ -342,9 +342,9 @@ def _edit_metadata(
     (Venice) preserves the source ratio through that value; a provider
     without ``auto`` (OpenRouter) resizes to a fixed ratio, so no
     source-preserving choice is offered and a concrete ratio is required.
-    Sizing: ``edit_image_sizes`` is empty for Venice single-image edits
-    (output size comes from the source image) and non-empty for OpenRouter,
-    whose edit path accepts an explicit size.
+    Sizing is model-specific.  Venice and OpenRouter expose an explicit size
+    whenever the selected edit model advertises resolution tiers; otherwise
+    the output size is determined by the source image.
     """
     if not supports_edit(provider, api):
         return {
@@ -2009,11 +2009,7 @@ class LLemonImageGenViewSet(MediaGenViewSetBase):
         valid_sizes = row_controls['image_sizes']
         image_size = (data.get('image_size') or '').strip() or None
         if image_size and not valid_sizes:
-            if provider == 'venice':
-                message = ('Venice single-image editing determines output size '
-                           'from the source image; image_size is not accepted')
-            else:
-                message = f'provider {provider!r} image editing does not accept image_size'
+            message = f'provider {provider!r} image editing does not accept image_size'
             return JsonResponse({'error': message}, status=400)
         if valid_sizes:
             if not image_size:

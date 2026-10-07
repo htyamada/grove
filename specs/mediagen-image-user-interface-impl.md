@@ -267,9 +267,10 @@ When Type is edit, a panel shows:
   OpenRouter has no source-preserving ratio, so a concrete ratio is always
   selected and submitted. `default_edit_aspect_ratio` selects `auto` when
   available, otherwise the provider's default generation ratio.
-- **Size** dropdown: shown only when `edit_image_sizes` is non-empty
-  (OpenRouter). For Venice single-image edits the control is replaced by a
-  note explaining that output size is determined by the source image.
+- **Size** dropdown: shown only when the selected model's
+  `edit_image_sizes` is non-empty. This includes Venice models that advertise
+  resolution tiers as well as OpenRouter models; when no tiers are available,
+  the output size is determined by the source image.
 
 The submitted body always contains `provider`, the explicitly selected edit
 `model`, and `aspect_ratio`; `image_size` is included only while the size
